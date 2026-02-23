@@ -1,0 +1,3 @@
+[submodule "SwarmSwIM"]
+	path = SwarmSwIM
+	url = https://github.com/save-xx/SwarmSwIM.git
