@@ -72,3 +72,5 @@ print(ds.thetao.sel(depth=5, method="nearest").isel(time=0))  # temperature at 5
 ## Further work
 
 - Use ROMS as numerical simulator for currents
+- Use the Pareto fronts for the reward function instead of computing a single function for all the variables (meaning an agent will try to find "good enough" areas instead of global optima)
+- Optimize the code for parallel working

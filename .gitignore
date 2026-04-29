@@ -4,3 +4,4 @@ CLAUDE.md
 data/
 thesis/
 *.ipynb
+__pycache__/
