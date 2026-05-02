@@ -1,14 +1,15 @@
 """
-Implementation of the Beer-Lambert turbidity model used for the simulation. It is a simple function of the depth.
+Beer-Lambert turbidity model.
 
-Params:
-    - (d)   -> depth
-    - (I_0) -> base turbidity level (surface)
-    - (k)   -> constant diffuse attenuation coefficient
+τ(d) = 1 - exp(-k · |d|),  τ ∈ [0, 1]
+
+τ = 0 at the surface (clear), → 1 with depth (opaque). The default k = 0.3
+[1/m] is a typical Arabian Gulf / coastal value.
 """
 
-# TODO: import (I_0, k) from config file (not necessary .xml)
 import numpy as np
 
-def turbidity_model(depth, I0=1, k=1): 
-    return I0 * (np.exp(-(k * depth)))
+
+def turbidity_model(depth, k: float = 0.3):
+    """Beer-Lambert depth attenuation. Sign-agnostic in `depth`."""
+    return 1.0 - np.exp(-k * np.abs(depth))
