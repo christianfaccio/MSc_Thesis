@@ -2,7 +2,9 @@ CLAUDE.md
 .claude
 .DS_Store
 .venv/
-data/
+data/*.nc
+data/GSHHS/
 thesis/
 *.ipynb
 __pycache__/
+.vscode/

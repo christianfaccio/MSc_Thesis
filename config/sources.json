@@ -1,0 +1,30 @@
+[
+    {
+      "name": "Taweelah",
+      "lat":  24.78,
+      "lon":  54.79,
+      "depth": 2.0,
+      "Q":    8.0
+    },
+    {
+      "name": "Umm_Al_Nar",
+      "lat":  24.43,
+      "lon":  54.51,
+      "depth": 2.0,
+      "Q":    6.0
+    },
+    {
+      "name": "Mirfa",
+      "lat":  24.10,
+      "lon":  53.50,
+      "depth": 2.0,
+      "Q":    4.0
+    },
+    {
+      "name": "Jebel_Ali",
+      "lat":  24.96,
+      "lon":  55.04,
+      "depth": 2.0,
+      "Q":    5.0
+    }
+]
