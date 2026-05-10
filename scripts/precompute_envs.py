@@ -279,6 +279,11 @@ def bundle_environment(
         "k_per_m": float(k_turbidity),
     }
     bundle.attrs["k_turbidity"] = float(k_turbidity)
+
+    bundle = bundle.rename({'z': 'depth'}).expand_dims('time')  # NOTE: this line is to ensure compatibility with raw CMEMS structure, 
+                                                                # a new class similar to OceanDataCurrents but for custom format 
+                                                                # needs to be defined
+    bundle = bundle.assign_coords(depth=-bundle.depth)                      # NOTE: this line is to match positive-depth
     return bundle
 
 

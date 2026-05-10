@@ -20,8 +20,14 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import plotly.graph_objects as go
 import xarray as xr
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3d projection)
+
+import sys
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+from src.models.turbidity import turbidity_model  # noqa: E402
 
 
 def reward_field(salinity: np.ndarray, turbidity: np.ndarray,
@@ -86,65 +92,101 @@ def plot_currents(ds: xr.Dataset, sources: list[dict] | None,
 
 def plot_reward(ds: xr.Dataset, s_target: float, tau_target: float,
                 sigma_s: float, sigma_tau: float,
-                size_min: float = 2.0, size_max: float = 250.0,
-                fig_path: Path | None = None) -> None:
-    z = ds.z.values
+                k_turbidity: float = 0.3,
+                resolution: tuple[int, int, int] = (40, 60, 60),
+                sources: list[dict] | None = None,
+                fig_path: Path | None = None,
+                show: bool = True) -> None:
+    """Render R(lat, lon, z) as a continuous 3D volume.
+
+    Salinity is bilinearly interpolated to a denser grid; turbidity is
+    evaluated analytically at every dense depth (Beer-Lambert is continuous
+    in z by construction). Reward is then computed cell-wise on the dense
+    grid and rendered as a semi-transparent volume in plotly.
+    """
     lat = ds.latitude.values
     lon = ds.longitude.values
-    salinity = ds.salinity.values
-    turbidity = ds.turbidity.values
+    z = ds.z.values
 
-    R = reward_field(salinity, turbidity, s_target, tau_target, sigma_s, sigma_tau)
+    nz, nlat, nlon = resolution
+    z_dense = np.linspace(z.min(), z.max(), nz)            # negative-down
+    lat_dense = np.linspace(lat.min(), lat.max(), nlat)
+    lon_dense = np.linspace(lon.min(), lon.max(), nlon)
+
+    sal_dense = ds.salinity.interp(
+        z=z_dense, latitude=lat_dense, longitude=lon_dense,
+    ).values
+
+    # Turbidity is analytic and continuous in depth — recompute, don't interp.
+    tau_dense = turbidity_model(z_dense, k=k_turbidity)
+    tau_3d = np.broadcast_to(tau_dense[:, None, None], sal_dense.shape)
+
+    R = reward_field(sal_dense, tau_3d, s_target, tau_target, sigma_s, sigma_tau)
     R_max = float(R.max())
-    R_norm = R / R_max if R_max > 0 else R
 
-    Z, LAT, LON = np.meshgrid(z, lat, lon, indexing="ij")
+    Z, LAT, LON = np.meshgrid(z_dense, lat_dense, lon_dense, indexing="ij")
 
-    xs = LON.ravel()
-    ys = LAT.ravel()
-    zs = Z.ravel()
-    rs = R.ravel()
-    rs_n = R_norm.ravel()
-
-    sizes = size_min + (size_max - size_min) * rs_n
-    alphas = 0.05 + 0.95 * rs_n   # faint for low reward, solid at the optima
-
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection="3d")
-
-    cmap = plt.cm.plasma
-    norm = plt.Normalize(vmin=0.0, vmax=max(R_max, 1e-12))
-    rgba = cmap(norm(rs))
-    rgba[:, 3] = alphas                            # per-point alpha
-
-    ax.scatter(xs, ys, zs, s=sizes, c=rgba, edgecolors="none")
+    fig = go.Figure()
+    fig.add_trace(go.Volume(
+        x=LON.flatten(),
+        y=LAT.flatten(),
+        z=Z.flatten(),
+        value=R.flatten(),
+        isomin=0.05 * R_max,
+        isomax=R_max,
+        opacity=0.1,                                      # base transparency
+        opacityscale=[                                    # ramp: low R = invisible
+            [0.0, 0.0],
+            [0.2, 0.05],
+            [0.5, 0.2],
+            [1.0, 0.8],
+        ],
+        surface_count=20,
+        colorscale="Plasma",
+        colorbar=dict(title="reward"),
+        caps=dict(x_show=False, y_show=False, z_show=False),
+        name="reward",
+    ))
 
     # Global maximum
     imax = int(np.argmax(R))
     iz, ilat, ilon = np.unravel_index(imax, R.shape)
-    ax.scatter(
-        lon[ilon], lat[ilat], z[iz],
-        marker="*", c="lime", s=350,
-        edgecolors="black", linewidths=1.2,
-        label=f"global max R={R.flat[imax]:.3f}",
-    )
-    ax.legend(loc="upper right", fontsize=9)
+    fig.add_trace(go.Scatter3d(
+        x=[lon_dense[ilon]], y=[lat_dense[ilat]], z=[z_dense[iz]],
+        mode="markers",
+        marker=dict(size=8, color="lime",
+                    line=dict(color="black", width=1), symbol="diamond"),
+        name=f"global max R={R.flat[imax]:.3f}",
+    ))
 
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.set_zlabel("z [m]")
-    ax.set_title(
-        f"Reward landscape — target (s*={s_target:g}, τ*={tau_target:g}), "
-        f"σ=({sigma_s:g}, {sigma_tau:g})"
-    )
+    if sources:
+        fig.add_trace(go.Scatter3d(
+            x=[s["lon"] for s in sources],
+            y=[s["lat"] for s in sources],
+            z=[-s["depth"] for s in sources],
+            mode="markers+text",
+            text=[s["name"] for s in sources],
+            textposition="top center",
+            marker=dict(size=6, color="red", symbol="x"),
+            name="sources",
+        ))
 
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    fig.colorbar(sm, ax=ax, shrink=0.6, label="reward")
+    fig.update_layout(
+        title=(f"Reward landscape — s*={s_target:g}, τ*={tau_target:g}, "
+               f"σ=({sigma_s:g}, {sigma_tau:g})"),
+        scene=dict(
+            xaxis_title="Longitude",
+            yaxis_title="Latitude",
+            zaxis_title="z [m]",
+        ),
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
 
     if fig_path:
-        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        fig.write_html(str(fig_path))
         print(f"saved {fig_path}")
+    if show:
+        fig.show()
 
 
 def load_sources_for_env(env_path: Path) -> list[dict] | None:
@@ -191,16 +233,20 @@ def main() -> None:
 
     stem = args.env_file.stem
     fig_curr = save_dir / f"{stem}_currents.png" if save_dir else None
-    fig_rew = save_dir / f"{stem}_reward.png" if save_dir else None
+    fig_rew = save_dir / f"{stem}_reward.html" if save_dir else None
 
     plot_currents(ds, sources, stride=args.stride, fig_path=fig_curr)
+    k_turb = float(ds.attrs.get("k_turbidity", 0.3))
     plot_reward(
         ds,
         s_target=s_target,
         tau_target=args.tau_target,
         sigma_s=sigma_s,
         sigma_tau=args.sigma_tau,
+        k_turbidity=k_turb,
+        sources=sources,
         fig_path=fig_rew,
+        show=not args.no_show,
     )
 
     if not args.no_show:
