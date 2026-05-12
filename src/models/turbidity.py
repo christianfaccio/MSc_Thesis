@@ -10,6 +10,6 @@ Beer-Lambert turbidity model.
 import numpy as np
 
 
-def turbidity_model(depth, k: float = 0.3):
+def compute_turbidity(depth, k: float = 0.01):
     """Beer-Lambert depth attenuation. Sign-agnostic in `depth`."""
     return 1.0 - np.exp(-k * np.abs(depth))

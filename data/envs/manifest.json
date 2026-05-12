@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-05-10T10:52:33",
-  "git_commit": "b7675b8",
+  "generated_at": "2026-05-12T15:54:03",
+  "git_commit": "e378fea",
   "n_environments": 1,
   "global_params": {
     "ekman_eddy_viscosity": 0.05,
@@ -24,35 +24,34 @@
       "Kh": 1.0,
       "Kv": 0.001,
       "dt_s": 300.0
-    },
-    "cmems_file": "data/abu_dhabi_ocean_data.nc"
+    }
   },
   "sources": [
     {
-      "name": "Taweelah",
-      "lat": 24.78,
-      "lon": 54.79,
+      "name": "1",
+      "y": 0.0,
+      "x": 22.4,
       "depth": 2.0,
       "Q": 8.0
     },
     {
-      "name": "Umm_Al_Nar",
-      "lat": 24.43,
-      "lon": 54.51,
+      "name": "2",
+      "y": 0.0,
+      "x": 75.7,
       "depth": 2.0,
       "Q": 6.0
     },
     {
-      "name": "Mirfa",
-      "lat": 24.1,
-      "lon": 53.5,
+      "name": "3",
+      "y": 11.4,
+      "x": 0.0,
       "depth": 2.0,
       "Q": 4.0
     },
     {
-      "name": "Jebel_Ali",
-      "lat": 24.96,
-      "lon": 55.04,
+      "name": "4",
+      "y": 45.2,
+      "x": 0.0,
       "depth": 2.0,
       "Q": 5.0
     }
@@ -60,9 +59,9 @@
   "environments": [
     {
       "env_id": 0,
-      "path": "env_000.nc",
-      "cmems_time": "2020-01-01T00:00:00.000000000",
-      "size_bytes": 217319
+      "path": "env_synthetic_000.nc",
+      "cmems_time": "",
+      "size_bytes": 216591
     }
   ]
 }

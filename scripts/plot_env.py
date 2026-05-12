@@ -10,8 +10,8 @@ chosen targets (s*, tau*) — same shape the agent will optimize. Tweak --s-targ
 --tau-target, --sigma-s, --sigma-tau on the CLI.
 
 Usage:
-    uv run scripts/plot_env.py data/envs/env_000.nc
-    uv run scripts/plot_env.py data/envs/env_000.nc --s-target 1e-5 --tau-target 0.7
+    uv run scripts/plot_env.py data/envs/env_synthetic_000.nc
+    uv run scripts/plot_env.py data/envs/env_synthetic_000.nc --s-target 1e-5 --tau-target 0.7
 """
 
 import argparse
@@ -27,7 +27,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3d projection)
 import sys
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
-from src.models.turbidity import turbidity_model  # noqa: E402
+from src.models.turbidity import compute_turbidity  # noqa: E402
 
 
 def reward_field(salinity: np.ndarray, turbidity: np.ndarray,
@@ -39,15 +39,21 @@ def reward_field(salinity: np.ndarray, turbidity: np.ndarray,
     return np.exp(-(ds**2 + dt**2))
 
 
+def _source_xy(src: dict) -> tuple[float, float]:
+    """Return (x, y) in the bundle frame regardless of source schema."""
+    if "x" in src and "y" in src:
+        return float(src["x"]), float(src["y"])
+    return float(src["lon"]), float(src["lat"])
+
+
 def plot_currents(ds: xr.Dataset, sources: list[dict] | None,
                   stride: int = 2, fig_path: Path | None = None) -> None:
-    z = ds.z.values
-    lat = ds.latitude.values
-    lon = ds.longitude.values
+    depth = ds.depth.values            # positive-down [m]
+    y = ds.y.values
+    x = ds.x.values
 
-    # Subsample for legibility
     s = stride
-    Z, LAT, LON = np.meshgrid(z, lat[::s], lon[::s], indexing="ij")
+    Z, Y, X = np.meshgrid(-depth, y[::s], x[::s], indexing="ij")
     U = ds.u.values[:, ::s, ::s]
     V = ds.v.values[:, ::s, ::s]
     W = ds.w.values[:, ::s, ::s]
@@ -56,30 +62,39 @@ def plot_currents(ds: xr.Dataset, sources: list[dict] | None,
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
 
-    # Color arrows by speed
     smin, smax = float(speed.min()), float(speed.max())
     norm = plt.Normalize(smin, smax if smax > smin else smin + 1e-9)
     colors = plt.cm.viridis(norm(speed.ravel()))
 
+    # Scale arrow length to ~5% of the larger horizontal extent so vectors are
+    # visible regardless of whether x/y are degrees (~1) or meters (~100).
+    domain_size = max(float(x.max() - x.min()), float(y.max() - y.min()))
+    arrow_length = 0.05 * domain_size if domain_size > 0 else 0.05
+
     ax.quiver(
-        LON, LAT, Z, U, V, W,
-        length=0.05, normalize=True, colors=colors, linewidth=0.6,
+        X, Y, Z, U, V, W,
+        length=arrow_length, normalize=True, colors=colors, linewidth=0.6,
     )
 
     if sources:
         for src in sources:
+            sx, sy = _source_xy(src)
             ax.scatter(
-                src["lon"], src["lat"], -src["depth"],
+                sx, sy, -float(src["depth"]),
                 c="red", s=80, marker="X",
                 edgecolors="black", linewidths=1.0,
                 label=src["name"],
             )
         ax.legend(loc="upper right", fontsize=8)
 
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
     ax.set_zlabel("z [m]  (negative = depth)")
-    ax.set_title(f"Currents — {ds.attrs.get('cmems_time', 'unknown')}")
+    if "time" in ds.coords:
+        time_str = str(ds.time.values[0])
+    else:
+        time_str = ds.attrs.get("cmems_time", "unknown")
+    ax.set_title(f"Currents — {time_str}")
 
     sm = plt.cm.ScalarMappable(cmap="viridis", norm=norm)
     sm.set_array([])
@@ -97,45 +112,46 @@ def plot_reward(ds: xr.Dataset, s_target: float, tau_target: float,
                 sources: list[dict] | None = None,
                 fig_path: Path | None = None,
                 show: bool = True) -> None:
-    """Render R(lat, lon, z) as a continuous 3D volume.
+    """Render R(x, y, depth) as a continuous 3D volume.
 
     Salinity is bilinearly interpolated to a denser grid; turbidity is
     evaluated analytically at every dense depth (Beer-Lambert is continuous
     in z by construction). Reward is then computed cell-wise on the dense
     grid and rendered as a semi-transparent volume in plotly.
     """
-    lat = ds.latitude.values
-    lon = ds.longitude.values
-    z = ds.z.values
+    y = ds.y.values
+    x = ds.x.values
+    depth = ds.depth.values
 
-    nz, nlat, nlon = resolution
-    z_dense = np.linspace(z.min(), z.max(), nz)            # negative-down
-    lat_dense = np.linspace(lat.min(), lat.max(), nlat)
-    lon_dense = np.linspace(lon.min(), lon.max(), nlon)
+    nz, ny, nx = resolution
+    depth_dense = np.linspace(depth.min(), depth.max(), nz)
+    y_dense = np.linspace(y.min(), y.max(), ny)
+    x_dense = np.linspace(x.min(), x.max(), nx)
 
-    sal_dense = ds.salinity.interp(
-        z=z_dense, latitude=lat_dense, longitude=lon_dense,
-    ).values
+    sal_dense = (
+        ds.salinity.swap_dims({"z": "depth"})
+        .interp(depth=depth_dense, y=y_dense, x=x_dense)
+        .values
+    )
 
-    # Turbidity is analytic and continuous in depth — recompute, don't interp.
-    tau_dense = turbidity_model(z_dense, k=k_turbidity)
+    tau_dense = compute_turbidity(depth_dense, k=k_turbidity)
     tau_3d = np.broadcast_to(tau_dense[:, None, None], sal_dense.shape)
 
     R = reward_field(sal_dense, tau_3d, s_target, tau_target, sigma_s, sigma_tau)
     R_max = float(R.max())
 
-    Z, LAT, LON = np.meshgrid(z_dense, lat_dense, lon_dense, indexing="ij")
+    Z, Y, X = np.meshgrid(-depth_dense, y_dense, x_dense, indexing="ij")
 
     fig = go.Figure()
     fig.add_trace(go.Volume(
-        x=LON.flatten(),
-        y=LAT.flatten(),
+        x=X.flatten(),
+        y=Y.flatten(),
         z=Z.flatten(),
         value=R.flatten(),
         isomin=0.05 * R_max,
         isomax=R_max,
-        opacity=0.1,                                      # base transparency
-        opacityscale=[                                    # ramp: low R = invisible
+        opacity=0.1,
+        opacityscale=[
             [0.0, 0.0],
             [0.2, 0.05],
             [0.5, 0.2],
@@ -148,11 +164,10 @@ def plot_reward(ds: xr.Dataset, s_target: float, tau_target: float,
         name="reward",
     ))
 
-    # Global maximum
     imax = int(np.argmax(R))
-    iz, ilat, ilon = np.unravel_index(imax, R.shape)
+    iz, iy, ix = np.unravel_index(imax, R.shape)
     fig.add_trace(go.Scatter3d(
-        x=[lon_dense[ilon]], y=[lat_dense[ilat]], z=[z_dense[iz]],
+        x=[x_dense[ix]], y=[y_dense[iy]], z=[-depth_dense[iz]],
         mode="markers",
         marker=dict(size=8, color="lime",
                     line=dict(color="black", width=1), symbol="diamond"),
@@ -160,12 +175,17 @@ def plot_reward(ds: xr.Dataset, s_target: float, tau_target: float,
     ))
 
     if sources:
+        sx_list, sy_list, sz_list, names = [], [], [], []
+        for src in sources:
+            sx, sy = _source_xy(src)
+            sx_list.append(sx)
+            sy_list.append(sy)
+            sz_list.append(-float(src["depth"]))
+            names.append(src["name"])
         fig.add_trace(go.Scatter3d(
-            x=[s["lon"] for s in sources],
-            y=[s["lat"] for s in sources],
-            z=[-s["depth"] for s in sources],
+            x=sx_list, y=sy_list, z=sz_list,
             mode="markers+text",
-            text=[s["name"] for s in sources],
+            text=names,
             textposition="top center",
             marker=dict(size=6, color="red", symbol="x"),
             name="sources",
@@ -175,8 +195,8 @@ def plot_reward(ds: xr.Dataset, s_target: float, tau_target: float,
         title=(f"Reward landscape — s*={s_target:g}, τ*={tau_target:g}, "
                f"σ=({sigma_s:g}, {sigma_tau:g})"),
         scene=dict(
-            xaxis_title="Longitude",
-            yaxis_title="Latitude",
+            xaxis_title="x [m]",
+            yaxis_title="y [m]",
             zaxis_title="z [m]",
         ),
         margin=dict(l=0, r=0, t=40, b=0),
@@ -210,7 +230,7 @@ def parse_args() -> argparse.Namespace:
                    help="salinity bandwidth; default = 0.25 * field max")
     p.add_argument("--sigma-tau", type=float, default=0.15)
     p.add_argument("--stride", type=int, default=2,
-                   help="quiver subsampling stride in lat/lon")
+                   help="quiver subsampling stride in x/y")
     p.add_argument("--save-dir", type=Path, default="data/plots",
                    help="if set, save PNGs here instead of showing interactively")
     p.add_argument("--no-show", action="store_true")

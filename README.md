@@ -17,6 +17,41 @@ cd SwarmSwIM
 uv pip install -e .
 ```
 
+## Structure
+
+```
+.
+├── config                          # OK
+│   ├── default.xml
+│   ├── simulation.xml
+│   ├── single_agent.xml
+│   └── sources.json
+├── data                            # OK
+│   ├── abu_dhabi_ocean_data.nc
+│   ├── envs
+│   ├── GSHHS
+│   └── plots
+├── docs                            # OK
+├── README.md
+├── requirements.txt
+├── scripts                         # OK
+│   ├── __init__.py
+│   ├── plot_env.py
+│   └── precompute_envs.py
+├── src                            
+│   ├── __init__.py
+│   ├── envs                        # TODO
+│   ├── eval.py                     # TODO
+│   ├── models                      # OK
+│   ├── multi_agent                 # TODO
+│   ├── single_agent                # OK
+│   ├── train.py                    # TODO
+│   └── utils
+├── SwarmSwIM
+├── tests                           # TODO
+└── thesis
+```
+
 ## Roadmap
 
 ### Step 1: Environment

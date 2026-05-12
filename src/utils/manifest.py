@@ -48,8 +48,8 @@ def write_manifest(
         "sources": [
             {
                 "name": s["name"],
-                "lat": s["lat"],
-                "lon": s["lon"],
+                "y": s["y"],
+                "x": s["x"],
                 "depth": s["depth"],
                 "Q": s["Q"],
             }

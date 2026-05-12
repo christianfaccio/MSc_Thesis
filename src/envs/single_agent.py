@@ -5,6 +5,9 @@ import numpy as np
 from SwarmSwIM import Simulator
 from ..single_agent.reward import reward_func
 import itertools
+from src.models.salinity import compute_salinity_analytical
+from src.models.turbidity import compute_turbidity
+from src.utils.sources import load_sources
 
 # TODO: implement the BaseEnv and inherit from that instead of gym.Env
 class SingleAgentEnv(gym.Env):
@@ -24,8 +27,8 @@ class SingleAgentEnv(gym.Env):
     '''
     # NOTE: ok
     def __init__(self,
-                 sim_xml,
-                 manifest,
+                 xml_file: str,
+                 source_file: str,
                  k=4,
                  v_agent = 0.5,
                  max_steps = 512,
@@ -35,8 +38,8 @@ class SingleAgentEnv(gym.Env):
                  ):
         super().__init__()
 
-        self.sim_xml = sim_xml 
-        self.manifest = manifest 
+        self.sim_xml = xml_file
+        self.sources = load_sources(source_file)
         self.k = k 
         self.v = v_agent
         self.max_steps = max_steps
@@ -57,7 +60,7 @@ class SingleAgentEnv(gym.Env):
         self.sim = None
 
     # NOTE: ok (except TODOs)
-    def reset(self, seed=None):
+    def reset(self, seed=None) -> np.array:
         '''
         Method that initializes an environment. 
 
@@ -69,15 +72,8 @@ class SingleAgentEnv(gym.Env):
         '''
         super().reset(seed=seed)
 
-        # pick a random precomputed env
-        env_id = self.np_random.integers(len(self.manifest))
-        netCdf_path = self.manifest[env_id]
-        # TODO: subsample it to have a 1km x 1km domain
-
         # Create the env (Simulator class)
-        self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.sim_xml, netCdf_path=netCdf_path)    # NOTE: it instantiates an OceanDataCurrent 
-                                                                                                        # model (configured via .xml) and the relative 
-                                                                                                        # params need to be written in the file
+        self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.sim_xml)    
 
         # Initialize agents randomly. NOTE: already initialized in the Simulator class,
         # but TODO: add the possibility to initialize randomly
@@ -105,27 +101,18 @@ class SingleAgentEnv(gym.Env):
         # Translate action into movement 
         mov = self._action_to_direction[action]
         agent = self.sim.agents[0]
-        agent.cmd_local_vel = np.array([mov[0]*self.v, mov[1]*self.v])
-        agent.cmd_heave = mov[2]*self.v
-        agent.cmd_heading = np.rad2deg(np.arctan2(mov[0], mov[1])) # NOTE: heading now auto-tracks motion direction,
-                                                                # simple but not fully realistic. Probably needs 
-                                                                # to be changed or at least discussed.
+        agent.cmd_local_vel = np.array([mov[0]*self.v, mov[1]*self.v])  # surge (x) and sway (y)
+        agent.cmd_heave = mov[2]*self.v                                 # heave (z)
+        agent.cmd_heading = np.rad2deg(np.arctan2(mov[0], mov[1]))      # NOTE: heading now auto-tracks motion direction,
+                                                                        # simple but not fully realistic. Probably needs 
+                                                                        # to be changed or at least discussed.
         
         # Doing the step in the sim
         self.sim.tick()
         self.t_step += 1
 
-        # Reward computation
-        S = self.sim.current_3d.query_salinity(agent, sim_time=self.sim.time)
-        tau = self.sim.current_3d.query_turbidity(agent, sim_time=self.sim.time)
-        reward = reward_func(S, tau)
-
-        # Update history
-        self.history = np.roll(self.history, -1, axis=0)
-        self.history[-1] = [action, reward]
-
         # Next state (s')
-        next_obs = self._build_state(agent)
+        next_obs, reward = self._build_state(agent, action)
         truncated = (self.t_step >= self.max_steps)
         terminated = False 
         
@@ -138,7 +125,7 @@ class SingleAgentEnv(gym.Env):
         norms[norms==0] = 1.0
         return table / norms 
 
-    def _build_state(self, agent) -> np.array:
+    def _build_state(self, agent, action = None) -> np.array:
          '''
          Returns the state of dimension 2k+9.
 
@@ -147,21 +134,26 @@ class SingleAgentEnv(gym.Env):
             - horizontal current magnitude
             - horizontal current direction (sin,cos -> 2)
             - vertical current
-         (3)    -> salinity, turbidity, depth (, temperature?)
+         (3)    -> salinity, turbidity, depth 
          (2)    -> heading (sin,cos)
 
          Returns:
             - np.array of dim (2k+9,)
          '''
-         currents = self.sim.current_3d.calculate(agent, sim_time=self.sim.time)
+         salinity = compute_salinity_analytical(x=agent.pos[0],y=agent.pos[1],z=agent.pos[2], sources=self.sources)
+         turbidity = compute_turbidity(depth=agent.pos[2])
+         reward = reward_func(salinity, turbidity)
+         if action is not None:
+            self.history = np.roll(self.history, -1, axis=0)
+            self.history[-1] = [action, reward]
+
+         currents = self.sim.current_3d.calculate(agent)
          u = currents[0] * np.cos(np.deg2rad(agent.psi)) + currents[1] * np.sin(np.deg2rad(agent.psi))
          v = currents[0] * np.sin(np.deg2rad(agent.psi)) - currents[1] * np.cos(np.deg2rad(agent.psi))
          r_h = np.hypot(u, v)                                                                           # rotation-invariant
          theta = (v/r_h, u/r_h) if r_h > 1e-9 else (0.0, 1.0) 
          w = currents[2]                                                                                # rotation-invariant
 
-         salinity = self.sim.current_3d.query_salinity(agent)
-         turbidity = self.sim.current_3d.query_turbidity(agent)
          depth = agent.measured_depth
 
          heading = (np.sin(np.deg2rad(agent.measured_heading)), np.cos(np.deg2rad(agent.measured_heading)))
@@ -172,6 +164,6 @@ class SingleAgentEnv(gym.Env):
              theta,
              np.array([salinity, turbidity, depth]),
              heading
-             ]).astype(np.float32)
+             ]).astype(np.float32), reward
 
 

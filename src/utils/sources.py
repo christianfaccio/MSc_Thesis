@@ -7,8 +7,8 @@ import xarray as xr
 
 class Source(TypedDict):
     name:  str
-    lat:   float
-    lon:   float
+    y:   float
+    x:   float
     depth: float
     Q:     float
 
@@ -19,7 +19,7 @@ def load_sources(path: str | Path) -> list[Source]:
     with path.open() as f:
         sources: list[Source] = json.load(f)
 
-    required = {"name", "lat", "lon", "depth", "Q"}
+    required = {"name", "y", "x", "depth", "Q"}
     for i, s in enumerate(sources):
         missing = required - set(s)
         if missing:
@@ -33,7 +33,7 @@ def load_sources(path: str | Path) -> list[Source]:
 
     return sources
 
-
+# TODO: check
 def validate_in_domain(sources: list[Source], cmems: xr.Dataset) -> None:
     """Check that every source lies inside the CMEMS bounding box."""
     lat_min, lat_max = float(cmems.latitude.min()),  float(cmems.latitude.max())
