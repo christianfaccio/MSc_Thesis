@@ -1,6 +1,6 @@
 import gymnasium as gym 
 from abc import ABC, abstractmethod 
-from SwarmSwIM.SwarmSwIM import Simulator
+from SwarmSwIM import Simulator
 
 class BaseEnv(gym.Env):
     def __init__(self):

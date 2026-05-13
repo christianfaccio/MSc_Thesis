@@ -1,5 +1,3 @@
-CLAUDE.md
-.claude
 .DS_Store
 .venv/
 data/
@@ -7,3 +5,5 @@ thesis/
 *.ipynb
 __pycache__/
 .vscode/
+CLAUDE.md
+.claude/

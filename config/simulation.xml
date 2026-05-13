@@ -158,7 +158,7 @@
     <agents>
         <agent_type> 
             <!-- reference xml describing the agent -->
-            <description>default.xml</description>
+            <description>single_agent.xml</description>
             <!-- Name prefix -->
             <name>A</name>
             <state>
