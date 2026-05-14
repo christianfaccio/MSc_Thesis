@@ -1,11 +1,10 @@
 '''
-Classical implementation of the PPO algorithm, modified starting from 
+Classical implementation of the PPO algorithm, modified starting from
 the implementation of CleanRL.
 '''
-import os
 import random
 import time
-from dataclasses import dataclass
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -14,86 +13,28 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 
+from src.utils.args_class import Args
 from torch.utils.tensorboard import SummaryWriter
-from policy import CustomPolicy
+from src.single_agent.policy import CustomPolicy
+from src.envs.single_agent import SingleAgentEnv
 
-@dataclass
-class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
-    seed: int = 1
-    """seed of the experiment"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
-    """the wandb's project name"""
-    wandb_entity: str = None
-    """the entity (team) of wandb's project"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
-
-    # Algorithm specific arguments
-    env_id: str = "CartPole-v1"
-    """the id of the environment"""
-    total_timesteps: int = 500000
-    """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
-    """the learning rate of the optimizer"""
-    num_envs: int = 6   # NOTE: match the number of CPU cores?
-    """the number of parallel game environments"""
-    num_steps: int = 512
-    """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
-    """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.99
-    """the discount factor gamma"""
-    gae_lambda: float = 0.95
-    """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
-    """the number of mini-batches"""
-    update_epochs: int = 4
-    """the K epochs to update the policy"""
-    norm_adv: bool = True
-    """Toggles advantages normalization"""
-    clip_coef: float = 0.2
-    """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
-    """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.01
-    """coefficient of the entropy"""
-    vf_coef: float = 0.5
-    """coefficient of the value function"""
-    max_grad_norm: float = 0.5
-    """the maximum norm for the gradient clipping"""
-    target_kl: float = None
-    """the target KL divergence threshold"""
-
-    # to be filled in runtime
-    batch_size: int = 0
-    """the batch size (computed in runtime)"""
-    minibatch_size: int = 0
-    """the mini-batch size (computed in runtime)"""
-    num_iterations: int = 0
-    """the number of iterations (computed in runtime)"""
-
-def make_env(env_id, idx, capture_video, run_name):
+def make_env(args):
     def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id)
+        env = SingleAgentEnv(
+            xml_file=args.xml_file,
+            n_sources=args.n_sources,
+            k=args.k,
+            v_agent=args.v_agent,
+            max_steps=args.max_steps,
+            dt=args.dt,
+            domain=args.domain,
+        )
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
 
     return thunk
 
-if __name__ == "__main__":
-    args = tyro.cli(Args)
+def train(args):
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
@@ -126,12 +67,26 @@ if __name__ == "__main__":
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
+        [make_env(args) for _ in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = CustomPolicy(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+
+    # Resume from checkpoint if requested
+    start_iteration = 1
+    global_step = 0
+    if args.resume is not None:
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        agent.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_iteration = ckpt["iteration"] + 1
+        global_step = ckpt["global_step"]
+        torch.set_rng_state(ckpt["torch_rng"])
+        np.random.set_state(ckpt["np_rng"])
+        random.setstate(ckpt["py_rng"])
+        print(f"Resumed from {args.resume}: iteration={start_iteration}, global_step={global_step}")
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -142,37 +97,37 @@ if __name__ == "__main__":
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
     # TRY NOT TO MODIFY: start the game
-    global_step = 0
     start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-    for iteration in range(1, args.num_iterations + 1):
+    for iteration in range(start_iteration, args.num_iterations + 1): # NOTE: cycle through iterations (episodes) (outer loop)
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        for step in range(0, args.num_steps):
-            global_step += args.num_envs
-            obs[step] = next_obs
-            dones[step] = next_done
+        for step in range(0, args.num_steps):   # NOTE: cycle through steps in single episode (inner loop)
+            global_step += args.num_envs        # increase global counter
+            obs[step] = next_obs                # save the obs
+            dones[step] = next_done             # save termination condition
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
-                values[step] = value.flatten()
-            actions[step] = action
-            logprobs[step] = logprob
+                action, logprob, _, value = agent.get_action_and_value(next_obs)    # NOTE: calls the policy with the obs vector
+                values[step] = value.flatten()      # record the state value
+            actions[step] = action                  # record the action
+            logprobs[step] = logprob                # record the logprobs
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
-            next_done = np.logical_or(terminations, truncations)
-            rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
+            next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())    # NOTE: run the single step
+            next_done = np.logical_or(terminations, truncations)                                    # termination logic
+            rewards[step] = torch.tensor(reward).to(device).view(-1)                                # record the reward
+            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device) # updates state
 
+            # NOTE: logging 
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info and "episode" in info:
@@ -180,7 +135,11 @@ if __name__ == "__main__":
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
-        # bootstrap value if not done
+        # NOTE: here the steps are ended, but we are still in a single iteration, so we 
+        # need to update the policy
+
+        # bootstrap value if not done (means use the critic's value estimate as 
+        # return instead of 0, the value it gets at episode end)
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
@@ -274,5 +233,30 @@ if __name__ == "__main__":
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
+        # Checkpoint save
+        if args.save_model and (iteration % args.save_every_iterations == 0 or iteration == args.num_iterations):
+            ckpt_dir = Path(args.checkpoint_dir) / run_name / "checkpoints"
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = ckpt_dir / f"iter_{iteration:04d}.pt"
+            torch.save({
+                "iteration": iteration,
+                "global_step": global_step,
+                "model_state_dict": agent.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "torch_rng": torch.get_rng_state(),
+                "np_rng": np.random.get_state(),
+                "py_rng": random.getstate(),
+                "args": vars(args),
+            }, ckpt_path)
+            latest = ckpt_dir / "latest.pt"
+            if latest.exists() or latest.is_symlink():
+                latest.unlink()
+            latest.symlink_to(ckpt_path.name)
+            print(f"Saved checkpoint: {ckpt_path}")
+
     envs.close()
     writer.close()
+
+if __name__ == "__main__":
+    args = tyro.cli(Args)
+    train(args)

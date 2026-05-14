@@ -5,12 +5,16 @@ import numpy as np
 # angle to shorten time and save energy)
 def reward_func(measured_S: float, measured_tau: float,
                 target_S: float, target_tau: float,
-                sigma_s: float = 1.0, sigma_tau: float = 1.0) -> float:
+                sigma_s: float = 2.0, sigma_tau: float = 0.2) -> float:
     '''
-    Computes the reward function for the agent. 
+    Computes the reward function for the agent.
     It is a function of the target (S,tau) couple.
 
     R = exp( − ((S − S*)/σ_S)²  −  ((τ − τ*)/σ_τ)² )
+
+    Default sigmas chosen to balance the two channels:
+    salinity range ~[0, ~5] under default sources → σ_S=2.0,
+    turbidity range ~[0, ~0.6] under Beer-Lambert → σ_τ=0.2.
     '''
     return np.exp(
         -((measured_S - target_S) / sigma_s) ** 2

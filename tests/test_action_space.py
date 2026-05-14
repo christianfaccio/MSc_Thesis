@@ -7,8 +7,8 @@ from src.envs.single_agent import SingleAgentEnv
 
 
 @pytest.fixture
-def env(tmp_sources_json):
-    return SingleAgentEnv(xml_file="unused.xml", source_file=tmp_sources_json)
+def env():
+    return SingleAgentEnv(xml_file="unused.xml", n_sources=2)
 
 
 def test_action_table_shape(env):
@@ -47,9 +47,9 @@ def test_specific_axis_unit_vector(env):
     assert np.allclose(vec, [1.0, 0.0, 0.0])
 
 
-def test_action_table_is_deterministic(tmp_sources_json):
-    env_a = SingleAgentEnv(xml_file="unused.xml", source_file=tmp_sources_json)
-    env_b = SingleAgentEnv(xml_file="unused.xml", source_file=tmp_sources_json)
+def test_action_table_is_deterministic():
+    env_a = SingleAgentEnv(xml_file="unused.xml", n_sources=2)
+    env_b = SingleAgentEnv(xml_file="unused.xml", n_sources=2)
     assert np.allclose(env_a._action_to_direction, env_b._action_to_direction)
 
 
@@ -59,7 +59,7 @@ def test_all_norms_in_zero_or_one(env):
         assert n == pytest.approx(0.0) or n == pytest.approx(1.0)
 
 
-def test_observation_space_dim_matches_formula(tmp_sources_json):
+def test_observation_space_dim_matches_formula():
     for k in (1, 4, 8):
-        env = SingleAgentEnv(xml_file="unused.xml", source_file=tmp_sources_json, k=k)
-        assert env.observation_space.shape == (2 * k + 6,)
+        env = SingleAgentEnv(xml_file="unused.xml", n_sources=2, k=k)
+        assert env.observation_space.shape == (2 * k + 7,)

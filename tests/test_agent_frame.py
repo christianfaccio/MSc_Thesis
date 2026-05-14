@@ -61,11 +61,11 @@ def test_involution_round_trip(psi):
     assert out == pytest.approx(inp)
 
 
-def test_matches_env_implementation(tmp_sources_json):
+def test_matches_env_implementation():
     """Regression-pin: the helper here must equal what the env computes inline."""
     from src.envs.single_agent import SingleAgentEnv
 
-    env = SingleAgentEnv(xml_file="unused.xml", source_file=tmp_sources_json)
+    env = SingleAgentEnv(xml_file="unused.xml", n_sources=2)
     # Replicate the env's exact lines for a sample input and confirm equality.
     currents = np.array([0.4, -0.2, 0.05])
     psi_deg = 37.0

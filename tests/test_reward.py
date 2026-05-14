@@ -37,12 +37,12 @@ def test_bounded_between_zero_and_one():
 
 
 def test_known_value_unit_sigma_unit_error():
-    r = reward_func(1.0, 0.0, 0.0, 0.0)
+    r = reward_func(1.0, 0.0, 0.0, 0.0, sigma_s=1.0, sigma_tau=1.0)
     assert r == pytest.approx(math.exp(-1.0))
 
 
 def test_coupling_independent_axes():
-    r = reward_func(1.0, 1.0, 0.0, 0.0)
+    r = reward_func(1.0, 1.0, 0.0, 0.0, sigma_s=1.0, sigma_tau=1.0)
     assert r == pytest.approx(math.exp(-2.0))
 
 

@@ -7,3 +7,5 @@ __pycache__/
 .vscode/
 CLAUDE.md
 .claude/
+.pytest_cache/
+runs/
