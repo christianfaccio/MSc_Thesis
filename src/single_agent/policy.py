@@ -25,7 +25,7 @@ class CustomPolicy(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
+            layer_init(nn.Linear(64, envs.single_action_space.n), std=1.0),
         )
 
     def get_value(self, x):

@@ -3,7 +3,7 @@ import numpy as np
 # 
 def reward_func(measured_S: float, measured_tau: float,
                 target_S: float, target_tau: float,
-                sigma_s: float = 2.0, sigma_tau: float = 0.2) -> float:
+                sigma_s: float = 2.0, sigma_tau: float = 0.8) -> float:
     '''
     Computes the reward function for the agent.
 
