@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import TypedDict
 import numpy as np
 
-import xarray as xr
+# xarray imported lazily inside validate_in_domain() so training doesn't need it.
 
 
 class Source(TypedDict):
@@ -58,8 +58,8 @@ def load_sources(path: str | Path) -> list[Source]:
     return sources
 
 # TODO: check
-def validate_in_domain(sources: list[Source], cmems: xr.Dataset) -> None:
-    """Check that every source lies inside the CMEMS bounding box."""
+def validate_in_domain(sources: list[Source], cmems) -> None:
+    """Check that every source lies inside the CMEMS bounding box (cmems: xarray.Dataset)."""
     lat_min, lat_max = float(cmems.latitude.min()),  float(cmems.latitude.max())
     lon_min, lon_max = float(cmems.longitude.min()), float(cmems.longitude.max())
     depth_max = float(cmems.depth.max())

@@ -1,6 +1,32 @@
 '''
 Classical implementation of the PPO algorithm, modified starting from
 the implementation of CleanRL.
+
+Usage (from root):
+    - in one terminal start the training    -> `python run -m src/single_agent/ppo.py`
+    - in another one start tensorboard      -> `tensorboard --logdir runs --port 6006`
+    (opt) look at it in the web             -> `ssh -L 6006:localhost:6006 username@<ip>`
+
+Pseudocode:
+```
+1.  Initialize actor and critic networks 
+2.  for episode do:
+3.      for step do:
+4.          Observe current state s_t
+5.          Sample action a_t from policy
+6.          Apply action, observe reward r_t and next state s_{t+1}
+7.          old_policy <- current_policy
+8.          for epoch do:
+9.              compute importance sampling weights (rho)
+10.             if s_{t+1} terminal:
+11.                 Adv(s,a) <- r_t - V(s_t)
+12.                 y_t <- r_t
+13.             else:
+14.                 Adv(s,a) <- r_t + disc * V(s_{t+1}) - V(s_t)
+15.                 y_t <- r_t + disc * V(s_{t+1})
+16.             Compute actor and critic losses
+17.             Update networks' params
+```
 '''
 import random
 import time
@@ -13,10 +39,103 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 
-from src.utils.args_class import Args
 from torch.utils.tensorboard import SummaryWriter
 from src.single_agent.policy import CustomPolicy
 from src.envs.single_agent import SingleAgentEnv
+
+from dataclasses import dataclass
+
+DEBUG=True
+
+
+@dataclass
+class Args:
+    exp_name: str = "ppo"
+    """the name of this experiment"""
+    seed: int = 1
+    """seed of the experiment"""
+    torch_deterministic: bool = True
+    """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    cuda: bool = True
+    """if toggled, cuda will be enabled by default"""
+    track: bool = False
+    """if toggled, this experiment will be tracked with Weights and Biases"""
+    wandb_project_name: str = "cleanRL"
+    """the wandb's project name"""
+    wandb_entity: str = None
+    """the entity (team) of wandb's project"""
+    capture_video: bool = False
+    """whether to capture videos of the agent performances (check out `videos` folder)"""
+
+    # Environment arguments
+    env_id: str = "SingleAgent-v0"
+    """the id of the environment"""
+    xml_file: str = "config/simulation.xml"
+    """SwarmSwIM simulation XML"""
+    n_sources: int = 4
+    """number of pollution sources spawned each reset"""
+    k: int = 4
+    """history buffer length for (action, reward) pairs"""
+    v_agent: float = 1.0
+    """agent commanded speed (m/s)"""
+    max_steps: int = 1024
+    """maximum env steps per episode before truncation"""
+    dt: float = 0.1
+    """simulator timestep (s) per env step"""
+    domain: tuple[float, float, float] = (100.0, 100.0, 100.0)
+    """domain extent in (x, y, z) meters"""
+
+    # Algorithm specific arguments
+    total_timesteps: int = 500000   # NOTE: better to make it a multiple of (num_envs * num_steps)
+    """total timesteps of the experiments"""
+    learning_rate: float = 2.5e-4
+    """the learning rate of the optimizer"""
+    num_envs: int = 6   # NOTE: should match the number of CPU cores
+    """the number of parallel game environments"""
+    num_steps: int = 512
+    """the number of steps to run in each environment per policy rollout"""
+    anneal_lr: bool = True
+    """Toggle learning rate annealing for policy and value networks"""
+    gamma: float = 0.99
+    """the discount factor gamma"""
+    gae_lambda: float = 0.95
+    """the lambda for the general advantage estimation"""
+    num_minibatches: int = 4
+    """the number of mini-batches"""
+    update_epochs: int = 4
+    """the K epochs to update the policy"""
+    norm_adv: bool = True
+    """Toggles advantages normalization"""
+    clip_coef: float = 0.2
+    """the surrogate clipping coefficient"""
+    clip_vloss: bool = True
+    """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
+    ent_coef: float = 0.01
+    """coefficient of the entropy"""
+    vf_coef: float = 0.5
+    """coefficient of the value function"""
+    max_grad_norm: float = 0.5
+    """the maximum norm for the gradient clipping"""
+    target_kl: float = None
+    """the target KL divergence threshold"""
+
+    # Checkpointing
+    save_model: bool = True
+    """if toggled, periodically save model + optimizer + RNG state checkpoints"""
+    save_every_iterations: int = 20
+    """save a checkpoint every N PPO iterations (and always on the final iteration)"""
+    checkpoint_dir: str = "runs"
+    """parent directory for checkpoints; full path is <checkpoint_dir>/<run_name>/checkpoints/"""
+    resume: str = None
+    """path to a checkpoint .pt file to resume training from"""
+
+    # to be filled in runtime
+    batch_size: int = 0
+    """the batch size (computed in runtime)"""
+    minibatch_size: int = 0
+    """the mini-batch size (computed in runtime)"""
+    num_iterations: int = 0
+    """the number of iterations (computed in runtime)"""
 
 def make_env(args):
     def thunk():
@@ -39,6 +158,10 @@ def train(args):
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    if DEBUG:
+        print("--- INFO ---\n")
+        print(f"Run name: {run_name}\nBatch size: {args.batch_size}\nMinibatch size: {args.minibatch_size}\nEpisodes: {args.num_iterations}\n")
+    
     if args.track:
         import wandb
 
@@ -64,8 +187,12 @@ def train(args):
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    if DEBUG:
+        print(f"Device: {device}")
 
     # env setup
+    if DEBUG:
+        print(f"--- Setting up the environment...")
     envs = gym.vector.SyncVectorEnv(
         [make_env(args) for _ in range(args.num_envs)],
     )
@@ -86,7 +213,8 @@ def train(args):
         torch.set_rng_state(ckpt["torch_rng"])
         np.random.set_state(ckpt["np_rng"])
         random.setstate(ckpt["py_rng"])
-        print(f"Resumed from {args.resume}: iteration={start_iteration}, global_step={global_step}")
+        if DEBUG:
+            print(f"Resumed from {args.resume}: iteration={start_iteration}, global_step={global_step}")
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -96,6 +224,8 @@ def train(args):
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
+    if DEBUG:
+        print("--- GAME START ---")
     # TRY NOT TO MODIFY: start the game
     start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
@@ -114,35 +244,46 @@ def train(args):
             obs[step] = next_obs                # save the obs
             dones[step] = next_done             # save termination condition
 
-            # ALGO LOGIC: action logic
+            # ALGO LOGIC: sample action
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(next_obs)    # NOTE: calls the policy with the obs vector
                 values[step] = value.flatten()      # record the state value
             actions[step] = action                  # record the action
             logprobs[step] = logprob                # record the logprobs
 
-            # TRY NOT TO MODIFY: execute the game and log data.
+            # TRY NOT TO MODIFY: apply action, observe reward and next state, save
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())    # NOTE: run the single step
             next_done = np.logical_or(terminations, truncations)                                    # termination logic
             rewards[step] = torch.tensor(reward).to(device).view(-1)                                # record the reward
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device) # updates state
 
-            # NOTE: logging 
-            if "final_info" in infos:
+            # Episode-end logging — handle both Gymnasium APIs
+            if "episode" in infos:
+                # Gymnasium 1.x: infos["episode"]["r"]/["l"] are arrays, infos["_episode"] is the mask
+                ep_r = infos["episode"]["r"]
+                ep_l = infos["episode"]["l"]
+                mask = infos.get("_episode", [True] * len(ep_r))
+                for i, finished in enumerate(mask):
+                    if finished:
+                        r_val = float(ep_r[i])
+                        l_val = float(ep_l[i])
+                        print(f"global_step={global_step}, episodic_return={r_val:.3f}, episodic_length={l_val:.0f}")
+                        writer.add_scalar("charts/episodic_return", r_val, global_step)
+                        writer.add_scalar("charts/episodic_length", l_val, global_step)
+            elif "final_info" in infos:
+                # Older Gymnasium API (≤ 0.29)
                 for info in infos["final_info"]:
                     if info and "episode" in info:
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
-        # NOTE: here the steps are ended, but we are still in a single iteration, so we 
-        # need to update the policy
+        # NOTE: here the steps are ended, but we are still in a single iteration, so we need to update the policy
 
-        # bootstrap value if not done (means use the critic's value estimate as 
-        # return instead of 0, the value it gets at episode end)
+        # bootstrap value if not done (means use the critic's value estimate as return instead of 0, the value it gets at episode end)
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
-            advantages = torch.zeros_like(rewards).to(device)
+            advantages = torch.zeros_like(rewards).to(device)   # NOTE: initialize advantages
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
@@ -152,7 +293,7 @@ def train(args):
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam    # NOTE: compute adv
             returns = advantages + values
 
         # flatten the batch
@@ -166,6 +307,7 @@ def train(args):
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
         clipfracs = []
+        # NOTE: cycle through epochs (adv already computed)
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):

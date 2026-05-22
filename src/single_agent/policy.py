@@ -9,6 +9,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+# TODO: discuss the use of LSTMs
 class CustomPolicy(nn.Module):
     def __init__(self, envs):
         super().__init__()

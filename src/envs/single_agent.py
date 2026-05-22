@@ -271,5 +271,3 @@ class SingleAgentEnv(gym.Env):
                       new_salinity, new_turbidity,
                       self.target_salinity, self.target_turbidity]),
         ]).astype(np.float32), reward
-
-

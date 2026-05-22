@@ -1,19 +1,13 @@
 """
-Lagrangian diffusion model for the salinity particles. 
-The idea is to let the particles flow with the currents in the 
+Lagrangian diffusion model for the salinity particles.
+The idea is to let the particles flow with the currents in the
 3D environment with the addition of a Gaussian noise.
+
+Note: `parcels` is imported lazily inside `compute_salinity` so the
+analytical training path (which only needs NumPy) can run without it.
 """
 
 import numpy as np
-import xarray as xr
-from parcels import (
-    AdvectionRK4_3D,
-    FieldSet,
-    JITParticle,
-    ParcelsRandom,
-    ParticleSet,
-    StatusCode,
-)
 
 SECONDS_PER_DAY = 86400.0
 
@@ -42,31 +36,10 @@ def _cell_edges(centers: np.ndarray) -> np.ndarray:
     edges[-1] = centers[-1] + 0.5 * (centers[-1] - centers[-2])
     return edges
 
-def _diffuse(particle, fieldset, time):
-    """Turbulent diffusion as Gaussian random walk.
-
-    Parcels v3 API: accumulate into particle_dlon/dlat/ddepth, never
-    modify particle.lon/lat/depth directly. Uses `math` (not numpy)
-    because kernels are JIT-compiled to C.
-    """
-    dx = ParcelsRandom.normalvariate(0., 1.) * (2.0 * fieldset.Kh * particle.dt) ** 0.5
-    dy = ParcelsRandom.normalvariate(0., 1.) * (2.0 * fieldset.Kh * particle.dt) ** 0.5
-    dz = ParcelsRandom.normalvariate(0., 1.) * (2.0 * fieldset.Kv * particle.dt) ** 0.5
-    particle_dlon += dx   # noqa: F821
-    particle_dlat += dy               # noqa: F821
-    particle_ddepth += dz                       # noqa: F821
-
-def _delete_out_of_bounds(particle, fieldset, time):
-    """Remove particles that escape the domain (surface, sides, or below)."""
-    if particle.state == StatusCode.ErrorOutOfBounds:
-        particle.delete()
-    if particle.state == StatusCode.ErrorThroughSurface:
-        particle.delete()
-
 def compute_salinity(
-    currents: xr.Dataset,
+    currents,                            # xarray.Dataset; type-hint avoided for lazy import
     sources: list,
-    spinup_days: float = 60.0,          # For how many days running the model 
+    spinup_days: float = 60.0,          # For how many days running the model
     release_interval_s: float = 600.0,  # Seconds for each release
     Kh: float = 1.0,                    # noise param
     Kv: float = 1.0e-3,                 # nose param
@@ -77,7 +50,35 @@ def compute_salinity(
 
     Returns a (nz, ny, nx) array of salinity excess [PSU] on the bundle's
     grid, with each source contributing in proportion to its emission rate Q.
+
+    Parcels (and xarray) are imported lazily so callers that only use
+    `compute_salinity_analytical` don't need them installed.
     """
+    from parcels import (
+        AdvectionRK4_3D,
+        FieldSet,
+        JITParticle,
+        ParcelsRandom,
+        ParticleSet,
+        StatusCode,
+    )
+
+    def _diffuse(particle, fieldset, time):
+        """Turbulent diffusion as Gaussian random walk."""
+        dx = ParcelsRandom.normalvariate(0., 1.) * (2.0 * fieldset.Kh * particle.dt) ** 0.5
+        dy = ParcelsRandom.normalvariate(0., 1.) * (2.0 * fieldset.Kh * particle.dt) ** 0.5
+        dz = ParcelsRandom.normalvariate(0., 1.) * (2.0 * fieldset.Kv * particle.dt) ** 0.5
+        particle_dlon += dx   # noqa: F821
+        particle_dlat += dy               # noqa: F821
+        particle_ddepth += dz                       # noqa: F821
+
+    def _delete_out_of_bounds(particle, fieldset, time):
+        """Remove particles that escape the domain (surface, sides, or below)."""
+        if particle.state == StatusCode.ErrorOutOfBounds:
+            particle.delete()
+        if particle.state == StatusCode.ErrorThroughSurface:
+            particle.delete()
+
     # --- 1. Build the FieldSet (Parcels expects positive-down depth) -------
     fieldset = FieldSet.from_xarray_dataset(
         currents,
