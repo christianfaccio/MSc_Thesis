@@ -3,7 +3,7 @@ Classical implementation of the PPO algorithm, modified starting from
 the implementation of CleanRL.
 
 Usage (from root):
-    - in one terminal start the training    -> `python run -m src/single_agent/ppo.py`
+    - in one terminal start the training    -> `python -m src.single_agent.ppo`
     - in another one start tensorboard      -> `tensorboard --logdir runs --port 6006`
     (opt) look at it in the web             -> `ssh -L 6006:localhost:6006 username@<ip>`
 

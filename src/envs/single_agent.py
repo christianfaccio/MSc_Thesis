@@ -222,7 +222,7 @@ class SingleAgentEnv(gym.Env):
         truncated = (self.t_step >= self.max_steps)
         terminated = (self._in_zone_steps >= 3)     # NOTE: to define the right number of _in_zone_steps before success is met
         if terminated: 
-            reward += reward * 0.5  # bonus reward for success     
+            reward += reward + 2048  # bonus reward for success (max value is max_reward_per_step * steps, and the first is bounded to [0,1])    
         
         return next_obs, reward, terminated, truncated, {}
     
