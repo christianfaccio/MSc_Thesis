@@ -5,7 +5,7 @@ import numpy as np
 from SwarmSwIM import Simulator, sim_functions
 from ..single_agent.reward import reward_func
 import itertools
-from src.models.salinity import compute_salinity_analytical
+from src.models.salinity import compute_salinity_analytical, compute_salinity_gradient_analytical
 from src.models.turbidity import compute_turbidity
 from src.utils.sources import random_sources
 
@@ -15,8 +15,8 @@ class SingleAgentEnv(gym.Env):
     This class represents the wrapped environment of the simulation. It builds from
     SwarmSwIM and is enclosed with Gymnasium for standardization.
 
-    Observation (2k + 7) — pure local-sensor + mission info, no global coordinates:
-        [ history (2k) | u v w (body-frame currents) | abs_S abs_τ | S* τ* ]
+    Observation (2k + 11) — pure local-sensor + mission info, no global coordinates:
+        [ history (2k) | u v w (body-frame currents) | abs_S abs_τ | S* τ* | field gradients | depth]
 
     Depth and heading are deliberately excluded: per the project's design rule the
     agent does not know where it is and acts in its local frame. Heading is still
@@ -37,7 +37,7 @@ class SingleAgentEnv(gym.Env):
                  n_sources: int = 4,
                  k: int = 4,                    # history length of (action, reward)
                  v_agent: float = 1.0,          # agent speed in m/s
-                 max_steps: int = 1024,         # steps of an episode before truncation
+                 max_steps: int = 128,         # steps of an episode before truncation
                  dt: float = 0.1,               # seconds per step
                  domain = (50.0, 50.0, 50.0),   # domain size (0.0-x, 0.0-y, 0.0-z)
                  ):
@@ -57,14 +57,14 @@ class SingleAgentEnv(gym.Env):
         self.current_turbidity = 0.0
 
         self._in_zone_steps = 0
-        self.epsilon_salinity = 0.1     # reachable: salinity changes ~0.07 / step at v=1m/s
-        self.epsilon_turbidity = 0.01   # reachable: turbidity changes ~0.001 / step at v=1m/s
+        self.epsilon_salinity = 0.5     
+        self.epsilon_turbidity = 0.05   
 
         # Action Space
         self.action_space = gym.spaces.Discrete(27) # NOTE: remember that you have to use a relative PoV, not global
 
         # State/Observation Space: 2k history + 3 body-frame currents + 2 absolute (S, τ) + 2 target (S*, τ*)
-        obs_dim = 2*k + 7
+        obs_dim = 2*k + 11
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         
         # Map actions to movements on the grid
@@ -104,18 +104,25 @@ class SingleAgentEnv(gym.Env):
 
         # Randomize sources (using the env's seeded PRNG, not the global one) and target point
         self.sources = random_sources(rng=self.np_random, n_sources=self.n_sources)
-        x_sel = self.np_random.uniform(0.0, self.domain[0])
-        y_sel = self.np_random.uniform(0.0, self.domain[1])
-        z_sel = self.np_random.uniform(0.0, self.domain[2])
-        self.target_salinity = compute_salinity_analytical(x_sel, y_sel, z_sel, self.sources)
-        self.target_turbidity = compute_turbidity(z_sel)
-
-        # Initialize current (S, τ) from the agent's actual spawn so the first
-        # observation reflects the true sensor reading.
+        
+        # Compute spawn-side (S, τ) FIRST so we can pick a target that's actually far from it.
         spawn = self.sim.agents[0].pos
         self.current_salinity = compute_salinity_analytical(spawn[0], spawn[1], spawn[2], self.sources)
         self.current_turbidity = compute_turbidity(spawn[2])
 
+        # Resample the target point until it's outside the success zone w.r.t. the spawn.
+        # 2*epsilon margin so the agent has to actually navigate, not just nudge.
+        for _ in range(100):  # safety cap; in practice ~1-2 iterations
+            x_sel = self.np_random.uniform(0.0, self.domain[0])
+            y_sel = self.np_random.uniform(0.0, self.domain[1])
+            z_sel = self.np_random.uniform(0.0, self.domain[2])
+            cand_S = compute_salinity_analytical(x_sel, y_sel, z_sel, self.sources)
+            cand_T = compute_turbidity(z_sel)
+            if (abs(cand_S - self.current_salinity) > 2 * self.epsilon_salinity or abs(cand_T - self.current_turbidity) > 2 * self.epsilon_turbidity):
+                break
+        self.target_salinity = cand_S
+        self.target_turbidity = cand_T
+        
         # Randomize currents
         # The 5 components below form the 2D surface current; EkmanSpiral then
         # rotates and decays them with depth to produce the 3D field used in calculate_currents().
@@ -208,7 +215,8 @@ class SingleAgentEnv(gym.Env):
                                                                         # to be changed or at least discussed.
         
         # Doing the step in the sim
-        self.sim.tick()
+        for _ in range(10):
+            self.sim.tick()
         self.t_step += 1
 
         # Next state (s')
@@ -222,7 +230,7 @@ class SingleAgentEnv(gym.Env):
         truncated = (self.t_step >= self.max_steps)
         terminated = (self._in_zone_steps >= 3)     # NOTE: to define the right number of _in_zone_steps before success is met
         if terminated: 
-            reward += reward + 50  # bonus reward for success    
+            reward += 250  # bonus reward for success    
         
         return next_obs, reward, terminated, truncated, {}
     
@@ -245,10 +253,12 @@ class SingleAgentEnv(gym.Env):
         Returns the observation of dimension (2k+7,) and the scalar reward.
 
         Layout:
-            (2k) -> history of (action, reward) pairs
-            (3)  -> body-frame currents (u, v, w)
-            (2)  -> absolute (salinity, turbidity) at the agent's current position
-            (2)  -> target (salinity*, turbidity*)
+            (2k)    -> history of (action, reward) pairs
+            (3)     -> body-frame currents (u, v, w)
+            (2)     -> absolute (salinity, turbidity) at the agent's current position
+            (2)     -> target (salinity*, turbidity*)
+            (3)     -> Field gradients
+            (1)     -> depth
         '''
         new_salinity = compute_salinity_analytical(x=agent.pos[0], y=agent.pos[1], z=agent.pos[2], sources=self.sources)
         new_turbidity = compute_turbidity(depth=agent.pos[2])
@@ -265,9 +275,15 @@ class SingleAgentEnv(gym.Env):
         self.current_salinity = new_salinity
         self.current_turbidity = new_turbidity
 
+        dSdx, dSdy, dSdz = compute_salinity_gradient_analytical(agent.pos[0], agent.pos[1], agent.pos[2], self.sources)
+        
+        agent_depth = agent.pos[2]
+
         return np.concatenate([
             self.history.flatten(),
             np.array([u, v, w,
                       new_salinity, new_turbidity,
-                      self.target_salinity, self.target_turbidity]),
+                      self.target_salinity, self.target_turbidity,
+                      dSdx, dSdy, dSdz,
+                      agent_depth]),
         ]).astype(np.float32), reward

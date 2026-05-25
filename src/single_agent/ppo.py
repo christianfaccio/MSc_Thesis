@@ -78,7 +78,7 @@ class Args:
     """history buffer length for (action, reward) pairs"""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
-    max_steps: int = 1024
+    max_steps: int = 128
     """maximum env steps per episode before truncation"""
     dt: float = 0.1
     """simulator timestep (s) per env step"""
@@ -92,9 +92,9 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 6   # NOTE: should match the number of CPU cores
     """the number of parallel game environments"""
-    num_steps: int = 512
+    num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
