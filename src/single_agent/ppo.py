@@ -30,6 +30,7 @@ Pseudocode:
 '''
 import random
 import time
+from collections import deque
 from pathlib import Path
 
 import gymnasium as gym
@@ -39,6 +40,15 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from torch.utils.tensorboard import SummaryWriter
 from src.single_agent.policy import CustomPolicy
 from src.envs.single_agent import SingleAgentEnv
@@ -46,6 +56,8 @@ from src.envs.single_agent import SingleAgentEnv
 from dataclasses import dataclass
 
 DEBUG=True
+console = Console()
+STATS_WINDOW = 100
 
 
 @dataclass
@@ -317,6 +329,39 @@ def train(args):
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
+    # Rolling stats over the last STATS_WINDOW finished episodes
+    ep_returns = deque(maxlen=STATS_WINDOW)
+    ep_lengths = deque(maxlen=STATS_WINDOW)
+    ep_terminated = deque(maxlen=STATS_WINDOW)  # 1.0 if reached target, 0.0 if truncated
+
+    progress = Progress(
+        TextColumn("[bold blue]iter"),
+        MofNCompleteColumn(),
+        BarColumn(),
+        TextColumn(
+            "ret={task.fields[ret]:>6.2f}  len={task.fields[len]:>5.1f}  "
+            "term={task.fields[term]:>3.0f}%  eps={task.fields[eps]:>4d}  "
+            "SPS={task.fields[sps]:>5d}"
+        ),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        TextColumn("<"),
+        TimeRemainingColumn(),
+        console=console,
+        refresh_per_second=4,
+    )
+    task_id = progress.add_task(
+        "train",
+        total=args.num_iterations,
+        completed=start_iteration - 1,
+        ret=float("nan"),
+        len=float("nan"),
+        term=0.0,
+        eps=0,
+        sps=0,
+    )
+
+    progress.start()
     for iteration in range(start_iteration, args.num_iterations + 1): # NOTE: cycle through iterations (episodes) (outer loop)
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -351,16 +396,22 @@ def train(args):
                     if finished:
                         r_val = float(ep_r[i])
                         l_val = float(ep_l[i])
-                        print(f"global_step={global_step}, episodic_return={r_val:.3f}, episodic_length={l_val:.0f}")
+                        ep_returns.append(r_val)
+                        ep_lengths.append(l_val)
+                        ep_terminated.append(1.0 if bool(terminations[i]) else 0.0)
                         writer.add_scalar("charts/episodic_return", r_val, global_step)
                         writer.add_scalar("charts/episodic_length", l_val, global_step)
             elif "final_info" in infos:
                 # Older Gymnasium API (≤ 0.29)
-                for info in infos["final_info"]:
+                for i, info in enumerate(infos["final_info"]):
                     if info and "episode" in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                        r_val = float(info["episode"]["r"])
+                        l_val = float(info["episode"]["l"])
+                        ep_returns.append(r_val)
+                        ep_lengths.append(l_val)
+                        ep_terminated.append(1.0 if bool(terminations[i]) else 0.0)
+                        writer.add_scalar("charts/episodic_return", r_val, global_step)
+                        writer.add_scalar("charts/episodic_length", l_val, global_step)
 
         # NOTE: here the steps are ended, but we are still in a single iteration, so we need to update the policy
 
@@ -458,8 +509,19 @@ def train(args):
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        sps = int(global_step / (time.time() - start_time))
+        writer.add_scalar("charts/SPS", sps, global_step)
+
+        # Live UI update
+        progress.update(
+            task_id,
+            completed=iteration,
+            ret=(float(np.mean(ep_returns)) if ep_returns else float("nan")),
+            len=(float(np.mean(ep_lengths)) if ep_lengths else float("nan")),
+            term=(100.0 * float(np.mean(ep_terminated)) if ep_terminated else 0.0),
+            eps=len(ep_returns),
+            sps=sps,
+        )
 
         # Checkpoint save
         if args.save_model and (iteration % args.save_every_iterations == 0 or iteration == args.num_iterations):
@@ -482,8 +544,9 @@ def train(args):
             if latest.exists() or latest.is_symlink():
                 latest.unlink()
             latest.symlink_to(ckpt_path.name)
-            print(f"Saved checkpoint: {ckpt_path}")
+            console.log(f"Saved checkpoint: {ckpt_path}")
 
+    progress.stop()
     envs.close()
     writer.close()
 
