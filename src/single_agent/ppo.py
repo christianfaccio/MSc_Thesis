@@ -78,37 +78,42 @@ class Args:
     """history buffer length for (action, reward) pairs"""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
-    max_steps: int = 128
+    max_steps: int = 256
     """maximum env steps per episode before truncation"""
     dt: float = 0.1
     """simulator timestep (s) per env step"""
+    frame_skip: int = 10
+    """sim sub-steps per env step (action repeated); 1 disables frame skip"""
     domain: tuple[float, float, float] = (100.0, 100.0, 100.0)
     """domain extent in (x, y, z) meters"""
 
     # Algorithm specific arguments
-    total_timesteps: int = 500000   # NOTE: better to make it a multiple of (num_envs * num_steps)
+    # NOTE: default values are taken from Andrychowicz et. al
+    total_timesteps: int = 1000000              # NOTE: default value 1M or 2M
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 3.0e-4               # NOTE: default 0.0003
     """the learning rate of the optimizer"""
-    num_envs: int = 6   # NOTE: should match the number of CPU cores
+    num_envs: int = 6                           # NOTE: default value should be 256 but it needs to be tuned regarding the hardware at disposal,
+                                                # since they should run in parallel in CPU cores
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 256                    
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    gae_lambda: float = 0.95
+    gae_lambda: float = 0.9                     # NOTE: default value 0.9
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
+    num_minibatches: int = 12                   # NOTE: paper is permissive here, default 12
     """the number of mini-batches"""
-    update_epochs: int = 4
+    update_epochs: int = 10                     # NOTE: number of epochs, default value 10
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2
+    clip_coef: float = 0.25                     # NOTE: default value is 0.25, but one should try different values
+                                                # as in some cases lower (0.1) or bigger (0.5) values help getting better performances
     """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
+    clip_vloss: bool = False                    # NOTE: default False
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
     ent_coef: float = 0.01
     """coefficient of the entropy"""
@@ -130,11 +135,11 @@ class Args:
     """path to a checkpoint .pt file to resume training from"""
 
     # to be filled in runtime
-    batch_size: int = 0
+    batch_size: int = 0                         
     """the batch size (computed in runtime)"""
     minibatch_size: int = 0
     """the mini-batch size (computed in runtime)"""
-    num_iterations: int = 0
+    num_iterations: int = 0                   
     """the number of iterations (computed in runtime)"""
 
 def make_env(args):
@@ -146,12 +151,88 @@ def make_env(args):
             v_agent=args.v_agent,
             max_steps=args.max_steps,
             dt=args.dt,
+            frame_skip=args.frame_skip,
             domain=args.domain,
         )
         env = gym.wrappers.RecordEpisodeStatistics(env)
+        # Running observation normalization (Andrychowicz et al. 2021, §3.3)
+        # followed by ±10 clipping as a safety net against simulator outliers.
+        env = gym.wrappers.NormalizeObservation(env)
+        env = gym.wrappers.TransformObservation(
+            env, lambda obs: np.clip(obs, -10.0, 10.0), env.observation_space
+        )
+        # Running reward normalization (Andrychowicz et al. 2021, §3.3, C66).
+        # Placed AFTER RecordEpisodeStatistics so logged episodic returns stay raw.
+        # ±10 clip mitigates cold-start blow-up when return_rms.var is still tiny.
+        env = gym.wrappers.NormalizeReward(env, gamma=args.gamma)
+        env = gym.wrappers.TransformReward(env, lambda r: float(np.clip(r, -10.0, 10.0)))
         return env
 
     return thunk
+
+
+def _find_norm_obs(env):
+    while hasattr(env, "env"):
+        if isinstance(env, gym.wrappers.NormalizeObservation):
+            return env
+        env = env.env
+    return None
+
+
+def get_obs_rms_state(envs):
+    states = []
+    for env in envs.envs:
+        norm = _find_norm_obs(env)
+        if norm is None:
+            continue
+        states.append({
+            "mean": norm.obs_rms.mean.copy(),
+            "var": norm.obs_rms.var.copy(),
+            "count": float(norm.obs_rms.count),
+        })
+    return states
+
+
+def set_obs_rms_state(envs, states):
+    for env, state in zip(envs.envs, states):
+        norm = _find_norm_obs(env)
+        if norm is None:
+            continue
+        norm.obs_rms.mean = state["mean"].copy()
+        norm.obs_rms.var = state["var"].copy()
+        norm.obs_rms.count = state["count"]
+
+
+def _find_norm_reward(env):
+    while hasattr(env, "env"):
+        if isinstance(env, gym.wrappers.NormalizeReward):
+            return env
+        env = env.env
+    return None
+
+
+def get_return_rms_state(envs):
+    states = []
+    for env in envs.envs:
+        norm = _find_norm_reward(env)
+        if norm is None:
+            continue
+        states.append({
+            "mean": float(norm.return_rms.mean),
+            "var": float(norm.return_rms.var),
+            "count": float(norm.return_rms.count),
+        })
+    return states
+
+
+def set_return_rms_state(envs, states):
+    for env, state in zip(envs.envs, states):
+        norm = _find_norm_reward(env)
+        if norm is None:
+            continue
+        norm.return_rms.mean = np.array(state["mean"])
+        norm.return_rms.var = np.array(state["var"])
+        norm.return_rms.count = state["count"]
 
 def train(args):
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -213,16 +294,20 @@ def train(args):
         torch.set_rng_state(ckpt["torch_rng"])
         np.random.set_state(ckpt["np_rng"])
         random.setstate(ckpt["py_rng"])
+        if "obs_rms" in ckpt:
+            set_obs_rms_state(envs, ckpt["obs_rms"])
+        if "return_rms" in ckpt:
+            set_return_rms_state(envs, ckpt["return_rms"])
         if DEBUG:
             print(f"Resumed from {args.resume}: iteration={start_iteration}, global_step={global_step}")
 
     # ALGO Logic: Storage setup
+    # Values are recomputed each epoch (Andrychowicz et al. 2021, §3.5) so they are not stored here.
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    values = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
     if DEBUG:
         print("--- GAME START ---")
@@ -246,8 +331,7 @@ def train(args):
 
             # ALGO LOGIC: sample action
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)    # NOTE: calls the policy with the obs vector
-                values[step] = value.flatten()      # record the state value
+                action, logprob, _, _ = agent.get_action_and_value(next_obs)    # NOTE: calls the policy with the obs vector
             actions[step] = action                  # record the action
             logprobs[step] = logprob                # record the logprobs
 
@@ -280,35 +364,37 @@ def train(args):
 
         # NOTE: here the steps are ended, but we are still in a single iteration, so we need to update the policy
 
-        # bootstrap value if not done (means use the critic's value estimate as return instead of 0, the value it gets at episode end)
-        with torch.no_grad():
-            next_value = agent.get_value(next_obs).reshape(1, -1)
-            advantages = torch.zeros_like(rewards).to(device)   # NOTE: initialize advantages
-            lastgaelam = 0
-            for t in reversed(range(args.num_steps)):
-                if t == args.num_steps - 1:
-                    nextnonterminal = 1.0 - next_done
-                    nextvalues = next_value
-                else:
-                    nextnonterminal = 1.0 - dones[t + 1]
-                    nextvalues = values[t + 1]
-                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam    # NOTE: compute adv
-            returns = advantages + values
-
-        # flatten the batch
+        # flatten the batch (advantages, returns, and values are recomputed each epoch below)
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)
 
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
         clipfracs = []
-        # NOTE: cycle through epochs (adv already computed)
+        # NOTE: cycle through epochs — recompute advantages with the current critic each pass
+        # (Andrychowicz et al. 2021, §3.5: "recompute advantages once per data pass")
         for epoch in range(args.update_epochs):
+            # Recompute values, advantages, and returns with the current critic, then GAE.
+            with torch.no_grad():
+                new_values = agent.get_value(b_obs).view(args.num_steps, args.num_envs)
+                next_value = agent.get_value(next_obs).reshape(1, -1)
+                advantages = torch.zeros_like(rewards).to(device)
+                lastgaelam = 0
+                for t in reversed(range(args.num_steps)):
+                    if t == args.num_steps - 1:
+                        nextnonterminal = 1.0 - next_done
+                        nextvalues = next_value
+                    else:
+                        nextnonterminal = 1.0 - dones[t + 1]
+                        nextvalues = new_values[t + 1]
+                    delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - new_values[t]
+                    advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                returns = advantages + new_values
+                b_advantages = advantages.reshape(-1)
+                b_returns = returns.reshape(-1)
+                b_values = new_values.reshape(-1)
+
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
@@ -388,6 +474,8 @@ def train(args):
                 "torch_rng": torch.get_rng_state(),
                 "np_rng": np.random.get_state(),
                 "py_rng": random.getstate(),
+                "obs_rms": get_obs_rms_state(envs),
+                "return_rms": get_return_rms_state(envs),
                 "args": vars(args),
             }, ckpt_path)
             latest = ckpt_dir / "latest.pt"

@@ -39,6 +39,7 @@ class SingleAgentEnv(gym.Env):
                  v_agent: float = 1.0,          # agent speed in m/s
                  max_steps: int = 128,         # steps of an episode before truncation
                  dt: float = 0.1,               # seconds per step
+                 frame_skip: int = 10,          # sim sub-steps per env step (action held constant)
                  domain = (50.0, 50.0, 50.0),   # domain size (0.0-x, 0.0-y, 0.0-z)
                  ):
         super().__init__()
@@ -49,6 +50,7 @@ class SingleAgentEnv(gym.Env):
         self.v = v_agent
         self.max_steps = max_steps
         self.dt = dt
+        self.frame_skip = frame_skip
         self.domain = domain
 
         self.target_salinity = 0.0
@@ -215,7 +217,13 @@ class SingleAgentEnv(gym.Env):
                                                                         # to be changed or at least discussed.
         
         # Doing the step in the sim
-        for _ in range(10):
+        # NOTE: reward is sampled only at the final sub-step (only-last), not summed across
+        # the frame_skip ticks. This preserves the reward scale (and the meaning of the
+        # +250 success bonus) when sweeping frame_skip, but PPO loses the integrated
+        # signal of any high-reward region the agent passed through mid-skip. Worth
+        # revisiting later — compare against summed-reward aggregation (paper convention,
+        # Andrychowicz et al. 2021 §3.6) once a frame_skip ablation has been run.
+        for _ in range(self.frame_skip):
             self.sim.tick()
         self.t_step += 1
 
