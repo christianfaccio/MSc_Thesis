@@ -1,12 +1,31 @@
-# MSc_Thesis
-Thesis for the Master Degree in Data Science and Artificial Intelligence held at University of Trieste (y.y. 2024-2026) and the Master Degree in Artificial Intelligence held at the University of Alicante in a Double Degree program (1st semester y.y. 2025/2026), in collaboration with the Sorbonne University of Abu Dhabi.
+<div align='center'>
+    <h1>Underwater Search and Navigation in Realistic Environment</h1>
+    <h3>Author: Christian Faccio</h3>
+</div>
+
+This work concerns the training and evaluation of a MARL algorithm suitable for underwater search and navigation in a realistic environment. The agents have find the optimal spot according to some conditions given beforehand, navigating through ocean currents. 
+
+---
+
+## Hardware stack
+
+- MacAir M3 16GB
+- NVIDIA Jetson Orin Nano 8GB
+- (TBD) HPC Cluster
+
+## Software stack
+
+- uv: package manager
+- SwarmSwIM: simulator
+- Gymnasium: simulator wrapper
+- torch: for neural networks
 
 ## Setup
 
 First of all, create a virtual environment and install the dependencies:
 ```
 git submodule update --init
-uv venv .venv --python 3.11
+uv venv .venv --python 3.10
 source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
@@ -21,91 +40,25 @@ uv pip install -e .
 
 ```
 .
-├── config                          # OK
-│   ├── default.xml
-│   ├── simulation.xml
-│   ├── single_agent.xml
-│   └── sources.json
-├── data                            # OK
-│   ├── abu_dhabi_ocean_data.nc
-│   ├── envs
-│   ├── GSHHS
-│   └── plots
-├── docs                            # OK
+├── config              # configuration files
+├── conftest.py
+├── data                # real data for the env (TBD)
+├── docs                # useful resources and references
+├── pyproject.toml
 ├── README.md
 ├── requirements.txt
-├── scripts                         # OK
+├── runs                # training runs
+├── scripts             # useful scripts
+├── src
 │   ├── __init__.py
-│   ├── plot_env.py
-│   └── precompute_envs.py
-├── src                            
-│   ├── __init__.py
-│   ├── envs                        # TODO
-│   ├── eval.py                     # TODO
-│   ├── models                      # OK
-│   ├── multi_agent                 # TODO
-│   ├── single_agent                # OK
-│   ├── train.py                    # TODO
-│   └── utils
-├── SwarmSwIM
-├── tests                           # TODO
-└── thesis
+│   ├── envs            # gym wrappers
+│   ├── eval.py         # evaluation script
+│   ├── models          # models used
+│   ├── multi_agent     # MARL algorithms
+│   ├── single_agent    # RL algorithms
+│   ├── train.py        # training script
+│   └── utils           # utility functions
+├── SwarmSwIM           # simulator
+├── tests               # unit tests
+└── thesis              # latex files
 ```
-
-## Roadmap
-
-### Step 1: Environment
-
-- 3D env
-- Currents -> surface data from Copernicus, Ekman spirals for depth
-- Dynamic env
-
-### Step 2: Single Agent
-
-- Params: salinity, light/turbidity (2/3 max)
-- Create points from which salinity distributes (-> distribution model)
-- Use equation for light/turbidity
-
-### Step 3: Multi-Agent
-
-
-
-### TBC
-
-Other improvements/enhancements to be defined ... 
-
-## How to download and load surface data
-
-Use the following script to download surface data from Copernicus:
-```
-import copernicusmarine
-
-copernicusmarine.subset(
-    dataset_id="cmems_mod_glo_phy_my_0.083deg_P1D-m",
-    variables=["thetao", "so", "uo", "vo"],  # temperature, salinity, u-current, v-current
-    minimum_longitude=53.5,
-    maximum_longitude=55.5,
-    minimum_latitude=23.5,
-    maximum_latitude=25.5,
-    minimum_depth=0,
-    maximum_depth=200,
-    start_datetime="2020-01-01",
-    end_datetime="2020-12-31",
-    output_filename="abu_dhabi_ocean_data.nc",
-)
-```
-
-and the following to load it:
-```
-import xarray as xr
-
-ds = xr.open_dataset("abu_dhabi_ocean_data.nc")
-print(ds)  # shows dimensions, variables, coordinates
-print(ds.thetao.sel(depth=5, method="nearest").isel(time=0))  # temperature at 5m depth
-```
-
-## Further work
-
-- Use ROMS as numerical simulator for currents
-- Use the Pareto fronts for the reward function instead of computing a single function for all the variables (meaning an agent will try to find "good enough" areas instead of global optima)
-- Optimize the code for parallel working
