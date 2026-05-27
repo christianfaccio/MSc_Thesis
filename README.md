@@ -62,3 +62,13 @@ uv pip install -e .
 ├── tests               # unit tests
 └── thesis              # latex files
 ```
+
+## Key choices
+
+- Start with synthetic env and models, get success with MARL algo and then add env realism and complexity (p.s. discuss ROMS usage)
+- discrete action space (27 actions which are the 3D neighbors + stall)
+- continuous obs space (2k+11,)
+- agents only know relative variables, no GPS, yes depth
+- default PPO hyperparams from Andrychowicz et al.
+- envs randomization at each episode to introduce variability
+- targets done via salinity and turbidity values
