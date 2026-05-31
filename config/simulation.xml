@@ -5,7 +5,7 @@
 
         <!-- Define a constant stream of planar current -->
         <!-- Direction North-East, value in m/s -->
-        <uniform_current> 0.0 0.0 </uniform_current>
+        <uniform_current> 0.05 0.05 </uniform_current>
 
         <!-- Define random noise currents -->
         <!-- noise current is time-dependent and agent-specific, 
@@ -13,7 +13,7 @@
         Parameters are: 
             Frequency [Hz]: determines the period of each disturbance 
             Intensity [m/s]: determines the maximal intensity of noise current -->
-        <noise_currents> 0.0 0.0 </noise_currents>
+        <noise_currents> 0.5 0.05 </noise_currents>
 
         <!-- Define vorticity field current -->
         <!-- Adds time-constant, location-dependent randomized current.
@@ -21,7 +21,7 @@
         Parameters are: 
             Density [vortexes/100m^2]
             Intensity [m/s]: -->
-        <vortex_currents> 0 0.0 </vortex_currents>
+        <vortex_currents> 20 0.15 </vortex_currents>
 
         <!-- Define wave sinusoidal current, Global -->
         <!-- Globally applied, sinusoidal time-dependent noise -->
@@ -29,13 +29,13 @@
             <!-- Add each contribution separately -->
             <wave1>
                 <!-- Peak intensity in m/s -->
-                <amplitude> 0.6 </amplitude> 
+                <amplitude> 0.06 </amplitude> 
                 <!-- Wave frequency in Hz -->
-                <frequency> 0.0 </frequency>
+                <frequency> 0.5 </frequency>
                 <!-- Direction of wave current [degree] -->
                 <direction> 90.0 </direction>
                 <!-- Time shift of wave normalized [0,2pi] -->
-                <shift> 0.0 </shift>
+                <shift> 1.0 </shift>
             </wave1>
             
             <!-- Uncomment and define additional waves if needed
@@ -57,15 +57,15 @@
             -->
             <wave1>
                 <!-- Peak intensity of current disturbance in m/s -->
-                <amplitude> 0.0 </amplitude> 
+                <amplitude> 0.06 </amplitude> 
                 <!-- Wavelength in m -->
-                <wavelength> 0.0 </wavelength>
+                <wavelength> 1.0 </wavelength>
                 <!-- Wave advancement velocity in m/s -->
-                <wavespeed> 0.0 </wavespeed>
+                <wavespeed> 0.1 </wavespeed>
                 <!-- Direction of advancement of waves and direction of current contribution [degree] -->
-                <direction> 0.0 </direction>
+                <direction> 60.0 </direction>
                 <!-- Time shift of wave [0,2pi] -->
-                <shift> 0.0 </shift>
+                <shift> 1.0 </shift>
             </wave1>
 
             <!-- Uncomment and define additional waves if needed
@@ -79,21 +79,92 @@
 
         </local_waves>
 
+        <!-- 3D Current Models -->
+        <!-- Available models: none, depth_decay, layered, ekman -->
+        <!--
+        <current_3d>
+            <model>none</model>
+        </current_3d>
+        -->
+
+        <!-- Depth-decay model: exponentially decaying current with depth
+        <current_3d>
+            <model>depth_decay</model>
+            <surface_speed>0.5</surface_speed>
+            <direction>90.0</direction>
+            <decay_rate>0.01</decay_rate>
+            <vertical_speed>0.0</vertical_speed>
+            <vertical_decay>0.01</vertical_decay>
+        </current_3d>
+        -->
+
+        <!-- Layered model: discrete depth layers with linear interpolation
+        <current_3d>
+            <model>layered</model>
+            <layer>
+                <depth>0.0</depth>
+                <u>0.5</u>
+                <v>0.1</v>
+                <w>0.0</w>
+            </layer>
+            <layer>
+                <depth>50.0</depth>
+                <u>0.2</u>
+                <v>0.05</v>
+                <w>0.0</w>
+            </layer>
+            <layer>
+                <depth>100.0</depth>
+                <u>0.0</u>
+                <v>0.0</v>
+                <w>0.0</w>
+            </layer>
+        </current_3d>
+        -->
+
+        <!-- Ekman spiral: wind-driven current rotating with depth -->
+        <current_3d>
+            <model>ekman</model>
+            <wind_speed>5.0</wind_speed>
+            <wind_direction>0.0</wind_direction>
+            <latitude>45.0</latitude>
+            <eddy_viscosity>0.1</eddy_viscosity>
+        </current_3d>
+        
+
+        <!-- Real ocean data from CMEMS NetCDF file
+        <current_3d>
+            <model>data</model>
+            <filepath>../data/envs/env_000.nc</filepath>
+            <origin_lat>24.5</origin_lat>
+            <origin_lon>54.5</origin_lon>
+            <time_index>0</time_index>
+            <time_mode>fixed</time_mode>
+        </current_3d> -->
+
+        <!-- Pre-computed ocean data from custom NetCDF file
+        <current_3d>
+            <model>precomputed</model>
+            <filepath>../data/envs/env_000.nc</filepath>
+            <origin_lat>24.5</origin_lat>
+            <origin_lon>54.5</origin_lon>
+        </current_3d>
+        -->
+        
+
     </environment_setup>
 
     <!-- Optional Field: Describe start-up agents and add them to the simulation -->
     <agents>
         <agent_type> 
             <!-- reference xml describing the agent -->
-            <description>default.xml</description>
+            <description>single_agent.xml</description>
             <!-- Name prefix -->
             <name>A</name>
             <state>
                 <!-- Initial state, one line for each agent -->
-                <!-- x, y, z, psi -->
+                <!-- x, y, z, psi (overwritten in env.reset()) -->
                 0.0  0.0  69.0  46.0
-                3.0  0.0  69.0  180.0
-                <!-- Add more lines to add agents -->
             </state>
         </agent_type>
 

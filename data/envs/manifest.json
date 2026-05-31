@@ -1,0 +1,67 @@
+{
+  "generated_at": "2026-05-12T15:54:03",
+  "git_commit": "e378fea",
+  "n_environments": 1,
+  "global_params": {
+    "ekman_eddy_viscosity": 0.05,
+    "ekman_latitude": 24.5,
+    "ekman_depth_m": 40.66260661383774,
+    "depth_levels_m": [
+      0.0,
+      5.0,
+      10.0,
+      20.0,
+      30.0,
+      50.0,
+      75.0,
+      100.0
+    ],
+    "k_turbidity": 0.3,
+    "particles": {
+      "spinup_days": 60.0,
+      "advection_tail_days": 7.0,
+      "release_interval_s": 600.0,
+      "Kh": 1.0,
+      "Kv": 0.001,
+      "dt_s": 300.0
+    }
+  },
+  "sources": [
+    {
+      "name": "1",
+      "y": 0.0,
+      "x": 22.4,
+      "depth": 2.0,
+      "Q": 8.0
+    },
+    {
+      "name": "2",
+      "y": 0.0,
+      "x": 75.7,
+      "depth": 2.0,
+      "Q": 6.0
+    },
+    {
+      "name": "3",
+      "y": 11.4,
+      "x": 0.0,
+      "depth": 2.0,
+      "Q": 4.0
+    },
+    {
+      "name": "4",
+      "y": 45.2,
+      "x": 0.0,
+      "depth": 2.0,
+      "Q": 5.0
+    }
+  ],
+  "environments": [
+    {
+      "env_id": 0,
+      "path": "env_synthetic_000.nc",
+      "cmems_time": "",
+      "size_bytes": 216591
+    }
+  ]
+}

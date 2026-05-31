@@ -1,12 +1,31 @@
-# MSc_Thesis
-Thesis for the Master Degree in Data Science and Artificial Intelligence held at University of Trieste (y.y. 2024-2026) and the Master Degree in Artificial Intelligence held at the University of Alicante in a Double Degree program (1st semester y.y. 2025/2026), in collaboration with the Sorbonne University of Abu Dhabi.
+<div align='center'>
+    <h1>Underwater Search and Navigation in Realistic Environment</h1>
+    <h3>Author: Christian Faccio</h3>
+</div>
+
+This work concerns the training and evaluation of a MARL algorithm suitable for underwater search and navigation in a realistic environment. The agents have find the optimal spot according to some conditions given beforehand, navigating through ocean currents. 
+
+---
+
+## Hardware stack
+
+- MacAir M3 16GB
+- NVIDIA Jetson Orin Nano 8GB
+- (TBD) HPC Cluster
+
+## Software stack
+
+- uv: package manager
+- SwarmSwIM: simulator
+- Gymnasium: simulator wrapper
+- torch: for neural networks
 
 ## Setup
 
 First of all, create a virtual environment and install the dependencies:
 ```
 git submodule update --init
-uv venv .venv --python 3.11
+uv venv .venv --python 3.10
 source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
@@ -17,58 +36,39 @@ cd SwarmSwIM
 uv pip install -e .
 ```
 
-## Roadmap
+## Structure
 
-### Step 1: Environment
-
-- 3D env
-- Currents -> surface data from Copernicus, Ekman spirals for depth
-- Dynamic env
-
-### Step 2: Single Agent
-
-- Params: salinity, light/turbidity (2/3 max)
-- Create points from which salinity distributes (-> distribution model)
-- Use equation for light/turbidity
-
-### Step 3: Multi-Agent
-
-
-
-### TBC
-
-Other improvements/enhancements to be defined ... 
-
-## How to download and load surface data
-
-Use the following script to download surface data from Copernicus:
 ```
-import copernicusmarine
-
-copernicusmarine.subset(
-    dataset_id="cmems_mod_glo_phy_my_0.083deg_P1D-m",
-    variables=["thetao", "so", "uo", "vo"],  # temperature, salinity, u-current, v-current
-    minimum_longitude=53.5,
-    maximum_longitude=55.5,
-    minimum_latitude=23.5,
-    maximum_latitude=25.5,
-    minimum_depth=0,
-    maximum_depth=200,
-    start_datetime="2020-01-01",
-    end_datetime="2020-12-31",
-    output_filename="abu_dhabi_ocean_data.nc",
-)
+.
+├── config              # configuration files
+├── conftest.py
+├── data                # real data for the env (TBD)
+├── docs                # useful resources and references
+├── pyproject.toml
+├── README.md
+├── requirements.txt
+├── runs                # training runs
+├── scripts             # useful scripts
+├── src
+│   ├── __init__.py
+│   ├── envs            # gym wrappers
+│   ├── eval.py         # evaluation script
+│   ├── models          # models used
+│   ├── multi_agent     # MARL algorithms
+│   ├── single_agent    # RL algorithms
+│   ├── train.py        # training script
+│   └── utils           # utility functions
+├── SwarmSwIM           # simulator
+├── tests               # unit tests
+└── thesis              # latex files
 ```
 
-and the following to load it:
-```
-import xarray as xr
+## Key choices
 
-ds = xr.open_dataset("abu_dhabi_ocean_data.nc")
-print(ds)  # shows dimensions, variables, coordinates
-print(ds.thetao.sel(depth=5, method="nearest").isel(time=0))  # temperature at 5m depth
-```
-
-## Further work
-
-- Use ROMS as numerical simulator for currents
+- Start with synthetic env and models, get success with MARL algo and then add env realism and complexity (p.s. discuss ROMS usage)
+- discrete action space (27 actions which are the 3D neighbors + stall)
+- continuous obs space (2k+11,)
+- agents only know relative variables, no GPS, yes depth
+- default PPO hyperparams from Andrychowicz et al.
+- envs randomization at each episode to introduce variability
+- targets done via salinity and turbidity values
