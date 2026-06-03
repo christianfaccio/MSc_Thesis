@@ -40,7 +40,10 @@ class SingleAgentEnv(gym.Env):
                  max_steps: int = 128,         # steps of an episode before truncation
                  dt: float = 0.1,               # seconds per step
                  frame_skip: int = 10,          # sim sub-steps per env step (action held constant)
-                 domain = (50.0, 50.0, 50.0),   # domain size (0.0-x, 0.0-y, 0.0-z)
+                 domain = (5000.0, 5000.0, 40.0),   # domain size (0.0-x, 0.0-y, 0.0-z) in meters
+                 sigma_h: float = 500.0,        # salinity plume horizontal std [m] (scales with domain)
+                 sigma_v: float = 12.0,         # salinity plume vertical std [m]
+                 eddy_length_scale: float = 1000.0,  # vortex eddy radius [m] (scales with domain)
                  ):
         super().__init__()
 
@@ -52,6 +55,9 @@ class SingleAgentEnv(gym.Env):
         self.dt = dt
         self.frame_skip = frame_skip
         self.domain = domain
+        self.sigma_h = sigma_h
+        self.sigma_v = sigma_v
+        self.eddy_length_scale = eddy_length_scale
 
         self.target_salinity = 0.0
         self.target_turbidity = 0.0
@@ -104,12 +110,20 @@ class SingleAgentEnv(gym.Env):
 
         # NOTE: this implementation does not prevent agent spotting close to sources, for now not a problem
 
-        # Randomize sources (using the env's seeded PRNG, not the global one) and target point
-        self.sources = random_sources(rng=self.np_random, n_sources=self.n_sources)
-        
+        # Randomize sources (using the env's seeded PRNG, not the global one) and target point.
+        # Bounds are tied to the domain so sources scale with it (default 5 km).
+        self.sources = random_sources(
+            rng=self.np_random, n_sources=self.n_sources,
+            min_x=0.0, max_x=self.domain[0],
+            min_y=0.0, max_y=self.domain[1],
+            min_depth=0.0, max_depth=self.domain[2],
+        )
+
         # Compute spawn-side (S, τ) FIRST so we can pick a target that's actually far from it.
         spawn = self.sim.agents[0].pos
-        self.current_salinity = compute_salinity_analytical(spawn[0], spawn[1], spawn[2], self.sources)
+        self.current_salinity = compute_salinity_analytical(
+            spawn[0], spawn[1], spawn[2], self.sources,
+            sigma_h=self.sigma_h, sigma_v=self.sigma_v)
         self.current_turbidity = compute_turbidity(spawn[2])
 
         # Resample the target point until it's outside the success zone w.r.t. the spawn.
@@ -118,7 +132,9 @@ class SingleAgentEnv(gym.Env):
             x_sel = self.np_random.uniform(0.0, self.domain[0])
             y_sel = self.np_random.uniform(0.0, self.domain[1])
             z_sel = self.np_random.uniform(0.0, self.domain[2])
-            cand_S = compute_salinity_analytical(x_sel, y_sel, z_sel, self.sources)
+            cand_S = compute_salinity_analytical(
+                x_sel, y_sel, z_sel, self.sources,
+                sigma_h=self.sigma_h, sigma_v=self.sigma_v)
             cand_T = compute_turbidity(z_sel)
             if (abs(cand_S - self.current_salinity) > 2 * self.epsilon_salinity or abs(cand_T - self.current_turbidity) > 2 * self.epsilon_turbidity):
                 break
@@ -139,11 +155,15 @@ class SingleAgentEnv(gym.Env):
         ])
         self.sim.environment['is_uniform_current'] = True
 
-        # 2. Vortex field (mesoscale eddies / spatial mixing)
+        # 2. Vortex field (mesoscale eddies / spatial mixing).
+        # domain_size ties the periodic tiling to the domain; eddy_length_scale
+        # sizes the swirls so they are resolved at km scale (not point-like).
         self.sim.vortex_field = sim_functions.VortexField(
             density=10,
             intensity=self.np_random.uniform(0.0, 0.3),
             rng=np.random.default_rng(int(self.np_random.integers(0, 2**31))),
+            domain_size=self.domain[0],
+            length_scale=self.eddy_length_scale,
         )
         self.sim.environment['is_vortex_currents'] = True
 
@@ -168,7 +188,7 @@ class SingleAgentEnv(gym.Env):
         # 5. Local waves (position + time dependent)
         self.sim.environment['local_waves'] = [{
             'amplitude':  self.np_random.uniform(0.0, 0.2),
-            'wavelength': self.np_random.uniform(5.0, 50.0),
+            'wavelength': self.np_random.uniform(500.0, 5000.0),   # km-scale wavelengths
             'wavespeed':  self.np_random.uniform(0.1, 1.0),
             'direction':  self.np_random.uniform(0.0, 360.0),
             'shift':      self.np_random.uniform(0.0, 2 * np.pi),
@@ -268,7 +288,8 @@ class SingleAgentEnv(gym.Env):
             (3)     -> Field gradients
             (1)     -> depth
         '''
-        new_salinity = compute_salinity_analytical(x=agent.pos[0], y=agent.pos[1], z=agent.pos[2], sources=self.sources)
+        new_salinity = compute_salinity_analytical(x=agent.pos[0], y=agent.pos[1], z=agent.pos[2], sources=self.sources,
+                                                   sigma_h=self.sigma_h, sigma_v=self.sigma_v)
         new_turbidity = compute_turbidity(depth=agent.pos[2])
         reward = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity)
         if action is not None:
@@ -283,7 +304,8 @@ class SingleAgentEnv(gym.Env):
         self.current_salinity = new_salinity
         self.current_turbidity = new_turbidity
 
-        dSdx, dSdy, dSdz = compute_salinity_gradient_analytical(agent.pos[0], agent.pos[1], agent.pos[2], self.sources)
+        dSdx, dSdy, dSdz = compute_salinity_gradient_analytical(agent.pos[0], agent.pos[1], agent.pos[2], self.sources,
+                                                                sigma_h=self.sigma_h, sigma_v=self.sigma_v)
         
         agent_depth = agent.pos[2]
 

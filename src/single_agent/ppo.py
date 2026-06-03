@@ -92,12 +92,21 @@ class Args:
     """agent commanded speed (m/s)"""
     max_steps: int = 256
     """maximum env steps per episode before truncation"""
-    dt: float = 0.1
+    dt: float = 0.5
     """simulator timestep (s) per env step"""
-    frame_skip: int = 10
-    """sim sub-steps per env step (action repeated); 1 disables frame skip"""
-    domain: tuple[float, float, float] = (100.0, 100.0, 100.0)
+    frame_skip: int = 60
+    """sim sub-steps per env step (action repeated); 1 disables frame skip.
+    Distance per env step ≈ v_agent · dt · frame_skip ≈ 1·0.5·60 = 30 m, so
+    max_steps=256 covers ~7.7 km (the 5 km domain). Raising frame_skip lengthens
+    each action's sim time (more sim.tick() calls ⇒ more compute per step)."""
+    domain: tuple[float, float, float] = (5000.0, 5000.0, 40.0)
     """domain extent in (x, y, z) meters"""
+    sigma_h: float = 500.0
+    """salinity plume horizontal std [m] — scale with the domain"""
+    sigma_v: float = 12.0
+    """salinity plume vertical std [m]"""
+    eddy_length_scale: float = 1000.0
+    """vortex eddy radius [m] — scale with the domain"""
 
     # Algorithm specific arguments
     # NOTE: default values are taken from Andrychowicz et. al
@@ -165,6 +174,9 @@ def make_env(args):
             dt=args.dt,
             frame_skip=args.frame_skip,
             domain=args.domain,
+            sigma_h=args.sigma_h,
+            sigma_v=args.sigma_v,
+            eddy_length_scale=args.eddy_length_scale,
         )
         env = gym.wrappers.RecordEpisodeStatistics(env)
         # Running observation normalization (Andrychowicz et al. 2021, §3.3)

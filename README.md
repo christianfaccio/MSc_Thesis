@@ -65,10 +65,24 @@ uv pip install -e .
 
 ## Key choices
 
-- Start with synthetic env and models, get success with MARL algo and then add env realism and complexity (p.s. discuss ROMS usage)
+- Analytical env as starter, using solver for real-physics env later. Real-data will be put as a future work
+- (1-10km, 1-10km, 35-50m) domain, agent max speed of 1m/s, battery life hypothetically of 2-8 hours
 - discrete action space (27 actions which are the 3D neighbors + stall)
 - continuous obs space (2k+11,)
 - agents only know relative variables, no GPS, yes depth
 - default PPO hyperparams from Andrychowicz et al.
 - envs randomization at each episode to introduce variability
-- targets done via salinity and turbidity values
+- optimal coral reef areas identified with (salinity, turbidity) pairs with analytical approach, with (salinity, turbidity, temperature) triplet when using Oceananigans
+- an agent actual step is made of multiple equal actions, such that it can navigate the whole env with a fair amount of steps (not too many cause in reality would be in the order of 10000), also because field values don't change too much in the 1-10km domain
+- Communication between agents is possible in the 1km domain using the BlueME technology, but not in the 10km domain, where only acoustic signals are available but have low latency
+- Number of agents scale up to 32
+
+## TO-DO
+
+- Implement battery
+- Less actions?
+- 1km domain vs 10km domain analysis and comparison
+- Scale number of agents
+- Does initial agents' distribution in the domain affect the mission?
+- Comparison between MARL algo and parallel RL (with full communication so to have a global state)
+- Use small grid size for real data even with 1-10km domain?
