@@ -10,3 +10,4 @@ CLAUDE.md
 .pytest_cache/
 runs/
 docs/
+MODEL.md
