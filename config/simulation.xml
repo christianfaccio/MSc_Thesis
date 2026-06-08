@@ -1,189 +1,79 @@
 <?xml version="1.0"?>
+<!--
+    1 km × 1 km × 40 m coastal scenario (Abu Dhabi shelf scale).
+
+    This mirrors config/simulation.xml but with the current parameters scaled to
+    the km domain. The key change is the extended <vortex_currents> line, which
+    now carries domain_size and length_scale so VortexField tiles over the whole
+    1 km domain and produces ~200 m eddies instead of the legacy 100 m point-like
+    swirls. SingleAgentEnv overrides these current values at reset(); this XML is
+    primarily for direct visualization via scripts/plot_currents.py.
+-->
 <data>
     <!-- Mandatory Field: Define environment characteristics -->
     <environment_setup>
 
-        <!-- Define a constant stream of planar current -->
-        <!-- Direction North-East, value in m/s -->
+        <!-- Constant planar drift (tidal / geostrophic background), m/s -->
         <uniform_current> 0.05 0.05 </uniform_current>
 
-        <!-- Define random noise currents -->
-        <!-- noise current is time-dependent and agent-specific, 
-        with no correlation between agents. 
-        Parameters are: 
-            Frequency [Hz]: determines the period of each disturbance 
-            Intensity [m/s]: determines the maximal intensity of noise current -->
+        <!-- Random noise currents: Frequency [Hz], Intensity [m/s] -->
         <noise_currents> 0.5 0.05 </noise_currents>
 
-        <!-- Define vorticity field current -->
-        <!-- Adds time-constant, location-dependent randomized current.
-        This method emulates large-scale field turbulence. 
-        Parameters are: 
-            Density [vortexes/100m^2]
-            Intensity [m/s]: -->
-        <vortex_currents> 20 0.15 </vortex_currents>
+        <!-- Vorticity field current (extended km form).
+             Parameters: density  intensity[m/s]  domain_size[m]  length_scale[m]
+               density       -> number of vortices spread over the domain
+               domain_size   -> periodic tiling period (match the domain extent)
+               length_scale  -> eddy radius; swirl speed peaks ~length_scale from
+                                each centre. ~200 m gives a few resolved eddies. -->
+        <vortex_currents> 20 0.15 1000.0 200.0 </vortex_currents>
 
-        <!-- Define wave sinusoidal current, Global -->
-        <!-- Globally applied, sinusoidal time-dependent noise -->
+        <!-- Global sinusoidal (tidal-like) current -->
         <global_waves>
-            <!-- Add each contribution separately -->
             <wave1>
-                <!-- Peak intensity in m/s -->
-                <amplitude> 0.06 </amplitude> 
-                <!-- Wave frequency in Hz -->
-                <frequency> 0.5 </frequency>
-                <!-- Direction of wave current [degree] -->
+                <amplitude> 0.06 </amplitude>
+                <frequency> 0.05 </frequency>
                 <direction> 90.0 </direction>
-                <!-- Time shift of wave normalized [0,2pi] -->
                 <shift> 1.0 </shift>
             </wave1>
-            
-            <!-- Uncomment and define additional waves if needed
-            <wave2>
-                <amplitude> 0.0 </amplitude> 
-                <frequency> 0.0 </frequency>
-                <direction> 0.0 </direction>
-                <shift> 0.0 </shift>
-            </wave2>
-            -->
         </global_waves>
 
-        <!-- Define space and time-dependent wave currents -->
-        <!-- Adds currents following sinusoidal disturbances, space and time-dependent.
-        Direction of wave advancement corresponds with direction of disturbance -->
+        <!-- Space + time dependent waves -->
         <local_waves>
-            <!-- Add each contribution separately
-            Parameters:
-            -->
             <wave1>
-                <!-- Peak intensity of current disturbance in m/s -->
-                <amplitude> 0.06 </amplitude> 
-                <!-- Wavelength in m -->
-                <wavelength> 1.0 </wavelength>
-                <!-- Wave advancement velocity in m/s -->
+                <amplitude> 0.06 </amplitude>
+                <wavelength> 200.0 </wavelength>
                 <wavespeed> 0.1 </wavespeed>
-                <!-- Direction of advancement of waves and direction of current contribution [degree] -->
                 <direction> 60.0 </direction>
-                <!-- Time shift of wave [0,2pi] -->
                 <shift> 1.0 </shift>
             </wave1>
-
-            <!-- Uncomment and define additional waves if needed
-            <wave2>
-                <amplitude> 0.0 </amplitude> 
-                <wavelength> 0.0 </wavelength>
-                <wavespeed> 0.0 </wavespeed>
-                <direction> 0.0 </direction>
-                <shift> 0.0 </shift>
-            </wave2> -->
-
         </local_waves>
 
-        <!-- 3D Current Models -->
-        <!-- Available models: none, depth_decay, layered, ekman -->
-        <!--
-        <current_3d>
-            <model>none</model>
-        </current_3d>
-        -->
-
-        <!-- Depth-decay model: exponentially decaying current with depth
-        <current_3d>
-            <model>depth_decay</model>
-            <surface_speed>0.5</surface_speed>
-            <direction>90.0</direction>
-            <decay_rate>0.01</decay_rate>
-            <vertical_speed>0.0</vertical_speed>
-            <vertical_decay>0.01</vertical_decay>
-        </current_3d>
-        -->
-
-        <!-- Layered model: discrete depth layers with linear interpolation
-        <current_3d>
-            <model>layered</model>
-            <layer>
-                <depth>0.0</depth>
-                <u>0.5</u>
-                <v>0.1</v>
-                <w>0.0</w>
-            </layer>
-            <layer>
-                <depth>50.0</depth>
-                <u>0.2</u>
-                <v>0.05</v>
-                <w>0.0</w>
-            </layer>
-            <layer>
-                <depth>100.0</depth>
-                <u>0.0</u>
-                <v>0.0</v>
-                <w>0.0</w>
-            </layer>
-        </current_3d>
-        -->
-
-        <!-- Ekman spiral: wind-driven current rotating with depth -->
+        <!-- Ekman spiral: wind-driven current rotating with depth.
+             Latitude set to the Abu Dhabi reference 24.5 degN. -->
         <current_3d>
             <model>ekman</model>
             <wind_speed>5.0</wind_speed>
-            <wind_direction>0.0</wind_direction>
-            <latitude>45.0</latitude>
-            <eddy_viscosity>0.1</eddy_viscosity>
+            <wind_direction>315.0</wind_direction>
+            <latitude>24.5</latitude>
+            <eddy_viscosity>0.01</eddy_viscosity>
         </current_3d>
-        
-
-        <!-- Real ocean data from CMEMS NetCDF file
-        <current_3d>
-            <model>data</model>
-            <filepath>../data/envs/env_000.nc</filepath>
-            <origin_lat>24.5</origin_lat>
-            <origin_lon>54.5</origin_lon>
-            <time_index>0</time_index>
-            <time_mode>fixed</time_mode>
-        </current_3d> -->
-
-        <!-- Pre-computed ocean data from custom NetCDF file
-        <current_3d>
-            <model>precomputed</model>
-            <filepath>../data/envs/env_000.nc</filepath>
-            <origin_lat>24.5</origin_lat>
-            <origin_lon>54.5</origin_lon>
-        </current_3d>
-        -->
-        
 
     </environment_setup>
 
     <!-- Optional Field: Describe start-up agents and add them to the simulation -->
     <agents>
-        <agent_type> 
-            <!-- reference xml describing the agent -->
+        <agent_type>
             <description>single_agent.xml</description>
-            <!-- Name prefix -->
             <name>A</name>
             <state>
-                <!-- Initial state, one line for each agent -->
                 <!-- x, y, z, psi (overwritten in env.reset()) -->
-                0.0  0.0  69.0  46.0
+                0.0  0.0  20.0  46.0
             </state>
         </agent_type>
-
-
-        <!-- Uncomment to add different type of agents
-        <agent_type2> 
-            <description>your_file.xml</description>
-            <name>B</name>
-            <state>
-                0.0  0.0  0.0  0.0
-            </state>
-        </agent_type2> 
-        -->
-
-
     </agents>
 
     <seed>
-        111 
+        111
     </seed>
 
 </data>
