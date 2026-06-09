@@ -19,8 +19,8 @@ Output → data/oceananigans/coastal_5km_<season>.nc
 
 ARCHITECTURE (CPU vs GPU):
 choose at run time with the OCEAN_ARCH environment variable —
-    Mac (CPU):      OCEAN_ARCH=CPU julia --project=. abu_dhabi_coastal.jl
-    Jetson (GPU):   OCEAN_ARCH=GPU julia --project=. abu_dhabi_coastal.jl
+    Mac (CPU):      OCEAN_ARCH=CPU julia --project=. hydrostatic.jl
+    Jetson (GPU):   OCEAN_ARCH=GPU julia --project=. hydrostatic.jl
 On the Jetson Orin Nano (ARM64, CUDA sm_87) CUDA.jl must be installed and
 functional — verify first with `julia -e 'using CUDA; CUDA.functional()'`.
 The CPU path is the guaranteed fallback.
@@ -37,9 +37,11 @@ Random.seed!(1337)
 # ─────────────────────────────────────────────────────────────────────────────
 # Architecture switch (CPU on the Mac, GPU/CUDA on the Jetson)
 # ─────────────────────────────────────────────────────────────────────────────
-const ARCH = let a = uppercase(get(ENV, "OCEAN_ARCH", "CPU"))
-    a == "GPU" ? GPU() : CPU()
+const USE_GPU = uppercase(get(ENV, "OCEAN_ARCH", "CPU")) == "GPU"
+if USE_GPU
+	using CUDA	# loads OceananigansCUDAExt, which defines zero-arg GPU()
 end
+const ARCH = USE_GPU ? GPU(CUDABackend()) : CPU()
 @info "Oceananigans architecture: $(ARCH)  (set OCEAN_ARCH=GPU|CPU to change)"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -75,14 +77,14 @@ const tau_y_top    = +p.tau_mag * sind(WIND_DIR_DEG - 270)   # positive → -y f
 # Keep in sync with config/sources_5km.json.
 # ─────────────────────────────────────────────────────────────────────────────
 const Q_SCALE = 1.0e-3   # PSU/s per unit Q
-const SIGMA_H = 500.0    # plume horizontal std [m]
+const SIGMA_H = 100.0    # plume horizontal std [m]
 const SIGMA_V = 12.0     # plume vertical std [m]
 
 const sources = [
-    (Q = 8.0, x0 = 1120.0, y0 =    0.0, z0 = -2.0),
-    (Q = 6.0, x0 = 3785.0, y0 =    0.0, z0 = -2.0),
-    (Q = 4.0, x0 =    0.0, y0 =  570.0, z0 = -2.0),
-    (Q = 5.0, x0 =    0.0, y0 = 2260.0, z0 = -2.0),
+    (Q = 8.0, x0 = 224.0, y0 =    0.0, z0 = -2.0),
+    (Q = 6.0, x0 = 620.0, y0 =    0.0, z0 = -2.0),
+    (Q = 4.0, x0 =   0.0, y0 =  114.0, z0 = -2.0),
+    (Q = 5.0, x0 =   0.0, y0 =  452.0, z0 = -2.0),
 ]
 
 @inline function salinity_source(x, y, z, t)
@@ -115,8 +117,8 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 grid = RectilinearGrid(ARCH;
     size     = (128, 128, 48),
-    x        = (0, 5000),
-    y        = (0, 5000),
+    x        = (0, 1000),
+    y        = (0, 1000),
     z        = (-40, 0),                # z negative downward, surface at 0
     topology = (Periodic, Periodic, Bounded),
 )
@@ -162,18 +164,24 @@ set!(model, T = T_init, S = S_init)
 # ─────────────────────────────────────────────────────────────────────────────
 # Simulation + adaptive Δt. Coarse hydrostatic grid permits large steps.
 # ─────────────────────────────────────────────────────────────────────────────
-simulation = Simulation(model, Δt = 5.0, stop_time = 1day)
+const WARMUP_TIME = 12hours
+const RECORDING_TIME = 3days
+simulation = Simulation(model, Δt = 5.0, stop_time = WARMUP_TIME)
 simulation.callbacks[:progress] = Callback(progress, IterationInterval(50))
 
 wizard = TimeStepWizard(cfl = 0.7, max_change = 1.1, max_Δt = 60.0)
 simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(10))
 
+@info "Warmup phase ($(SEASON), $(ARCH)): spinning up for $(prettytime(WARMUP_TIME)) with no output..."
+run!(simulation)
+@info "Warmup complete at t = $(prettytime(time(simulation))); ataching output writer."
+
 # ─────────────────────────────────────────────────────────────────────────────
-# NetCDF output → data/oceananigans/coastal_5km_<season>.nc
+# NetCDF output → data/oceananigans/hydrostatic_<season>.nc
 # ─────────────────────────────────────────────────────────────────────────────
 output_dir  = joinpath(@__DIR__, "..", "data", "oceananigans")
 mkpath(output_dir)
-output_path = joinpath(output_dir, "coastal_5km_$(SEASON).nc")
+output_path = joinpath(output_dir, "hydrostatic_$(SEASON).nc")
 
 simulation.output_writers[:fields] = NetCDFWriter(
     model,
@@ -183,10 +191,12 @@ simulation.output_writers[:fields] = NetCDFWriter(
      T = model.tracers.T,
      S = model.tracers.S),
     filename           = output_path,
-    schedule           = TimeInterval(10minutes),   # ~144 snapshots over 1 day
+    schedule           = TimeInterval(15minutes),
     overwrite_existing = true,
 )
 
+simulation.stop_time = WARMUP_TIME + RECORDING_TIME
+
 @info "Starting Oceananigans hydrostatic run ($(SEASON), $(ARCH)) → $output_path"
 run!(simulation)
-@info "Done."
+@info "Done."	

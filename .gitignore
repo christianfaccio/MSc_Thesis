@@ -11,3 +11,4 @@ CLAUDE.md
 runs/
 docs/
 MODEL.md
+*.log
