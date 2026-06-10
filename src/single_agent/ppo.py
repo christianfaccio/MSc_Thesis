@@ -84,6 +84,9 @@ class Args:
     """the id of the environment"""
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML"""
+    netcdf_file: str = None
+    """optional Oceananigans NetCDF output (e.g. data/oceananigans/hydrostatic_winter.nc);
+    when set, currents and salinity come from the data instead of the synthetic models"""
     n_sources: int = 4
     """number of pollution sources spawned each reset"""
     k: int = 4
@@ -167,6 +170,7 @@ def make_env(args):
     def thunk():
         env = SingleAgentEnv(
             xml_file=args.xml_file,
+            netcdf_file=args.netcdf_file,
             n_sources=args.n_sources,
             k=args.k,
             v_agent=args.v_agent,

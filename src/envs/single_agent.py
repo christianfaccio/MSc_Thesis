@@ -34,6 +34,7 @@ class SingleAgentEnv(gym.Env):
     '''
     def __init__(self,
                  xml_file: str,
+                 netcdf_file: str = None,
                  n_sources: int = 4,
                  k: int = 4,                    # history length of (action, reward)
                  v_agent: float = 1.0,          # agent speed in m/s
@@ -48,6 +49,7 @@ class SingleAgentEnv(gym.Env):
         super().__init__()
 
         self.sim_xml = xml_file
+        self.netcdf_file = netcdf_file
         self.n_sources = n_sources
         self.k = k
         self.v = v_agent
@@ -65,7 +67,7 @@ class SingleAgentEnv(gym.Env):
         self.current_turbidity = 0.0
 
         self._in_zone_steps = 0
-        self.epsilon_salinity = 0.5     
+        self.epsilon_salinity = 0.05     
         self.epsilon_turbidity = 0.05   
 
         # Action Space
@@ -79,6 +81,9 @@ class SingleAgentEnv(gym.Env):
         self._action_to_direction = self._build_action_table()  # scalar -> [dx,dy,dz] normalized
 
         self.sim = None
+        # NetCDF ocean-data loader, created lazily on first reset and reused
+        # across episodes (re-opening the file each reset leaks file handles).
+        self._field_loader = None
 
     def reset(self, seed=None, options=None):
         '''
@@ -98,8 +103,13 @@ class SingleAgentEnv(gym.Env):
         # leaves _in_zone_steps == 3 and the next episode could terminate immediately.
         self._in_zone_steps = 0
 
-        # Create the env (Simulator class)
-        self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.sim_xml)
+        # Create the env (Simulator class). The FieldLoader instance is shared
+        # across resets; Simulator accepts it in place of a file path.
+        if self.netcdf_file and self._field_loader is None:
+            from SwarmSwIM.ocean_data import FieldLoader
+            self._field_loader = FieldLoader(self.netcdf_file)
+        self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.sim_xml,
+                             netcdf_file=self._field_loader)
 
         # Randomize agent position and heading (psi in degrees, SwarmSwIM NED convention)
         for agent in self.sim.agents:
@@ -110,20 +120,94 @@ class SingleAgentEnv(gym.Env):
 
         # NOTE: this implementation does not prevent agent spotting close to sources, for now not a problem
 
-        # Randomize sources (using the env's seeded PRNG, not the global one) and target point.
-        # Bounds are tied to the domain so sources scale with it (default 5 km).
-        self.sources = random_sources(
-            rng=self.np_random, n_sources=self.n_sources,
-            min_x=0.0, max_x=self.domain[0],
-            min_y=0.0, max_y=self.domain[1],
-            min_depth=0.0, max_depth=self.domain[2],
-        )
+        if self.netcdf_file:
+            # Episode variability comes from the data's time axis: pick a random
+            # snapshot of the Oceananigans run (frozen within the episode).
+            time_idx = int(self.np_random.integers(self.sim.current_3d.n_times))
+            self.sim.current_3d.set_snapshot(time_idx)
+            salinity_at = self.sim.current_3d.salinity_at
+        else:
+            # Randomize sources (using the env's seeded PRNG, not the global one).
+            # Bounds are tied to the domain so sources scale with it (default 5 km).
+            self.sources = random_sources(
+                rng=self.np_random, n_sources=self.n_sources,
+                min_x=0.0, max_x=self.domain[0],
+                min_y=0.0, max_y=self.domain[1],
+                min_depth=0.0, max_depth=self.domain[2],
+            )
+
+            def salinity_at(x, y, z):
+                return compute_salinity_analytical(
+                    x, y, z, self.sources, sigma_h=self.sigma_h, sigma_v=self.sigma_v)
+
+            # Randomize currents
+            # The 5 components below form the 2D surface current; EkmanSpiral then
+            # rotates and decays them with depth to produce the 3D field used in calculate_currents().
+
+            # 1. Uniform background (tidal / geostrophic drift)
+            bg_speed = self.np_random.uniform(0.0, 0.3)
+            bg_angle = self.np_random.uniform(0.0, 2 * np.pi)
+            self.sim.environment['uniform_current'] = np.array([
+                bg_speed * np.cos(bg_angle),
+                bg_speed * np.sin(bg_angle),
+                0.0,
+            ])
+            self.sim.environment['is_uniform_current'] = True
+
+            # 2. Vortex field (mesoscale eddies / spatial mixing).
+            # domain_size ties the periodic tiling to the domain; eddy_length_scale
+            # sizes the swirls so they are resolved at km scale (not point-like).
+            self.sim.vortex_field = sim_functions.VortexField(
+                density=10,
+                intensity=self.np_random.uniform(0.0, 0.3),
+                rng=np.random.default_rng(int(self.np_random.integers(0, 2**31))),
+                domain_size=self.domain[0],
+                length_scale=self.eddy_length_scale,
+            )
+            self.sim.environment['is_vortex_currents'] = True
+
+            # 3. Turbulent noise (small-scale temporal fluctuations)
+            self.sim.turbolent_noise = sim_functions.TimeNoise(
+                time=self.sim.time,
+                freq=self.np_random.uniform(0.1, 1.0),
+                intensity=self.np_random.uniform(0.0, 0.2),
+                rng=np.random.default_rng(int(self.np_random.integers(0, 2**31))),
+            )
+            self.sim.environment['is_noise_currents'] = True
+
+            # 4. Global waves (time-dependent sinusoidal)
+            self.sim.environment['global_waves'] = [{
+                'amplitude': self.np_random.uniform(0.0, 0.2),
+                'frequency': self.np_random.uniform(0.05, 0.5),
+                'direction': self.np_random.uniform(0.0, 360.0),
+                'shift':     self.np_random.uniform(0.0, 2 * np.pi),
+            }]
+            self.sim.environment['is_global_waves'] = True
+
+            # 5. Local waves (position + time dependent)
+            self.sim.environment['local_waves'] = [{
+                'amplitude':  self.np_random.uniform(0.0, 0.2),
+                'wavelength': self.np_random.uniform(500.0, 5000.0),   # km-scale wavelengths
+                'wavespeed':  self.np_random.uniform(0.1, 1.0),
+                'direction':  self.np_random.uniform(0.0, 360.0),
+                'shift':      self.np_random.uniform(0.0, 2 * np.pi),
+            }]
+            self.sim.environment['is_local_waves'] = True
+
+            # 6. EkmanSpiral — transformer that rotates/decays the 2D surface current with depth.
+            # wind_speed adds an additional wind-driven term on top of the surface stack above.
+            self.sim.current_3d = sim_functions.EkmanSpiral(
+                wind_speed=self.np_random.uniform(0.0, 10.0),
+                wind_direction=self.np_random.uniform(0.0, 360.0),
+                latitude=24.5,
+                eddy_viscosity=0.05,
+            )
+            self.sim.environment['is_current_3d'] = True
+            self.sim.environment['current_3d_model'] = 'ekman'
 
         # Compute spawn-side (S, τ) FIRST so we can pick a target that's actually far from it.
         spawn = self.sim.agents[0].pos
-        self.current_salinity = compute_salinity_analytical(
-            spawn[0], spawn[1], spawn[2], self.sources,
-            sigma_h=self.sigma_h, sigma_v=self.sigma_v)
+        self.current_salinity = salinity_at(spawn[0], spawn[1], spawn[2])
         self.current_turbidity = compute_turbidity(spawn[2])
 
         # Resample the target point until it's outside the success zone w.r.t. the spawn.
@@ -132,79 +216,13 @@ class SingleAgentEnv(gym.Env):
             x_sel = self.np_random.uniform(0.0, self.domain[0])
             y_sel = self.np_random.uniform(0.0, self.domain[1])
             z_sel = self.np_random.uniform(0.0, self.domain[2])
-            cand_S = compute_salinity_analytical(
-                x_sel, y_sel, z_sel, self.sources,
-                sigma_h=self.sigma_h, sigma_v=self.sigma_v)
+            cand_S = salinity_at(x_sel, y_sel, z_sel)
             cand_T = compute_turbidity(z_sel)
-            if (abs(cand_S - self.current_salinity) > 2 * self.epsilon_salinity or abs(cand_T - self.current_turbidity) > 2 * self.epsilon_turbidity):
+            if (abs(cand_S - self.current_salinity) > 2 * self.epsilon_salinity
+                    or abs(cand_T - self.current_turbidity) > 2 * self.epsilon_turbidity):
                 break
         self.target_salinity = cand_S
         self.target_turbidity = cand_T
-        
-        # Randomize currents
-        # The 5 components below form the 2D surface current; EkmanSpiral then
-        # rotates and decays them with depth to produce the 3D field used in calculate_currents().
-
-        # 1. Uniform background (tidal / geostrophic drift)
-        bg_speed = self.np_random.uniform(0.0, 0.3)
-        bg_angle = self.np_random.uniform(0.0, 2 * np.pi)
-        self.sim.environment['uniform_current'] = np.array([
-            bg_speed * np.cos(bg_angle),
-            bg_speed * np.sin(bg_angle),
-            0.0,
-        ])
-        self.sim.environment['is_uniform_current'] = True
-
-        # 2. Vortex field (mesoscale eddies / spatial mixing).
-        # domain_size ties the periodic tiling to the domain; eddy_length_scale
-        # sizes the swirls so they are resolved at km scale (not point-like).
-        self.sim.vortex_field = sim_functions.VortexField(
-            density=10,
-            intensity=self.np_random.uniform(0.0, 0.3),
-            rng=np.random.default_rng(int(self.np_random.integers(0, 2**31))),
-            domain_size=self.domain[0],
-            length_scale=self.eddy_length_scale,
-        )
-        self.sim.environment['is_vortex_currents'] = True
-
-        # 3. Turbulent noise (small-scale temporal fluctuations)
-        self.sim.turbolent_noise = sim_functions.TimeNoise(
-            time=self.sim.time,
-            freq=self.np_random.uniform(0.1, 1.0),
-            intensity=self.np_random.uniform(0.0, 0.2),
-            rng=np.random.default_rng(int(self.np_random.integers(0, 2**31))),
-        )
-        self.sim.environment['is_noise_currents'] = True
-
-        # 4. Global waves (time-dependent sinusoidal)
-        self.sim.environment['global_waves'] = [{
-            'amplitude': self.np_random.uniform(0.0, 0.2),
-            'frequency': self.np_random.uniform(0.05, 0.5),
-            'direction': self.np_random.uniform(0.0, 360.0),
-            'shift':     self.np_random.uniform(0.0, 2 * np.pi),
-        }]
-        self.sim.environment['is_global_waves'] = True
-
-        # 5. Local waves (position + time dependent)
-        self.sim.environment['local_waves'] = [{
-            'amplitude':  self.np_random.uniform(0.0, 0.2),
-            'wavelength': self.np_random.uniform(500.0, 5000.0),   # km-scale wavelengths
-            'wavespeed':  self.np_random.uniform(0.1, 1.0),
-            'direction':  self.np_random.uniform(0.0, 360.0),
-            'shift':      self.np_random.uniform(0.0, 2 * np.pi),
-        }]
-        self.sim.environment['is_local_waves'] = True
-
-        # 6. EkmanSpiral — transformer that rotates/decays the 2D surface current with depth.
-        # wind_speed adds an additional wind-driven term on top of the surface stack above.
-        self.sim.current_3d = sim_functions.EkmanSpiral(
-            wind_speed=self.np_random.uniform(0.0, 10.0),
-            wind_direction=self.np_random.uniform(0.0, 360.0),
-            latitude=24.5,
-            eddy_viscosity=0.05,
-        )
-        self.sim.environment['is_current_3d'] = True
-        self.sim.environment['current_3d_model'] = 'ekman'
 
         # Initialize history buffer
         self.history = np.zeros((self.k, 2), dtype=np.float32)
@@ -288,24 +306,31 @@ class SingleAgentEnv(gym.Env):
             (3)     -> Field gradients
             (1)     -> depth
         '''
-        new_salinity = compute_salinity_analytical(x=agent.pos[0], y=agent.pos[1], z=agent.pos[2], sources=self.sources,
-                                                   sigma_h=self.sigma_h, sigma_v=self.sigma_v)
+        if not self.netcdf_file:
+            new_salinity = compute_salinity_analytical(x=agent.pos[0], y=agent.pos[1], z=agent.pos[2], sources=self.sources,
+                                                    sigma_h=self.sigma_h, sigma_v=self.sigma_v)
+            dSdx, dSdy, dSdz = compute_salinity_gradient_analytical(agent.pos[0], agent.pos[1], agent.pos[2], self.sources,
+                                                                sigma_h=self.sigma_h, sigma_v=self.sigma_v)
+        else:
+            new_salinity = self.sim.current_3d.salinity_at(agent.pos[0], agent.pos[1], agent.pos[2])
+            dSdx, dSdy, dSdz = self.sim.current_3d.salinity_gradient_at(agent.pos[0], agent.pos[1], agent.pos[2])
         new_turbidity = compute_turbidity(depth=agent.pos[2])
-        reward = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity)
-        if action is not None:
-            self.history = np.roll(self.history, -1, axis=0)
-            self.history[-1] = [action, reward]
 
+        # Currents the agent is actually advected by (NetCDF data currents in
+        # data mode, synthetic surface stack + Ekman otherwise), rotated into
+        # the body frame so both modes share the local-frame observation.
         currents = self.sim.depth_current_at(agent)
         u = currents[0] * np.cos(np.deg2rad(agent.psi)) + currents[1] * np.sin(np.deg2rad(agent.psi))
         v = currents[0] * np.sin(np.deg2rad(agent.psi)) - currents[1] * np.cos(np.deg2rad(agent.psi))
         w = currents[2]
 
+        reward = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity)
+        if action is not None:
+            self.history = np.roll(self.history, -1, axis=0)
+            self.history[-1] = [action, reward]
+
         self.current_salinity = new_salinity
         self.current_turbidity = new_turbidity
-
-        dSdx, dSdy, dSdz = compute_salinity_gradient_analytical(agent.pos[0], agent.pos[1], agent.pos[2], self.sources,
-                                                                sigma_h=self.sigma_h, sigma_v=self.sigma_v)
         
         agent_depth = agent.pos[2]
 
@@ -317,3 +342,9 @@ class SingleAgentEnv(gym.Env):
                       dSdx, dSdy, dSdz,
                       agent_depth]),
         ]).astype(np.float32), reward
+
+    def close(self):
+        if self._field_loader is not None:
+            self._field_loader.close()
+            self._field_loader = None
+        super().close()

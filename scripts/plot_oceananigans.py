@@ -1,20 +1,25 @@
 """
-Visualize a single Oceananigans snapshot from a NetCDF produced by either
-oceananigans/abu_dhabi_coastal.jl (hydrostatic, 5 km, → coastal_5km_<season>.nc)
-or oceananigans/abu_dhabi_les.jl (non-hydrostatic LES, 100 m → scenario_01_<season>.nc).
+Visualize Oceananigans output from a NetCDF produced by oceananigans/hydrostatic.jl
+(hydrostatic, 5 km → hydrostatic_<season>.nc) or non_hydrostatic.jl (LES, 100 m).
 Both write the same variables (u, v, w, T, S) on an Arakawa C-grid, so the same
 script handles either file.
 
-Produces four 3D plots under data/oceananigans/plots/:
-  - currents_<season>.png      (matplotlib quiver, colored by speed)
+Produces, under data/oceananigans/plots/, a static view of one snapshot:
+  - currents_<season>.png          (3D matplotlib quiver, colored by speed)
+  - currents_surface_<season>.png  (2D top-down surface streamlines, colored by speed)
   - salinity_<season>.html     (plotly volume, red X source markers)
   - temperature_<season>.html  (plotly volume)
   - turbidity_<season>.html    (plotly volume, analytical Beer-Lambert from depth)
+and, with --animate, top-down GIFs of the time-evolution:
+  - salinity_<season>.gif      (plan-view, column-max, source markers)
+  - temperature_<season>.gif   (plan-view, depth-mean)
 
 Usage:
-    python scripts/plot_oceananigans.py                       # default: coastal_5km_winter.nc
-    python scripts/plot_oceananigans.py --season summer --time-idx 5
-    python scripts/plot_oceananigans.py --file data/oceananigans/scenario_01_winter.nc \
+    python scripts/plot_oceananigans.py                       # last snapshot of hydrostatic_winter.nc
+    python scripts/plot_oceananigans.py --season winter --time-idx 100
+    python scripts/plot_oceananigans.py --season winter --time-hours 48
+    python scripts/plot_oceananigans.py --season winter --animate --no-show
+    python scripts/plot_oceananigans.py --file data/oceananigans/hydrostatic_winter.nc \
         --sources-file config/sources.json
 """
 
@@ -25,13 +30,15 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import plotly.graph_objects as go
 import xarray as xr
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3d projection)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 from src.models.turbidity import compute_turbidity  # noqa: E402
+from src.utils.plotting import (  # noqa: E402
+    _coord, _fmt_time, _to_center_zyx, plot_volume_netcdf, plot_currents_netcdf,
+    plot_surface_currents_netcdf, animate_field_netcdf,
+)
 
 DATA_DIR = REPO_ROOT / "data" / "oceananigans"
 PLOT_DIR = DATA_DIR / "plots"
@@ -41,160 +48,54 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--season", choices=["winter", "summer"], default="winter")
     p.add_argument("--file", type=Path, default=None,
-                   help="path to the NetCDF (default: data/oceananigans/coastal_5km_<season>.nc)")
+                   help="path to the NetCDF (default: data/oceananigans/hydrostatic<season>.nc)")
     p.add_argument("--sources-file", type=Path, default=None,
-                   help="source catalog JSON for markers (default: config/sources_5km.json)")
+                   help="source catalog JSON for markers (default: config/sources.json)")
     p.add_argument("--time-idx", type=int, default=-1,
-                   help="time snapshot index (default: last)")
+                   help="time snapshot index for the static plots (default: -1 = last). "
+                        "Negative indexes from the end, as in numpy.")
+    p.add_argument("--time-hours", type=float, default=None,
+                   help="pick the static snapshot nearest this simulation time [hours]; "
+                        "overrides --time-idx when given.")
+    p.add_argument("--animate", action="store_true",
+                   help="also write top-down evolution GIFs of T and S over all frames")
+    p.add_argument("--anim-fps", type=int, default=12,
+                   help="GIF frames per second (default: 12)")
+    p.add_argument("--anim-stride", type=int, default=1,
+                   help="temporal subsampling for the GIF: keep every Nth frame (default: 1)")
+    p.add_argument("--anim-reduce", choices=["auto", "max", "mean", "slice"], default="auto",
+                   help="vertical collapse for the GIF (default auto: S=max, T=mean). "
+                        "'slice' uses --anim-depth.")
+    p.add_argument("--anim-depth", type=float, default=2.0,
+                   help="depth [m, positive-down] for --anim-reduce slice (default: 2)")
     p.add_argument("--stride", type=int, default=10,
-                   help="quiver subsampling stride per axis")
+                   help="quiver subsampling stride per axis (3D currents plot)")
+    p.add_argument("--stream-density", type=float, default=1.4,
+                   help="streamline density for the 2D surface-currents plot (default: 1.4)")
     p.add_argument("--vol-grid", type=int, default=40,
                    help="downsampled volume grid per axis for Plotly")
+    p.add_argument("--z-aspect", type=float, default=0.2,
+                   help="on-screen height of the z-axis as a fraction of the horizontal "
+                        "extent (domain-independent: 1.0 = cube, which over-inflates "
+                        "vertical currents on a wide/shallow domain). Default 0.2 keeps "
+                        "depth visible without distorting the flow, for any domain size.")
     p.add_argument("--k-turbidity", type=float, default=0.3,
                    help="Beer-Lambert k [1/m]; 0.3 = Arabian Gulf coastal default")
     p.add_argument("--no-show", action="store_true")
     return p.parse_args()
 
-
-def _coord(da: xr.DataArray, axis: str) -> tuple[str, np.ndarray]:
-    """Return (dim name, values) for a spatial axis ('x'/'y'/'z') of `da`."""
-    for d in da.dims:
-        if d.lower().startswith(axis):
-            return d, da.coords[d].values
-    raise KeyError(f"no '{axis}' coord on {da.name} (dims={da.dims})")
-
-
-def _to_center_zyx(da: xr.DataArray, xc, yc, zc) -> np.ndarray:
-    """Interpolate `da` to cell centers (xc, yc, zc) and return (nz, ny, nx)."""
-    xd, xv = _coord(da, "x")
-    yd, yv = _coord(da, "y")
-    zd, zv = _coord(da, "z")
-    interp = {}
-    if not np.array_equal(xv, xc):
-        interp[xd] = xc
-    if not np.array_equal(yv, yc):
-        interp[yd] = yc
-    if not np.array_equal(zv, zc):
-        interp[zd] = zc
-    arr = da.interp(interp) if interp else da
-    return arr.transpose(zd, yd, xd).values
-
-
-def plot_currents(ds: xr.Dataset, time_idx: int, xc, yc, zc,
-                  stride: int, sources: list[dict], out_path: Path) -> None:
-    u = _to_center_zyx(ds.u.isel(time=time_idx), xc, yc, zc)
-    v = _to_center_zyx(ds.v.isel(time=time_idx), xc, yc, zc)
-    w = _to_center_zyx(ds.w.isel(time=time_idx), xc, yc, zc)
-
-    s = stride
-    Z, Y, X = np.meshgrid(zc[::s], yc[::s], xc[::s], indexing="ij")
-    ud, vd, wd = u[::s, ::s, ::s], v[::s, ::s, ::s], w[::s, ::s, ::s]
-    speed = np.sqrt(ud ** 2 + vd ** 2 + wd ** 2)
-
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection="3d")
-
-    smin, smax = float(speed.min()), float(speed.max())
-    norm = plt.Normalize(smin, smax if smax > smin else smin + 1e-9)
-    colors = plt.cm.viridis(norm(speed.ravel()))
-
-    domain = max(float(xc.max() - xc.min()), float(yc.max() - yc.min()))
-    arrow = 0.05 * domain if domain > 0 else 0.05
-
-    # Z values are negative (Oceananigans convention: surface at z=0, depths at z<0).
-    # matplotlib will naturally place larger (less negative) values toward the top.
-    ax.quiver(X, Y, Z, ud, vd, wd,
-              length=arrow, normalize=True, colors=colors, linewidth=0.6)
-
-    if sources:
-        for src in sources:
-            ax.scatter(src["x"], src["y"], -float(src["depth"]),
-                       c="red", s=80, marker="X",
-                       edgecolors="black", linewidths=1.0, label=src["name"])
-        ax.legend(loc="upper right", fontsize=8)
-
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-    ax.set_zlabel("z [m]  (surface at 0)")
-    t_value = ds.time.values[time_idx]
-    ax.set_title(f"Currents — Oceananigans  (t = {t_value})")
-
-    sm = plt.cm.ScalarMappable(cmap="viridis", norm=norm)
-    sm.set_array([])
-    fig.colorbar(sm, ax=ax, shrink=0.6, label="speed |u| [m/s]")
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=140, bbox_inches="tight")
-    print(f"saved {out_path}")
-
-
-def plot_volume(field_zyx: np.ndarray, xc, yc, zc,
-                vol_grid: int, colorscale: str,
-                title: str, value_label: str,
-                sources: list[dict] | None, out_path: Path) -> None:
-    """3D Plotly volume rendering. Downsamples field + coords to ~vol_grid per axis."""
-    sx = max(len(xc) // vol_grid, 1)
-    sy = max(len(yc) // vol_grid, 1)
-    sz = max(len(zc) // vol_grid, 1)
-    xd, yd, zd = xc[::sx], yc[::sy], zc[::sz]
-    Z, Y, X = np.meshgrid(zd, yd, xd, indexing="ij")
-    F = field_zyx[::sz, ::sy, ::sx]
-    fmin, fmax = float(F.min()), float(F.max())
-    if fmax <= fmin:
-        fmax = fmin + 1e-9
-
-    fig = go.Figure()
-    fig.add_trace(go.Volume(
-        x=X.flatten(),
-        y=Y.flatten(),
-        z=Z.flatten(),                     # already negative → surface naturally at top
-        value=F.flatten(),
-        isomin=fmin + 0.05 * (fmax - fmin),
-        isomax=fmax,
-        opacity=0.1,
-        opacityscale=[[0.0, 0.0], [0.2, 0.05], [0.5, 0.2], [1.0, 0.8]],
-        surface_count=20,
-        colorscale=colorscale,
-        colorbar=dict(title=value_label),
-        caps=dict(x_show=False, y_show=False, z_show=False),
-        name=value_label,
-    ))
-
-    if sources:
-        fig.add_trace(go.Scatter3d(
-            x=[s["x"] for s in sources],
-            y=[s["y"] for s in sources],
-            z=[-float(s["depth"]) for s in sources],
-            mode="markers+text",
-            text=[s["name"] for s in sources],
-            textposition="top center",
-            marker=dict(size=6, color="red", symbol="x"),
-            name="sources",
-        ))
-
-    fig.update_layout(
-        title=title,
-        scene=dict(xaxis_title="x [m]", yaxis_title="y [m]", zaxis_title="z [m]"),
-        margin=dict(l=0, r=0, t=40, b=0),
-    )
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.write_html(str(out_path))
-    print(f"saved {out_path}")
-
-
 def main() -> None:
     args = parse_args()
 
-    nc_path = args.file if args.file is not None else DATA_DIR / f"coastal_5km_{args.season}.nc"
+    nc_path = args.file if args.file is not None else DATA_DIR / f"hydrostatic_{args.season}.nc"
     if not nc_path.exists():
         sys.exit(f"NetCDF not found: {nc_path}\n"
                  f"Run `cd oceananigans && OCEAN_ARCH=CPU julia --project=. abu_dhabi_coastal.jl` "
                  f"first (with SEASON = :{args.season}), or pass --file.")
 
-    sources_file = args.sources_file if args.sources_file is not None else REPO_ROOT / "config" / "sources_5km.json"
+    sources_file = args.sources_file if args.sources_file is not None else REPO_ROOT / "config" / "sources.json"
 
-    ds = xr.open_dataset(nc_path)
+    ds = xr.open_dataset(nc_path, decode_timedelta=True)
     print(f"loaded {nc_path}")
     print(f"  dims: {dict(ds.sizes)}")
     print(f"  vars: {list(ds.data_vars)}")
@@ -209,22 +110,35 @@ def main() -> None:
         print(f"  (no source markers: {sources_file} not found)")
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
-    t_idx = args.time_idx
+    # Resolve which snapshot the static plots draw. --time-hours wins if given.
+    n_times = ds.sizes["time"]
+    if args.time_hours is not None:
+        target = np.timedelta64(int(round(args.time_hours * 3600)), "s")
+        elapsed = ds.time.values - ds.time.values[0]
+        t_idx = int(np.abs(elapsed - target).argmin())
+    else:
+        t_idx = args.time_idx
+    t_idx_norm = t_idx % n_times  # normalize negatives for reporting
+    elapsed_t = ds.time.values[t_idx] - ds.time.values[0]
+    print(f"  static snapshot: index {t_idx_norm}/{n_times - 1}  "
+          f"(t = {_fmt_time(elapsed_t)} into recording)")
 
-    # 1) Currents
-    plot_currents(ds, t_idx, xc, yc, zc, args.stride, sources,
+    # 1) Currents — 3D quiver + 2D top-down surface streamlines
+    plot_currents_netcdf(ds, t_idx, xc, yc, zc, args.stride, args.z_aspect, sources,
                   PLOT_DIR / f"currents_{args.season}.png")
+    plot_surface_currents_netcdf(ds, t_idx, xc, yc, zc, args.stream_density, sources,
+                  PLOT_DIR / f"currents_surface_{args.season}.png")
 
     # 2) Salinity
     S = _to_center_zyx(ds.S.isel(time=t_idx), xc, yc, zc)
-    plot_volume(S, xc, yc, zc, args.vol_grid, "Viridis",
-                f"Salinity [PSU] — {args.season}", "S",
+    plot_volume_netcdf(S, xc, yc, zc, args.vol_grid, "Viridis",
+                f"Salinity [PSU] — {args.season}", "S", args.z_aspect,
                 sources, PLOT_DIR / f"salinity_{args.season}.html")
 
     # 3) Temperature
     T_field = _to_center_zyx(ds.T.isel(time=t_idx), xc, yc, zc)
-    plot_volume(T_field, xc, yc, zc, args.vol_grid, "Plasma",
-                f"Temperature [°C] — {args.season}", "T",
+    plot_volume_netcdf(T_field, xc, yc, zc, args.vol_grid, "Plasma",
+                f"Temperature [°C] — {args.season}", "T", args.z_aspect,
                 None, PLOT_DIR / f"temperature_{args.season}.html")
 
     # 4) Turbidity (analytical Beer-Lambert, depth-only, broadcast to 3D)
@@ -233,9 +147,24 @@ def main() -> None:
     tau_3d = np.broadcast_to(
         tau_1d[:, None, None], (len(zc), len(yc), len(xc))
     ).copy()
-    plot_volume(tau_3d, xc, yc, zc, args.vol_grid, "Greys",
-                f"Turbidity τ — k={args.k_turbidity} [1/m]", "τ",
+    plot_volume_netcdf(tau_3d, xc, yc, zc, args.vol_grid, "Greys",
+                f"Turbidity τ — k={args.k_turbidity} [1/m]", "τ", args.z_aspect,
                 None, PLOT_DIR / f"turbidity_{args.season}.html")
+
+    # 5) Evolution GIFs (top-down, whole time series)
+    if args.animate:
+        s_reduce = "max" if args.anim_reduce == "auto" else args.anim_reduce
+        t_reduce = "mean" if args.anim_reduce == "auto" else args.anim_reduce
+        animate_field_netcdf(
+            ds, "S", sources, PLOT_DIR / f"salinity_{args.season}.gif",
+            reduce=s_reduce, depth=args.anim_depth, fps=args.anim_fps,
+            frame_stride=args.anim_stride, cmap="viridis",
+            label="S [PSU]", title=f"Salinity — {args.season}")
+        animate_field_netcdf(
+            ds, "T", None, PLOT_DIR / f"temperature_{args.season}.gif",
+            reduce=t_reduce, depth=args.anim_depth, fps=args.anim_fps,
+            frame_stride=args.anim_stride, cmap="plasma",
+            label="T [°C]", title=f"Temperature — {args.season}")
 
     if not args.no_show:
         plt.show()
