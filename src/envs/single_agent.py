@@ -1,4 +1,8 @@
 from .base import BaseEnv
+import glob
+import os
+import warnings
+from pathlib import Path
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -8,6 +12,30 @@ import itertools
 from src.models.salinity import compute_salinity_analytical, compute_salinity_gradient_analytical
 from src.models.turbidity import compute_turbidity
 from src.utils.sources import random_sources
+
+
+def _resolve_nc_files(spec) -> list:
+    '''Resolve a NetCDF spec — single path, glob pattern, directory, or a
+    list/tuple of those — to a sorted list of file paths. Empty list for None.'''
+    if spec is None:
+        return []
+    if isinstance(spec, (list, tuple)):
+        files = []
+        for item in spec:
+            files.extend(_resolve_nc_files(item))
+        return sorted(set(files))
+    p = str(spec)
+    if os.path.isdir(p):
+        files = sorted(str(f) for f in Path(p).glob("*.nc"))
+    elif any(ch in p for ch in "*?["):
+        files = sorted(glob.glob(p))
+    elif os.path.isfile(p):
+        files = [p]
+    else:
+        raise ValueError(f"NetCDF file not found: {p}")
+    if not files:
+        raise ValueError(f"No NetCDF files matched: {p}")
+    return files
 
 # TODO: implement the BaseEnv and inherit from that instead of gym.Env
 class SingleAgentEnv(gym.Env):
@@ -25,6 +53,12 @@ class SingleAgentEnv(gym.Env):
 
     Parameters:
         - xml_file -> SwarmSwIM simulation .xml
+        - netcdf_file -> optional Oceananigans NetCDF data: a single file, a glob
+          pattern, a directory, or a list of those. A random file (and a random
+          time window within it, fields linearly interpolated in time across
+          snapshots) is sampled each reset. Each touched file keeps a cached
+          FieldLoader (~90 MB of interpolators, two snapshots), so keep the set
+          small (~10 files is fine).
         - n_sources -> number of pollution sources spawned each reset (on domain borders)
         - k -> history buffer length for (action, reward) pairs
         - v_agent -> agent commanded speed (m/s)
@@ -50,6 +84,7 @@ class SingleAgentEnv(gym.Env):
 
         self.sim_xml = xml_file
         self.netcdf_file = netcdf_file
+        self._nc_files = _resolve_nc_files(netcdf_file)
         self.n_sources = n_sources
         self.k = k
         self.v = v_agent
@@ -81,9 +116,11 @@ class SingleAgentEnv(gym.Env):
         self._action_to_direction = self._build_action_table()  # scalar -> [dx,dy,dz] normalized
 
         self.sim = None
-        # NetCDF ocean-data loader, created lazily on first reset and reused
-        # across episodes (re-opening the file each reset leaks file handles).
-        self._field_loader = None
+        # NetCDF ocean-data loaders, one per file, created lazily and reused
+        # across episodes (re-opening files each reset leaks file handles).
+        self._loaders = {}
+        self.active_netcdf_path = None
+        self._warned_short_record = False
 
     def reset(self, seed=None, options=None):
         '''
@@ -103,13 +140,19 @@ class SingleAgentEnv(gym.Env):
         # leaves _in_zone_steps == 3 and the next episode could terminate immediately.
         self._in_zone_steps = 0
 
-        # Create the env (Simulator class). The FieldLoader instance is shared
-        # across resets; Simulator accepts it in place of a file path.
-        if self.netcdf_file and self._field_loader is None:
+        # Create the env (Simulator class). A random NetCDF file is drawn each
+        # episode; its FieldLoader is cached and shared across resets, and the
+        # Simulator accepts the loader instance in place of a file path.
+        loader = None
+        if self._nc_files:
             from SwarmSwIM.ocean_data import FieldLoader
-            self._field_loader = FieldLoader(self.netcdf_file)
+            path = self._nc_files[int(self.np_random.integers(len(self._nc_files)))]
+            if path not in self._loaders:
+                self._loaders[path] = FieldLoader(path)
+            loader = self._loaders[path]
+            self.active_netcdf_path = path
         self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.sim_xml,
-                             netcdf_file=self._field_loader)
+                             netcdf_file=loader)
 
         # Randomize agent position and heading (psi in degrees, SwarmSwIM NED convention)
         for agent in self.sim.agents:
@@ -120,12 +163,21 @@ class SingleAgentEnv(gym.Env):
 
         # NOTE: this implementation does not prevent agent spotting close to sources, for now not a problem
 
-        if self.netcdf_file:
-            # Episode variability comes from the data's time axis: pick a random
-            # snapshot of the Oceananigans run (frozen within the episode).
-            time_idx = int(self.np_random.integers(self.sim.current_3d.n_times))
-            self.sim.current_3d.set_snapshot(time_idx)
-            salinity_at = self.sim.current_3d.salinity_at
+        if self._nc_files:
+            # Episode variability comes from the file choice above plus a random
+            # time window in the data: fields are linearly interpolated in time
+            # as the episode advances (the Simulator passes sim_time each tick).
+            episode_seconds = self.max_steps * self.dt * self.frame_skip
+            max_start = loader.max_window_start(episode_seconds)
+            if (loader.times[max_start] + episode_seconds > loader.times[-1]
+                    and not self._warned_short_record):
+                warnings.warn(
+                    f"{path}: data record shorter than episode "
+                    f"({episode_seconds:.0f}s); fields will freeze at the last snapshot.")
+                self._warned_short_record = True
+            start = int(self.np_random.integers(max_start + 1))
+            loader.set_window(start)
+            salinity_at = loader.salinity_at
         else:
             # Randomize sources (using the env's seeded PRNG, not the global one).
             # Bounds are tied to the domain so sources scale with it (default 5 km).
@@ -263,6 +315,13 @@ class SingleAgentEnv(gym.Env):
         # Andrychowicz et al. 2021 §3.6) once a frame_skip ablation has been run.
         for _ in range(self.frame_skip):
             self.sim.tick()
+            # Keep the agent inside the domain box: motion commands and currents
+            # would otherwise push it above the surface (z < 0), below the seabed
+            # (z > domain depth) or out of the horizontal extent. Clamped every
+            # tick so field queries never run from out-of-bounds positions.
+            agent.pos[0] = np.clip(agent.pos[0], 0.0, self.domain[0])
+            agent.pos[1] = np.clip(agent.pos[1], 0.0, self.domain[1])
+            agent.pos[2] = np.clip(agent.pos[2], 0.0, self.domain[2])
         self.t_step += 1
 
         # Next state (s')
@@ -296,7 +355,7 @@ class SingleAgentEnv(gym.Env):
 
     def _build_state(self, agent, action=None) -> tuple[np.ndarray, float]:
         '''
-        Returns the observation of dimension (2k+7,) and the scalar reward.
+        Returns the observation of dimension (2k+11,) and the scalar reward.
 
         Layout:
             (2k)    -> history of (action, reward) pairs
@@ -306,7 +365,7 @@ class SingleAgentEnv(gym.Env):
             (3)     -> Field gradients
             (1)     -> depth
         '''
-        if not self.netcdf_file:
+        if not self._nc_files:
             new_salinity = compute_salinity_analytical(x=agent.pos[0], y=agent.pos[1], z=agent.pos[2], sources=self.sources,
                                                     sigma_h=self.sigma_h, sigma_v=self.sigma_v)
             dSdx, dSdy, dSdz = compute_salinity_gradient_analytical(agent.pos[0], agent.pos[1], agent.pos[2], self.sources,
@@ -344,7 +403,7 @@ class SingleAgentEnv(gym.Env):
         ]).astype(np.float32), reward
 
     def close(self):
-        if self._field_loader is not None:
-            self._field_loader.close()
-            self._field_loader = None
+        for loader in self._loaders.values():
+            loader.close()
+        self._loaders.clear()
         super().close()

@@ -38,10 +38,16 @@ def random_sources(rng: np.random.Generator | None = None, n_sources: int = 1,
     return sources
 
 def load_sources(path: str | Path) -> list[Source]:
-    """Load and validate the source catalog from a JSON file."""
+    """Load and validate the source catalog from a JSON file.
+
+    Accepts either a flat list (config/sources.json) or a run-metadata sidecar
+    written by oceananigans/hydrostatic.jl (a dict with a "sources" key).
+    """
     path = Path(path)
     with path.open() as f:
         sources: list[Source] = json.load(f)
+    if isinstance(sources, dict):
+        sources = sources["sources"]
 
     required = {"name", "y", "x", "depth", "Q"}
     for i, s in enumerate(sources):

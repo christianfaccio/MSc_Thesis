@@ -85,23 +85,27 @@ class Args:
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML"""
     netcdf_file: str = None
-    """optional Oceananigans NetCDF output (e.g. data/oceananigans/hydrostatic_winter.nc);
-    when set, currents and salinity come from the data instead of the synthetic models"""
+    """optional Oceananigans NetCDF data: single file, glob pattern (quote it in the
+    shell, e.g. --netcdf-file 'data/oceananigans/hydrostatic_winter_run*.nc'), or
+    directory; a random file + snapshot is sampled each episode reset, and currents
+    and salinity come from the data instead of the synthetic models"""
     n_sources: int = 4
     """number of pollution sources spawned each reset"""
-    k: int = 4
-    """history buffer length for (action, reward) pairs"""
+    k: int = 12
+    """history buffer length for (action, reward) pairs; 12 steps × 10 s = 120 s of context"""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
-    max_steps: int = 256
+    max_steps: int = 720
     """maximum env steps per episode before truncation"""
-    dt: float = 0.5
+    dt: float = 1.0
     """simulator timestep (s) per env step"""
-    frame_skip: int = 60
+    frame_skip: int = 10
     """sim sub-steps per env step (action repeated); 1 disables frame skip.
-    Distance per env step ≈ v_agent · dt · frame_skip ≈ 1·0.5·60 = 30 m, so
-    max_steps=256 covers ~7.7 km (the 5 km domain). Raising frame_skip lengthens
-    each action's sim time (more sim.tick() calls ⇒ more compute per step)."""
+    One env step is dt · frame_skip = 10 s of sim time; distance per step ≈
+    v_agent · dt · frame_skip = 10 m, so max_steps=720 covers ~7.2 km (the 5 km
+    domain) and 7200 s — a 2 h battery, spanning ~9 NetCDF snapshots at ~900 s.
+    Raising frame_skip lengthens each action's sim time (more sim.tick() calls
+    ⇒ more compute per step)."""
     domain: tuple[float, float, float] = (5000.0, 5000.0, 40.0)
     """domain extent in (x, y, z) meters"""
     sigma_h: float = 500.0
@@ -113,19 +117,20 @@ class Args:
 
     # Algorithm specific arguments
     # NOTE: default values are taken from Andrychowicz et. al
-    total_timesteps: int = 1000000              # NOTE: default value 1M or 2M
+    total_timesteps: int = 2000000              # NOTE: default value 1M or 2M
     """total timesteps of the experiments"""
     learning_rate: float = 3.0e-4               # NOTE: default 0.0003
     """the learning rate of the optimizer"""
     num_envs: int = 6                           # NOTE: default value should be 256 but it needs to be tuned regarding the hardware at disposal,
                                                 # since they should run in parallel in CPU cores
     """the number of parallel game environments"""
-    num_steps: int = 256                    
+    num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.99
-    """the discount factor gamma"""
+    gamma: float = 0.995
+    """the discount factor gamma; effective horizon 1/(1-γ) = 200 steps ≈ 2000 s,
+    matched to 720-step (7200 s) episodes"""
     gae_lambda: float = 0.9                     # NOTE: default value 0.9
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 12                   # NOTE: paper is permissive here, default 12

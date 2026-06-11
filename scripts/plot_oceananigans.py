@@ -93,7 +93,15 @@ def main() -> None:
                  f"Run `cd oceananigans && OCEAN_ARCH=CPU julia --project=. abu_dhabi_coastal.jl` "
                  f"first (with SEASON = :{args.season}), or pass --file.")
 
-    sources_file = args.sources_file if args.sources_file is not None else REPO_ROOT / "config" / "sources.json"
+    # Prefer the run's metadata sidecar (written by hydrostatic.jl per run) for
+    # sources and labeling; otherwise fall back to config/sources.json.
+    sidecar = nc_path.with_suffix(".json")
+    if args.sources_file is not None:
+        sources_file = args.sources_file
+    elif sidecar.exists():
+        sources_file = sidecar
+    else:
+        sources_file = REPO_ROOT / "config" / "sources.json"
 
     ds = xr.open_dataset(nc_path, decode_timedelta=True)
     print(f"loaded {nc_path}")
@@ -106,6 +114,12 @@ def main() -> None:
     _, zc = _coord(ds.T, "z")
 
     sources = json.loads(Path(sources_file).read_text()) if Path(sources_file).exists() else None
+    label = args.season
+    if isinstance(sources, dict):
+        # Run-metadata sidecar: {"season": ..., "run_index": ..., "sources": [...]}
+        label = f"{sources.get('season', args.season)}_run{sources.get('run_index', 0):03d}"
+        sources = sources.get("sources")
+        print(f"  using run metadata sidecar: {sources_file} (label: {label})")
     if sources is None:
         print(f"  (no source markers: {sources_file} not found)")
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,21 +139,21 @@ def main() -> None:
 
     # 1) Currents — 3D quiver + 2D top-down surface streamlines
     plot_currents_netcdf(ds, t_idx, xc, yc, zc, args.stride, args.z_aspect, sources,
-                  PLOT_DIR / f"currents_{args.season}.png")
+                  PLOT_DIR / f"currents_{label}.png")
     plot_surface_currents_netcdf(ds, t_idx, xc, yc, zc, args.stream_density, sources,
-                  PLOT_DIR / f"currents_surface_{args.season}.png")
+                  PLOT_DIR / f"currents_surface_{label}.png")
 
     # 2) Salinity
     S = _to_center_zyx(ds.S.isel(time=t_idx), xc, yc, zc)
     plot_volume_netcdf(S, xc, yc, zc, args.vol_grid, "Viridis",
-                f"Salinity [PSU] — {args.season}", "S", args.z_aspect,
-                sources, PLOT_DIR / f"salinity_{args.season}.html")
+                f"Salinity [PSU] — {label}", "S", args.z_aspect,
+                sources, PLOT_DIR / f"salinity_{label}.html")
 
     # 3) Temperature
     T_field = _to_center_zyx(ds.T.isel(time=t_idx), xc, yc, zc)
     plot_volume_netcdf(T_field, xc, yc, zc, args.vol_grid, "Plasma",
-                f"Temperature [°C] — {args.season}", "T", args.z_aspect,
-                None, PLOT_DIR / f"temperature_{args.season}.html")
+                f"Temperature [°C] — {label}", "T", args.z_aspect,
+                None, PLOT_DIR / f"temperature_{label}.html")
 
     # 4) Turbidity (analytical Beer-Lambert, depth-only, broadcast to 3D)
     depth_pos = -zc                         # positive-down depth values
@@ -149,22 +163,22 @@ def main() -> None:
     ).copy()
     plot_volume_netcdf(tau_3d, xc, yc, zc, args.vol_grid, "Greys",
                 f"Turbidity τ — k={args.k_turbidity} [1/m]", "τ", args.z_aspect,
-                None, PLOT_DIR / f"turbidity_{args.season}.html")
+                None, PLOT_DIR / f"turbidity_{label}.html")
 
     # 5) Evolution GIFs (top-down, whole time series)
     if args.animate:
         s_reduce = "max" if args.anim_reduce == "auto" else args.anim_reduce
         t_reduce = "mean" if args.anim_reduce == "auto" else args.anim_reduce
         animate_field_netcdf(
-            ds, "S", sources, PLOT_DIR / f"salinity_{args.season}.gif",
+            ds, "S", sources, PLOT_DIR / f"salinity_{label}.gif",
             reduce=s_reduce, depth=args.anim_depth, fps=args.anim_fps,
             frame_stride=args.anim_stride, cmap="viridis",
-            label="S [PSU]", title=f"Salinity — {args.season}")
+            label="S [PSU]", title=f"Salinity — {label}")
         animate_field_netcdf(
-            ds, "T", None, PLOT_DIR / f"temperature_{args.season}.gif",
+            ds, "T", None, PLOT_DIR / f"temperature_{label}.gif",
             reduce=t_reduce, depth=args.anim_depth, fps=args.anim_fps,
             frame_stride=args.anim_stride, cmap="plasma",
-            label="T [°C]", title=f"Temperature — {args.season}")
+            label="T [°C]", title=f"Temperature — {label}")
 
     if not args.no_show:
         plt.show()
