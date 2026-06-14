@@ -6,7 +6,7 @@ from pathlib import Path
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from SwarmSwIM import Simulator, sim_functions
+from SwarmSwIM import Simulator, sim_functions, Agent
 from ..single_agent.reward import reward_func
 import itertools
 from src.models.salinity import compute_salinity_analytical, compute_salinity_gradient_analytical
@@ -153,13 +153,21 @@ class SingleAgentEnv(gym.Env):
             self.active_netcdf_path = path
         self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.sim_xml,
                              netcdf_file=loader)
-
-        # Randomize agent position and heading (psi in degrees, SwarmSwIM NED convention)
-        for agent in self.sim.agents:
-            agent.pos[0] = self.np_random.uniform(0.0, self.domain[0])
-            agent.pos[1] = self.np_random.uniform(0.0, self.domain[1])
-            agent.pos[2] = self.np_random.uniform(0.0, self.domain[2])
-            agent.psi = self.np_random.uniform(-180.0, 180.0)
+        
+        self.sim.remove(self.sim.agents[0])
+        
+        # Add agent
+        agent = Agent(
+                name="A",
+                Dt=self.dt,
+                initialPosition=np.array([self.np_random.uniform(0.0, self.domain[0]), 
+                                          self.np_random.uniform(0.0, self.domain[1]), 
+                                          self.np_random.uniform(0.0, self.domain[2])]),
+                initialHeading=self.np_random.uniform(-180.0, 180.0),
+                agent_xml="config/agent.xml",
+                rng=self.np_random.integers(2**31)
+            )
+        self.sim.add(agent)
 
         # NOTE: this implementation does not prevent agent spotting close to sources, for now not a problem
 

@@ -121,7 +121,7 @@ const BETA_S  = 7.8e-4     # haline contraction [1/PSU]
 # to baseline (timescale S_DECAY_TIME); the two balance at a steady core excess
 # of S_SOURCE_ANOMALY PSU at the strongest source. Bounded brine ⇒ gentle
 # sinking ⇒ no vertical-CFL blow-up.
-const SIGMA_H          = 150.0    # plume horizontal std [m]
+const SIGMA_H          = 400.0    # plume horizontal std [m]
 const SIGMA_V          = 12.0     # plume vertical std [m]
 const S_SOURCE_ANOMALY = 10.0     # steady-state core salinity excess [PSU]
 const S_DECAY_TIME     = 6hours   # relaxation timescale back to baseline

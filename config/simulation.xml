@@ -63,11 +63,14 @@
     <!-- Optional Field: Describe start-up agents and add them to the simulation -->
     <agents>
         <agent_type>
-            <description>single_agent.xml</description>
+            <description>agent.xml</description>
             <name>A</name>
             <state>
-                <!-- x, y, z, psi (overwritten in env.reset()) -->
-                0.0  0.0  20.0  46.0
+                <!-- Initial state, one line for each agent -->
+                <!-- x, y, z, psi -->
+                0.0  0.0  69.0  46.0
+                3.0  0.0  69.0  180.0
+                <!-- Add more lines to add agents -->
             </state>
         </agent_type>
     </agents>

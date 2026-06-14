@@ -5,8 +5,6 @@ the implementation of CleanRL.
 Usage (from root):
     - in one terminal start the training    -> `python -m src.single_agent.ppo`
     - in another one start tensorboard      -> `tensorboard --logdir runs --port 6006`
-    (opt) look at it in the web             -> `ssh -L 6006:localhost:6006 username@<ip>`
-
 Pseudocode:
 ```
 1.  Initialize actor and critic networks 
@@ -84,7 +82,7 @@ class Args:
     """the id of the environment"""
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML"""
-    netcdf_file: str = None
+    netcdf_file: str = "data/oceananigans/"
     """optional Oceananigans NetCDF data: single file, glob pattern (quote it in the
     shell, e.g. --netcdf-file 'data/oceananigans/hydrostatic_winter_run*.nc'), or
     directory; a random file + snapshot is sampled each episode reset, and currents
@@ -419,9 +417,11 @@ def train(args):
                         l_val = float(ep_l[i])
                         ep_returns.append(r_val)
                         ep_lengths.append(l_val)
-                        ep_terminated.append(1.0 if bool(terminations[i]) else 0.0)
+                        succ = 1.0 if bool(terminations[i]) else 0.0
+                        ep_terminated.append(succ)
                         writer.add_scalar("charts/episodic_return", r_val, global_step)
                         writer.add_scalar("charts/episodic_length", l_val, global_step)
+                        writer.add_scalar("charts/episode_success", succ, global_step)
             elif "final_info" in infos:
                 # Older Gymnasium API (≤ 0.29)
                 for i, info in enumerate(infos["final_info"]):
@@ -430,9 +430,11 @@ def train(args):
                         l_val = float(info["episode"]["l"])
                         ep_returns.append(r_val)
                         ep_lengths.append(l_val)
-                        ep_terminated.append(1.0 if bool(terminations[i]) else 0.0)
+                        succ = 1.0 if bool(terminations[i]) else 0.0
+                        ep_terminated.append(succ)
                         writer.add_scalar("charts/episodic_return", r_val, global_step)
                         writer.add_scalar("charts/episodic_length", l_val, global_step)
+                        writer.add_scalar("charts/episode_success", succ, global_step)
 
         # NOTE: here the steps are ended, but we are still in a single iteration, so we need to update the policy
 
@@ -532,6 +534,8 @@ def train(args):
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/SPS", sps, global_step)
+        if ep_terminated:
+            writer.add_scalar("charts/success_rate", float(np.mean(ep_terminated)), global_step)
 
         # Live UI update
         progress.update(
