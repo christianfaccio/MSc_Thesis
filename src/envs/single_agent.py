@@ -79,6 +79,8 @@ class SingleAgentEnv(gym.Env):
                  sigma_h: float = 500.0,        # salinity plume horizontal std [m] (scales with domain)
                  sigma_v: float = 12.0,         # salinity plume vertical std [m]
                  eddy_length_scale: float = 1000.0,  # vortex eddy radius [m] (scales with domain)
+                 gamma: float = 0.99,           # RL discount; MUST match the trainer's γ for shaping invariance
+                 success_bonus: float = 10.0,   # sparse reward on reaching the target
                  ):
         super().__init__()
 
@@ -95,6 +97,12 @@ class SingleAgentEnv(gym.Env):
         self.sigma_h = sigma_h
         self.sigma_v = sigma_v
         self.eddy_length_scale = eddy_length_scale
+        self.gamma = gamma
+        self.success_bonus = success_bonus
+        # Potential of the previous state, Φ(s); set on reset and updated each step.
+        # Reward is the sparse success bonus plus the potential-based shaping term
+        # γΦ(s') − Φ(s) (Ng et al. 1999), which is policy-invariant.
+        self._prev_potential = 0.0
 
         self.target_salinity = 0.0
         self.target_turbidity = 0.0
@@ -288,7 +296,8 @@ class SingleAgentEnv(gym.Env):
         self.history = np.zeros((self.k, 2), dtype=np.float32)
         self.t_step = 0
         
-        obs, _ = self._build_state(self.sim.agents[0])
+        obs, phi0 = self._build_state(self.sim.agents[0])
+        self._prev_potential = phi0
         return obs, {}
     
     # NOTE: ok
@@ -317,7 +326,7 @@ class SingleAgentEnv(gym.Env):
         # Doing the step in the sim
         # NOTE: reward is sampled only at the final sub-step (only-last), not summed across
         # the frame_skip ticks. This preserves the reward scale (and the meaning of the
-        # +250 success bonus) when sweeping frame_skip, but PPO loses the integrated
+        # +10 success bonus) when sweeping frame_skip, but PPO loses the integrated
         # signal of any high-reward region the agent passed through mid-skip. Worth
         # revisiting later — compare against summed-reward aggregation (paper convention,
         # Andrychowicz et al. 2021 §3.6) once a frame_skip ablation has been run.
@@ -332,8 +341,8 @@ class SingleAgentEnv(gym.Env):
             agent.pos[2] = np.clip(agent.pos[2], 0.0, self.domain[2])
         self.t_step += 1
 
-        # Next state (s')
-        next_obs, reward = self._build_state(agent, action)
+        # Next state (s'); phi_next = Φ(s') is the proximity potential.
+        next_obs, phi_next = self._build_state(agent, action)
 
         # Truncation and termination checks
         if self._is_in_zone():
@@ -342,9 +351,19 @@ class SingleAgentEnv(gym.Env):
             self._in_zone_steps = 0
         truncated = (self.t_step >= self.max_steps)
         terminated = (self._in_zone_steps >= 3)     # NOTE: to define the right number of _in_zone_steps before success is met
-        if terminated: 
-            reward += 250  # bonus reward for success    
-        
+
+        # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
+        # Φ at a true terminal (success) state is 0; truncation is NOT terminal (the
+        # agent bootstraps), so it keeps the real Φ(s') — using 0 there would break
+        # policy invariance. The dense shaping telescopes to a policy-independent
+        # constant, so it guides without creating an incentive to loiter and avoid
+        # finishing the way a raw positive dense reward did.
+        phi_next_eff = 0.0 if terminated else phi_next
+        reward = self.gamma * phi_next_eff - self._prev_potential
+        if terminated:
+            reward += self.success_bonus
+        self._prev_potential = phi_next
+
         return next_obs, reward, terminated, truncated, {}
     
     def _is_in_zone(self) -> bool:
@@ -363,10 +382,12 @@ class SingleAgentEnv(gym.Env):
 
     def _build_state(self, agent, action=None) -> tuple[np.ndarray, float]:
         '''
-        Returns the observation of dimension (2k+11,) and the scalar reward.
+        Returns the observation of dimension (2k+11,) and the proximity potential
+        Φ(s) = reward_func(...). The caller turns Φ into the shaped reward; the
+        history stores (action, Φ) so the observation is unchanged from before.
 
         Layout:
-            (2k)    -> history of (action, reward) pairs
+            (2k)    -> history of (action, potential) pairs
             (3)     -> body-frame currents (u, v, w)
             (2)     -> absolute (salinity, turbidity) at the agent's current position
             (2)     -> target (salinity*, turbidity*)
@@ -391,10 +412,10 @@ class SingleAgentEnv(gym.Env):
         v = currents[0] * np.sin(np.deg2rad(agent.psi)) - currents[1] * np.cos(np.deg2rad(agent.psi))
         w = currents[2]
 
-        reward = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity)
+        potential = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity)
         if action is not None:
             self.history = np.roll(self.history, -1, axis=0)
-            self.history[-1] = [action, reward]
+            self.history[-1] = [action, potential]
 
         self.current_salinity = new_salinity
         self.current_turbidity = new_turbidity
@@ -408,7 +429,7 @@ class SingleAgentEnv(gym.Env):
                       self.target_salinity, self.target_turbidity,
                       dSdx, dSdy, dSdz,
                       agent_depth]),
-        ]).astype(np.float32), reward
+        ]).astype(np.float32), potential
 
     def close(self):
         for loader in self._loaders.values():

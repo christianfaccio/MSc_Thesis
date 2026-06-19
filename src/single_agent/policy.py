@@ -10,7 +10,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 # TODO: discuss the use of LSTMs
-class CustomPolicy(nn.Module):
+class PpoPolicy(nn.Module):
     def __init__(self, envs):
         super().__init__()
         # NOTE: suggestions from Andrychowicz et. al paper:
@@ -48,3 +48,17 @@ class CustomPolicy(nn.Module):
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+
+class QNetwork(nn.Module):
+    def __init__(self, env):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(np.array(env.single_observation_space.shape).prod(), 120),
+            nn.ReLU(),
+            nn.Linear(120, 84),
+            nn.ReLU(),
+            nn.Linear(84, env.single_action_space.n),
+        )
+
+    def forward(self, x):
+        return self.network(x)

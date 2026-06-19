@@ -1,9 +1,13 @@
 """
-Roll out a trained policy (IPPO multi-agent OR single-agent PPO) in its env and
-plot ONLY the 3D agent trajectories (no salinity/turbidity/current fields).
+Roll out a trained policy (IPPO multi-agent, single-agent PPO, OR single-agent DQN)
+in its env and plot ONLY the 3D agent trajectories (no salinity/turbidity/current
+fields).
 
-The run type is auto-detected from the checkpoint's stored `args`
-(single-agent checkpoints have no `n_agents` key).
+The run type is auto-detected:
+  - multi vs single agent: from the checkpoint's stored `args` (single-agent
+    checkpoints have no `n_agents` key);
+  - PPO/IPPO vs DQN: from the model state_dict keys (DQN's QNetwork stores
+    `network.*`, the actor-critic policies store `actor.*`/`critic.*`).
 
 Usage:
     # multi-agent IPPO
@@ -14,7 +18,12 @@ Usage:
     python scripts/plot_trajectories.py \
         --checkpoint runs/SingleAgent-v0__ppo__1__<...>/checkpoints/latest.pt
 
+    # single-agent DQN (same command, different checkpoint)
+    python scripts/plot_trajectories.py \
+        --checkpoint runs/SingleAgent-dqn__dqn__1__<...>/checkpoints/latest.pt
+
     # sample actions instead of greedy argmax, fix the episode seed, save to file
+    # (DQN: --stochastic gives a Boltzmann/softmax-over-Q policy)
     python scripts/plot_trajectories.py --checkpoint <ckpt> --stochastic --seed 7 --save traj.png
 
     # force synthetic salinity field instead of the NetCDF data the run used
@@ -39,6 +48,8 @@ from src.envs.single_agent import SingleAgentEnv
 # structure (critic 256/256, actor 128/128, identical names), so one class can
 # load either state_dict.
 from src.multi_agent.policy import IppoPolicy
+# DQN checkpoints store a QNetwork (Q-values per action) instead.
+from src.single_agent.policy import QNetwork
 
 
 def parse_args():
@@ -112,10 +123,36 @@ def main():
     local_dim = int(np.array(obs_space.shape).prod())
     n_actions = env.action_space.n
 
-    # --- restore policy + observation normalization ---
-    policy = IppoPolicy(local_dim, n_actions).to(device)
-    policy.load_state_dict(ckpt["model_state_dict"])
-    policy.eval()
+    # PPO/IPPO store actor-critic weights (actor.*/critic.*); DQN stores a QNetwork
+    # (network.*). Detect from the state_dict so the right model is rebuilt.
+    state_dict = ckpt["model_state_dict"]
+    is_dqn = any(key.startswith("network.") for key in state_dict)
+
+    # --- restore policy + observation normalization, expose a common act() ---
+    if is_dqn:
+        # QNetwork.__init__ reads single_observation_space/single_action_space off a
+        # (vector) env; give it a shim wrapping this env's spaces.
+        shim = SimpleNamespace(single_observation_space=obs_space,
+                               single_action_space=env.action_space)
+        policy = QNetwork(shim).to(device)
+        policy.load_state_dict(state_dict)
+        policy.eval()
+
+        def act(x):  # x: (n_agents, local_dim) normalized tensor -> actions (n_agents,)
+            q = policy(x)
+            if cli.stochastic:  # Boltzmann/softmax-over-Q policy
+                return torch.distributions.Categorical(logits=q).sample()
+            return q.argmax(dim=-1)
+    else:
+        policy = IppoPolicy(local_dim, n_actions).to(device)
+        policy.load_state_dict(state_dict)
+        policy.eval()
+
+        def act(x):  # x: (n_agents, local_dim) normalized tensor -> actions (n_agents,)
+            logits = policy.actor(x)
+            if cli.stochastic:
+                return torch.distributions.Categorical(logits=logits).sample()
+            return logits.argmax(dim=-1)
 
     obs_mean, obs_var = combine_obs_rms(ckpt["obs_rms"])
     obs_clip, var_eps = 10.0, 1e-8
@@ -158,12 +195,7 @@ def main():
     while not done.all() and steps < args.max_steps:
         with torch.no_grad():
             x = torch.tensor(normalize(obs)).to(device)
-            logits = policy.actor(x)
-            if cli.stochastic:
-                actions = torch.distributions.Categorical(logits=logits).sample()
-            else:
-                actions = logits.argmax(dim=-1)
-            actions = actions.cpu().numpy()
+            actions = act(x).cpu().numpy()
 
         obs, terminateds, truncateds = step(actions)
         for i in range(n_agents):
@@ -215,10 +247,13 @@ def main():
     ax2.set_title("Top-down view (from surface)")
     ax2.legend(loc="upper left")
 
-    kind = "IPPO" if is_multi else "single-agent"
+    kind = "IPPO" if is_multi else ("single-agent DQN" if is_dqn else "single-agent PPO")
+    # PPO/IPPO checkpoints log "iteration"; DQN logs "global_step".
+    progress = (f"iter {ckpt['iteration']}" if "iteration" in ckpt
+                else f"step {ckpt.get('global_step', '?')}")
     fig.suptitle(f"{kind} agent trajectories  "
                  f"({'stochastic' if cli.stochastic else 'greedy'} policy, "
-                 f"iter {ckpt.get('iteration', '?')}, start={cli.start})\n"
+                 f"{progress}, start={cli.start})\n"
                  "o = start   * = reached target   X = did not")
     plt.tight_layout()
 

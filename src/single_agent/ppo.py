@@ -48,7 +48,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from torch.utils.tensorboard import SummaryWriter
-from src.single_agent.policy import CustomPolicy
+from src.single_agent.policy import PpoPolicy
 from src.envs.single_agent import SingleAgentEnv
 
 from dataclasses import dataclass
@@ -78,7 +78,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Environment arguments
-    env_id: str = "SingleAgent-v0"
+    env_id: str = "SingleAgent-ppo"
     """the id of the environment"""
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML"""
@@ -184,6 +184,7 @@ def make_env(args):
             sigma_h=args.sigma_h,
             sigma_v=args.sigma_v,
             eddy_length_scale=args.eddy_length_scale,
+            gamma=args.gamma,
         )
         env = gym.wrappers.RecordEpisodeStatistics(env)
         # Running observation normalization (Andrychowicz et al. 2021, §3.3)
@@ -310,7 +311,7 @@ def train(args):
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = CustomPolicy(envs).to(device)
+    agent = PpoPolicy(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # Resume from checkpoint if requested
@@ -340,9 +341,9 @@ def train(args):
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
+    # TRY NOT TO MODIFY: start the game
     if DEBUG:
         print("--- GAME START ---")
-    # TRY NOT TO MODIFY: start the game
     start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
