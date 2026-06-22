@@ -64,9 +64,15 @@ class MultiAgentEnv(gym.Env):
         [ S* tau* | per agent: u v w  S tau  dS/dx dS/dy dS/dz  x y z ]
     Depth is NOT a separate feature here: it is the z component of (x, y, z).
 
+    Each agent's reward is potential-based shaping (Ng et al. 1999):
+    r_i = success_bonus + γΦ(s'_i) − Φ(s_i), with Φ = reward_func(...) and Φ
+    forced to 0 at a success terminal (truncation keeps the real Φ so the agent
+    bootstraps). γ MUST match the trainer's discount for the shaping to stay
+    policy-invariant.
+
     Episode dynamics:
-        - Each agent succeeds (terminates, +250 bonus, latched) after staying in
-          the target zone for 3 consecutive steps.
+        - Each agent succeeds (terminates, +success_bonus, latched) after staying
+          in the target zone for 3 consecutive steps.
         - The episode (all envs) truncates at max_steps.
         - The env signals "needs reset" when every agent is done
           (terminated or truncated); the training loop does the reset.
@@ -99,6 +105,8 @@ class MultiAgentEnv(gym.Env):
                  sigma_h: float = 500.0,        # salinity plume horizontal std [m]
                  sigma_v: float = 12.0,         # salinity plume vertical std [m]
                  eddy_length_scale: float = 1000.0,  # vortex eddy radius [m]
+                 gamma: float = 0.99,           # RL discount; MUST match the trainer's γ for shaping invariance
+                 success_bonus: float = 10.0,   # sparse reward on reaching the target
                  ):
         super().__init__()
 
@@ -116,6 +124,13 @@ class MultiAgentEnv(gym.Env):
         self.sigma_h = sigma_h
         self.sigma_v = sigma_v
         self.eddy_length_scale = eddy_length_scale
+        self.gamma = gamma
+        self.success_bonus = success_bonus
+        # Per-agent potential Φ(s) of the previous state; set on reset and updated
+        # each step. Each agent's reward is the sparse success bonus plus the
+        # potential-based shaping term γΦ(s') − Φ(s) (Ng et al. 1999), which is
+        # policy-invariant and avoids the loitering incentive of a raw dense reward.
+        self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
 
         self.target_salinity = 0.0
         self.target_turbidity = 0.0
@@ -159,6 +174,7 @@ class MultiAgentEnv(gym.Env):
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
         self.histories = np.zeros((self.n_agents, self.k, 2), dtype=np.float32)
+        self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
         self.t_step = 0
 
         # Create the simulator (environment physics). A random NetCDF file is
@@ -298,8 +314,13 @@ class MultiAgentEnv(gym.Env):
         self.target_salinity = cand_S
         self.target_turbidity = cand_T
 
-        # Initial observation (no history update: action=None)
-        obs = np.stack([self._build_local_state(i)[0] for i in range(self.n_agents)])
+        # Initial observation (no history update: action=None). Seed each agent's
+        # previous potential Φ(s_0) so the first step's shaping term is well-defined.
+        obs = np.zeros((self.n_agents, self.local_observation_space.shape[0]), dtype=np.float32)
+        for i in range(self.n_agents):
+            o, phi0, _, _ = self._build_local_state(i)
+            obs[i] = o
+            self._prev_potential[i] = phi0
         info = {"global_state": self._build_global_state()}
         return obs, info
 
@@ -343,16 +364,28 @@ class MultiAgentEnv(gym.Env):
                 # Frozen: re-emit obs (no history update), zero reward.
                 obs[i] = self._build_local_state(i)[0]
                 continue
-            o, r, S, tau = self._build_local_state(i, actions[i])
+            # phi_next = Φ(s') is the proximity potential of agent i's next state.
+            o, phi_next, S, tau = self._build_local_state(i, actions[i])
             obs[i] = o
-            rewards[i] = r
+
             if self._is_in_zone(S, tau):
                 self._in_zone_steps[i] += 1
             else:
                 self._in_zone_steps[i] = 0
-            if self._in_zone_steps[i] >= self._success_steps_required:
-                rewards[i] += 250.0          # success bonus
+            terminated_i = self._in_zone_steps[i] >= self._success_steps_required
+
+            # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
+            # Φ at a true terminal (success) is 0; truncation is NOT terminal (the
+            # agent bootstraps), so it keeps the real Φ(s'). The dense shaping
+            # telescopes to a policy-independent constant, guiding the agent without
+            # the loitering incentive of a raw positive dense reward.
+            phi_next_eff = 0.0 if terminated_i else phi_next
+            r = self.gamma * phi_next_eff - self._prev_potential[i]
+            if terminated_i:
+                r += self.success_bonus
                 self._success[i] = True
+            self._prev_potential[i] = phi_next
+            rewards[i] = r
 
         # terminated = reached the target; truncated = ran out of time without it
         terminateds = self._success.copy()
@@ -401,10 +434,12 @@ class MultiAgentEnv(gym.Env):
 
     def _build_local_state(self, i, action=None):
         '''
-        Returns (obs (2k+11,), reward, S, tau) for agent i.
+        Returns (obs (2k+11,), potential, S, tau) for agent i. `potential` is
+        Φ(s) = reward_func(...); the caller turns it into the shaped reward, while
+        the history stores (action, Φ) so the observation is unchanged from before.
 
         Layout:
-            (2k) history of (action, reward) pairs (agent i's own)
+            (2k) history of (action, potential) pairs (agent i's own)
             (3)  body-frame currents u, v, w
             (2)  absolute salinity, turbidity
             (2)  target salinity*, turbidity*
@@ -413,11 +448,11 @@ class MultiAgentEnv(gym.Env):
         '''
         agent = self.sim.agents[i]
         S, tau, dSdx, dSdy, dSdz, u, v, w = self._measure(agent)
-        reward = reward_func(S, tau, self.target_salinity, self.target_turbidity)
+        potential = reward_func(S, tau, self.target_salinity, self.target_turbidity)
 
         if action is not None:
             self.histories[i] = np.roll(self.histories[i], -1, axis=0)
-            self.histories[i, -1] = [action, reward]
+            self.histories[i, -1] = [action, potential]
 
         obs = np.concatenate([
             self.histories[i].flatten(),
@@ -427,7 +462,7 @@ class MultiAgentEnv(gym.Env):
                       dSdx, dSdy, dSdz,
                       agent.pos[2]], dtype=np.float32),
         ]).astype(np.float32)
-        return obs, reward, S, tau
+        return obs, potential, S, tau
 
     def _build_global_state(self):
         '''

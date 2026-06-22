@@ -219,6 +219,7 @@ def make_envs(args):
             sigma_h=args.sigma_h,
             sigma_v=args.sigma_v,
             eddy_length_scale=args.eddy_length_scale,
+            gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
         ))
     return envs
 

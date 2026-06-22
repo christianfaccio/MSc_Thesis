@@ -75,7 +75,7 @@ class Args:
     """the entity (team) of wandb's project"""
 
     # Environment arguments
-    env_id: str = "MultiAgent-v0"
+    env_id: str = "MultiAgent-ippo"
     """the id of the environment"""
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML (environment physics only; agents are created
@@ -213,6 +213,7 @@ def make_envs(args):
             sigma_h=args.sigma_h,
             sigma_v=args.sigma_v,
             eddy_length_scale=args.eddy_length_scale,
+            gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
         ))
     return envs
 
