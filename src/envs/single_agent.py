@@ -43,8 +43,13 @@ class SingleAgentEnv(gym.Env):
     This class represents the wrapped environment of the simulation. It builds from
     SwarmSwIM and is enclosed with Gymnasium for standardization.
 
-    Observation (2k + 11) — pure local-sensor + mission info, no global coordinates:
-        [ history (2k) | u v w (body-frame currents) | abs_S abs_τ | S* τ* | field gradients | depth]
+    Observation (5k + 8) — pure local-sensor + mission info, no global coordinates:
+        [ history (2k) | gradient history (3k) | u v w (body-frame currents) | abs_S abs_τ | S* τ* | depth]
+
+    The gradient history is a (k, 3) sliding window of the salinity gradient ∇S;
+    its last row is the current gradient. In a time-varying field a single ∇S
+    snapshot is non-Markov, so the past gradients let the policy infer how the
+    field is moving (temporal frame-stacking, like the (action, potential) pairs).
 
     Depth and heading are deliberately excluded: per the project's design rule the
     agent does not know where it is and acts in its local frame. Heading is still
@@ -116,8 +121,9 @@ class SingleAgentEnv(gym.Env):
         # Action Space
         self.action_space = gym.spaces.Discrete(27) # NOTE: remember that you have to use a relative PoV, not global
 
-        # State/Observation Space: 2k history + 3 body-frame currents + 2 absolute (S, τ) + 2 target (S*, τ*)
-        obs_dim = 2*k + 11
+        # State/Observation Space: 2k (action,potential) history + 3k gradient history
+        # + 3 body-frame currents + 2 absolute (S, τ) + 2 target (S*, τ*) + 1 depth
+        obs_dim = 5*k + 8
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         
         # Map actions to movements on the grid
@@ -292,8 +298,9 @@ class SingleAgentEnv(gym.Env):
         self.target_salinity = cand_S
         self.target_turbidity = cand_T
 
-        # Initialize history buffer
+        # Initialize history buffers: (action, potential) pairs and salinity gradients
         self.history = np.zeros((self.k, 2), dtype=np.float32)
+        self.grad_history = np.zeros((self.k, 3), dtype=np.float32)
         self.t_step = 0
         
         obs, phi0 = self._build_state(self.sim.agents[0])
@@ -382,16 +389,16 @@ class SingleAgentEnv(gym.Env):
 
     def _build_state(self, agent, action=None) -> tuple[np.ndarray, float]:
         '''
-        Returns the observation of dimension (2k+11,) and the proximity potential
+        Returns the observation of dimension (5k+8,) and the proximity potential
         Φ(s) = reward_func(...). The caller turns Φ into the shaped reward; the
-        history stores (action, Φ) so the observation is unchanged from before.
+        history stores (action, Φ).
 
         Layout:
             (2k)    -> history of (action, potential) pairs
+            (3k)    -> history of salinity gradients ∇S (last row = current)
             (3)     -> body-frame currents (u, v, w)
             (2)     -> absolute (salinity, turbidity) at the agent's current position
             (2)     -> target (salinity*, turbidity*)
-            (3)     -> Field gradients
             (1)     -> depth
         '''
         if not self._nc_files:
@@ -417,17 +424,23 @@ class SingleAgentEnv(gym.Env):
             self.history = np.roll(self.history, -1, axis=0)
             self.history[-1] = [action, potential]
 
+        # Gradient history rolls on every build (incl. reset): the gradient is a
+        # measurement available at every observation, so the last row is always
+        # the current ∇S and earlier rows are the previous k-1 steps.
+        self.grad_history = np.roll(self.grad_history, -1, axis=0)
+        self.grad_history[-1] = [dSdx, dSdy, dSdz]
+
         self.current_salinity = new_salinity
         self.current_turbidity = new_turbidity
-        
+
         agent_depth = agent.pos[2]
 
         return np.concatenate([
             self.history.flatten(),
+            self.grad_history.flatten(),
             np.array([u, v, w,
                       new_salinity, new_turbidity,
                       self.target_salinity, self.target_turbidity,
-                      dSdx, dSdy, dSdz,
                       agent_depth]),
         ]).astype(np.float32), potential
 

@@ -53,15 +53,18 @@ class MultiAgentEnv(gym.Env):
     `info["global_state"]` carries the (11*N + 2,) centralized state used by the
     MAPPO critic; IPPO ignores it (its critic uses the local obs only).
 
-    Local observation per agent (2k + 11) — pure local-sensor + mission info,
+    Local observation per agent (5k + 8) — pure local-sensor + mission info,
     no absolute position:
-        [ history (2k) | u v w (body-frame currents) | abs_S abs_tau |
-          S* tau* | dS/dx dS/dy dS/dz | depth ]
+        [ history (2k) | gradient history (3k) | u v w (body-frame currents) |
+          abs_S abs_tau | S* tau* | depth ]
+    The gradient history is a (k, 3) sliding window of ∇S (last row = current);
+    in a time-varying field one ∇S snapshot is non-Markov, so past gradients let
+    the policy infer the field's motion (frame-stacking, like the history pairs).
     Heading psi is tracked internally (to rotate currents into the body frame)
     but never exposed to the actor.
 
-    Global state (11*N + 2) — centralized, used only by the MAPPO critic:
-        [ S* tau* | per agent: u v w  S tau  dS/dx dS/dy dS/dz  x y z ]
+    Global state ((8 + 3k)*N + 2) — centralized, used only by the MAPPO critic:
+        [ S* tau* | per agent: u v w  S tau  gradient history (3k)  x y z ]
     Depth is NOT a separate feature here: it is the z component of (x, y, z).
 
     Each agent's reward is potential-based shaping (Ng et al. 1999):
@@ -143,18 +146,20 @@ class MultiAgentEnv(gym.Env):
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
         self.histories = np.zeros((self.n_agents, self.k, 2), dtype=np.float32)
+        self.grad_histories = np.zeros((self.n_agents, self.k, 3), dtype=np.float32)
         self.t_step = 0
 
         # Action space (per agent): 27 discrete moves, relative body frame
         self.action_space = gym.spaces.Discrete(27)
 
-        # Local observation (actor input)
-        local_obs_dim = 2 * k + 11
+        # Local observation (actor input): 2k (action,potential) history
+        # + 3k gradient history + 3 currents + 2 (S, τ) + 2 (S*, τ*) + 1 depth
+        local_obs_dim = 5 * k + 8
         self.local_observation_space = spaces.Box(-np.inf, np.inf, shape=(local_obs_dim,), dtype=np.float32)
 
-        # Global state (MAPPO critic input): targets (2) + 11 per agent.
+        # Global state (MAPPO critic input): targets (2) + (8 + 3k) per agent.
         # Depth is the z of (x, y, z), so it is NOT a separate feature here.
-        global_obs_dim = 11 * self.n_agents + 2
+        global_obs_dim = (8 + 3 * k) * self.n_agents + 2
         self.global_observation_space = spaces.Box(-np.inf, np.inf, shape=(global_obs_dim,), dtype=np.float32)
 
         # action scalar -> [dx, dy, dz] normalized
@@ -174,6 +179,7 @@ class MultiAgentEnv(gym.Env):
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
         self.histories = np.zeros((self.n_agents, self.k, 2), dtype=np.float32)
+        self.grad_histories = np.zeros((self.n_agents, self.k, 3), dtype=np.float32)
         self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
         self.t_step = 0
 
@@ -434,16 +440,16 @@ class MultiAgentEnv(gym.Env):
 
     def _build_local_state(self, i, action=None):
         '''
-        Returns (obs (2k+11,), potential, S, tau) for agent i. `potential` is
+        Returns (obs (5k+8,), potential, S, tau) for agent i. `potential` is
         Φ(s) = reward_func(...); the caller turns it into the shaped reward, while
-        the history stores (action, Φ) so the observation is unchanged from before.
+        the history stores (action, Φ).
 
         Layout:
             (2k) history of (action, potential) pairs (agent i's own)
+            (3k) history of salinity gradients ∇S (last row = current)
             (3)  body-frame currents u, v, w
             (2)  absolute salinity, turbidity
             (2)  target salinity*, turbidity*
-            (3)  salinity gradient dS/dx, dS/dy, dS/dz
             (1)  depth
         '''
         agent = self.sim.agents[i]
@@ -454,30 +460,37 @@ class MultiAgentEnv(gym.Env):
             self.histories[i] = np.roll(self.histories[i], -1, axis=0)
             self.histories[i, -1] = [action, potential]
 
+        # Gradient history rolls on every build (incl. reset and frozen agents):
+        # last row is the current ∇S, earlier rows the previous k-1 steps.
+        self.grad_histories[i] = np.roll(self.grad_histories[i], -1, axis=0)
+        self.grad_histories[i, -1] = [dSdx, dSdy, dSdz]
+
         obs = np.concatenate([
             self.histories[i].flatten(),
+            self.grad_histories[i].flatten(),
             np.array([u, v, w,
                       S, tau,
                       self.target_salinity, self.target_turbidity,
-                      dSdx, dSdy, dSdz,
                       agent.pos[2]], dtype=np.float32),
         ]).astype(np.float32)
         return obs, potential, S, tau
 
     def _build_global_state(self):
         '''
-        Centralized state (11*N + 2,) for the MAPPO critic:
-            (2)   target salinity*, turbidity*
-            per agent (11): u v w | S tau | dS/dx dS/dy dS/dz | x y z
-        Depth is the z component of (x, y, z); it is not duplicated.
+        Centralized state ((8 + 3k)*N + 2,) for the MAPPO critic:
+            (2)        target salinity*, turbidity*
+            per agent (8 + 3k): u v w | S tau | gradient history (3k) | x y z
+        Depth is the z component of (x, y, z); it is not duplicated. The gradient
+        history mirrors the actor's so the critic is at least as informed. Call
+        this AFTER the per-agent _build_local_state calls so grad_histories holds
+        the current ∇S as its last row.
         '''
         parts = [self.target_salinity, self.target_turbidity]
-        for agent in self.sim.agents:
-            S, tau, dSdx, dSdy, dSdz, u, v, w = self._measure(agent)
-            parts.extend([u, v, w,
-                          S, tau,
-                          dSdx, dSdy, dSdz,
-                          agent.pos[0], agent.pos[1], agent.pos[2]])
+        for i, agent in enumerate(self.sim.agents):
+            S, tau, _dSdx, _dSdy, _dSdz, u, v, w = self._measure(agent)
+            parts.extend([u, v, w, S, tau])
+            parts.extend(self.grad_histories[i].flatten().tolist())
+            parts.extend([agent.pos[0], agent.pos[1], agent.pos[2]])
         return np.array(parts, dtype=np.float32)
 
     def close(self):

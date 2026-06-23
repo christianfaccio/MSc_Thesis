@@ -57,7 +57,7 @@ def test_just_outside_epsilon_is_out(env):
 def test_observation_dim_formula():
     for k in (1, 4, 8):
         e = SingleAgentEnv(xml_file="unused.xml", n_sources=2, k=k)
-        assert e.observation_space.shape == (2 * k + 7,)
+        assert e.observation_space.shape == (5 * k + 8,)
 
 
 def test_epsilon_defaults(env):
