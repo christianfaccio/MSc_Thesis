@@ -9,7 +9,7 @@ import numpy as np
 from SwarmSwIM import Simulator, sim_functions, Agent
 from ..single_agent.reward import reward_func
 import itertools
-from src.models.salinity import compute_salinity_analytical, compute_salinity_gradient_analytical
+from src.models.salinity import compute_salinity_analytical
 from src.models.turbidity import compute_turbidity
 from src.utils.sources import random_sources
 
@@ -53,18 +53,20 @@ class MultiAgentEnv(gym.Env):
     `info["global_state"]` carries the (11*N + 2,) centralized state used by the
     MAPPO critic; IPPO ignores it (its critic uses the local obs only).
 
-    Local observation per agent (5k + 8) — pure local-sensor + mission info,
+    Local observation per agent (4k + 6) — pure local-sensor + mission info,
     no absolute position:
-        [ history (2k) | gradient history (3k) | u v w (body-frame currents) |
-          abs_S abs_tau | S* tau* | depth ]
-    The gradient history is a (k, 3) sliding window of ∇S (last row = current);
-    in a time-varying field one ∇S snapshot is non-Markov, so past gradients let
-    the policy infer the field's motion (frame-stacking, like the history pairs).
+        [ (action, potential) history (2k) | (S, tau) history (2k) |
+          u v w (body-frame currents) | S* tau* | depth ]
+    The (S, tau) history is a (k, 2) sliding window of the measured salinity and
+    turbidity (last row = current), so the present reading is always available
+    plus the previous k-1. No salinity gradient is provided: the agent must infer
+    direction from the history of what it measured after each action (finite
+    differences / dead reckoning, frame-stacked like the action history).
     Heading psi is tracked internally (to rotate currents into the body frame)
     but never exposed to the actor.
 
-    Global state ((8 + 3k)*N + 2) — centralized, used only by the MAPPO critic:
-        [ S* tau* | per agent: u v w  S tau  gradient history (3k)  x y z ]
+    Global state ((2k + 6)*N + 2) — centralized, used only by the MAPPO critic:
+        [ S* tau* | per agent: u v w  (S, tau) history (2k)  x y z ]
     Depth is NOT a separate feature here: it is the z component of (x, y, z).
 
     Each agent's reward is potential-based shaping (Ng et al. 1999):
@@ -146,20 +148,20 @@ class MultiAgentEnv(gym.Env):
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
         self.histories = np.zeros((self.n_agents, self.k, 2), dtype=np.float32)
-        self.grad_histories = np.zeros((self.n_agents, self.k, 3), dtype=np.float32)
+        self.st_histories = np.zeros((self.n_agents, self.k, 2), dtype=np.float32)
         self.t_step = 0
 
         # Action space (per agent): 27 discrete moves, relative body frame
         self.action_space = gym.spaces.Discrete(27)
 
         # Local observation (actor input): 2k (action,potential) history
-        # + 3k gradient history + 3 currents + 2 (S, τ) + 2 (S*, τ*) + 1 depth
-        local_obs_dim = 5 * k + 8
+        # + 2k (S, τ) history + 3 currents + 2 (S*, τ*) + 1 depth
+        local_obs_dim = 4 * k + 6
         self.local_observation_space = spaces.Box(-np.inf, np.inf, shape=(local_obs_dim,), dtype=np.float32)
 
-        # Global state (MAPPO critic input): targets (2) + (8 + 3k) per agent.
+        # Global state (MAPPO critic input): targets (2) + (2k + 6) per agent.
         # Depth is the z of (x, y, z), so it is NOT a separate feature here.
-        global_obs_dim = (8 + 3 * k) * self.n_agents + 2
+        global_obs_dim = (2 * k + 6) * self.n_agents + 2
         self.global_observation_space = spaces.Box(-np.inf, np.inf, shape=(global_obs_dim,), dtype=np.float32)
 
         # action scalar -> [dx, dy, dz] normalized
@@ -179,7 +181,7 @@ class MultiAgentEnv(gym.Env):
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
         self.histories = np.zeros((self.n_agents, self.k, 2), dtype=np.float32)
-        self.grad_histories = np.zeros((self.n_agents, self.k, 3), dtype=np.float32)
+        self.st_histories = np.zeros((self.n_agents, self.k, 2), dtype=np.float32)
         self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
         self.t_step = 0
 
@@ -416,18 +418,16 @@ class MultiAgentEnv(gym.Env):
         return table / norms
 
     def _measure(self, agent):
-        '''Salinity, turbidity, salinity gradient and body-frame currents at an
-        agent's position. Single source of truth for both observation builders
-        and the in-zone check.'''
+        '''Salinity, turbidity and body-frame currents at an agent's position.
+        Single source of truth for both observation builders and the in-zone
+        check. No salinity gradient is exposed (the agent infers direction from
+        the (S, tau) history instead).'''
         x, y, z = agent.pos[0], agent.pos[1], agent.pos[2]
         if not self._nc_files:
             S = compute_salinity_analytical(x=x, y=y, z=z, sources=self.sources,
                                             sigma_h=self.sigma_h, sigma_v=self.sigma_v)
-            dSdx, dSdy, dSdz = compute_salinity_gradient_analytical(
-                x, y, z, self.sources, sigma_h=self.sigma_h, sigma_v=self.sigma_v)
         else:
             S = self.sim.current_3d.salinity_at(x, y, z)
-            dSdx, dSdy, dSdz = self.sim.current_3d.salinity_gradient_at(x, y, z)
         tau = compute_turbidity(depth=z)
 
         # Currents rotated into the agent's body frame.
@@ -436,40 +436,38 @@ class MultiAgentEnv(gym.Env):
         u = currents[0] * np.cos(psi) + currents[1] * np.sin(psi)
         v = currents[0] * np.sin(psi) - currents[1] * np.cos(psi)
         w = currents[2]
-        return S, tau, dSdx, dSdy, dSdz, u, v, w
+        return S, tau, u, v, w
 
     def _build_local_state(self, i, action=None):
         '''
-        Returns (obs (5k+8,), potential, S, tau) for agent i. `potential` is
+        Returns (obs (4k+6,), potential, S, tau) for agent i. `potential` is
         Φ(s) = reward_func(...); the caller turns it into the shaped reward, while
         the history stores (action, Φ).
 
         Layout:
             (2k) history of (action, potential) pairs (agent i's own)
-            (3k) history of salinity gradients ∇S (last row = current)
+            (2k) history of measured (salinity, turbidity) (last row = current)
             (3)  body-frame currents u, v, w
-            (2)  absolute salinity, turbidity
             (2)  target salinity*, turbidity*
             (1)  depth
         '''
         agent = self.sim.agents[i]
-        S, tau, dSdx, dSdy, dSdz, u, v, w = self._measure(agent)
+        S, tau, u, v, w = self._measure(agent)
         potential = reward_func(S, tau, self.target_salinity, self.target_turbidity)
 
         if action is not None:
             self.histories[i] = np.roll(self.histories[i], -1, axis=0)
             self.histories[i, -1] = [action, potential]
 
-        # Gradient history rolls on every build (incl. reset and frozen agents):
-        # last row is the current ∇S, earlier rows the previous k-1 steps.
-        self.grad_histories[i] = np.roll(self.grad_histories[i], -1, axis=0)
-        self.grad_histories[i, -1] = [dSdx, dSdy, dSdz]
+        # (S, tau) history rolls on every build (incl. reset and frozen agents):
+        # last row is the current measurement, earlier rows the previous k-1 steps.
+        self.st_histories[i] = np.roll(self.st_histories[i], -1, axis=0)
+        self.st_histories[i, -1] = [S, tau]
 
         obs = np.concatenate([
             self.histories[i].flatten(),
-            self.grad_histories[i].flatten(),
+            self.st_histories[i].flatten(),
             np.array([u, v, w,
-                      S, tau,
                       self.target_salinity, self.target_turbidity,
                       agent.pos[2]], dtype=np.float32),
         ]).astype(np.float32)
@@ -477,19 +475,19 @@ class MultiAgentEnv(gym.Env):
 
     def _build_global_state(self):
         '''
-        Centralized state ((8 + 3k)*N + 2,) for the MAPPO critic:
+        Centralized state ((2k + 6)*N + 2,) for the MAPPO critic:
             (2)        target salinity*, turbidity*
-            per agent (8 + 3k): u v w | S tau | gradient history (3k) | x y z
-        Depth is the z component of (x, y, z); it is not duplicated. The gradient
+            per agent (2k + 6): u v w | (S, tau) history (2k) | x y z
+        Depth is the z component of (x, y, z); it is not duplicated. The (S, tau)
         history mirrors the actor's so the critic is at least as informed. Call
-        this AFTER the per-agent _build_local_state calls so grad_histories holds
-        the current ∇S as its last row.
+        this AFTER the per-agent _build_local_state calls so st_histories holds
+        the current measurement as its last row.
         '''
         parts = [self.target_salinity, self.target_turbidity]
         for i, agent in enumerate(self.sim.agents):
-            S, tau, _dSdx, _dSdy, _dSdz, u, v, w = self._measure(agent)
-            parts.extend([u, v, w, S, tau])
-            parts.extend(self.grad_histories[i].flatten().tolist())
+            _S, _tau, u, v, w = self._measure(agent)
+            parts.extend([u, v, w])
+            parts.extend(self.st_histories[i].flatten().tolist())
             parts.extend([agent.pos[0], agent.pos[1], agent.pos[2]])
         return np.array(parts, dtype=np.float32)
 

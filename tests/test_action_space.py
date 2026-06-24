@@ -62,4 +62,4 @@ def test_all_norms_in_zero_or_one(env):
 def test_observation_space_dim_matches_formula():
     for k in (1, 4, 8):
         env = SingleAgentEnv(xml_file="unused.xml", n_sources=2, k=k)
-        assert env.observation_space.shape == (5 * k + 8,)
+        assert env.observation_space.shape == (4 * k + 6,)

@@ -120,26 +120,32 @@ class Args:
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.995
     """the discount factor gamma; effective horizon 1/(1-γ) = 200 steps ≈ 2000 s"""
-    gae_lambda: float = 0.95
-    """the lambda for the general advantage estimation (0.95 recommended for MARL)"""
-    num_minibatches: int = 2
-    """the number of mini-batches (IPPO/MAPPO papers recommend very few: 1-2)"""
+    gae_lambda: float = 0.9
+    """the lambda for the general advantage estimation (matched to the single-agent
+    PPO run that reached ~95%; was 0.95)"""
+    num_minibatches: int = 8
+    """the number of mini-batches. Raised from 2: with only 2 the optimizer applied
+    ~6x fewer gradient steps/iteration than the single-agent run (approx_kl ~0.003 vs
+    ~0.024), leaving the policy diffuse (entropy stuck ~2.2). 8 -> 80 grad steps/iter."""
     update_epochs: int = 10
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.1
-    """the surrogate clipping coefficient (MARL papers recommend ≤ 0.2)"""
+    clip_coef: float = 0.2
+    """the surrogate clipping coefficient (raised from 0.1; clipfrac was only ~0.11 so
+    the tight clip was needlessly shrinking steps)"""
     clip_vloss: bool = False
     """Toggles whether or not to use a clipped loss for the value function"""
-    ent_coef: float = 0.01
-    """coefficient of the entropy"""
+    ent_coef: float = 0.005
+    """coefficient of the entropy (lowered from 0.01: with weak policy gradients the
+    entropy bonus was dominating and holding the policy diffuse)"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    target_kl: float = None
-    """the target KL divergence threshold"""
+    target_kl: float = 0.02
+    """the target KL divergence threshold (was None): a safety brake now that the
+    larger minibatch count drives bigger per-iteration updates"""
 
     # Checkpointing
     save_model: bool = True
