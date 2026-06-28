@@ -114,6 +114,14 @@ class Args:
     """vortex eddy radius [m] — scale with the domain"""
     static_frame: bool = True
     """NetCDF: freeze one random snapshot per episode (no intra-episode time evolution)"""
+    target_mode: str = "tail"
+    """target selection: "tail" = rare salinity target (the farther <P% / >100-P%
+    extreme) with the agent spawned in the OPPOSITE tail, so the success zone is small
+    and the agent must navigate; "random" = legacy (random point >2ε from the spawn)"""
+    target_percentile: float = 5.0
+    """tail width (%) for target_mode="tail" """
+    target_samples: int = 1500
+    """field samples used to estimate the value distribution each reset"""
 
     # Algorithm specific arguments
     # NOTE: default values are taken from Andrychowicz et. al
@@ -188,6 +196,9 @@ def make_env(args):
             eddy_length_scale=args.eddy_length_scale,
             gamma=args.gamma,
             static_frame=args.static_frame,
+            target_mode=args.target_mode,
+            target_percentile=args.target_percentile,
+            target_samples=args.target_samples,
         )
         env = gym.wrappers.RecordEpisodeStatistics(env)
         # Running observation normalization (Andrychowicz et al. 2021, §3.3)

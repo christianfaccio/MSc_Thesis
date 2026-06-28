@@ -104,18 +104,21 @@ def build_env(args, is_multi):
         sigma_h=args.sigma_h,
         sigma_v=args.sigma_v,
         eddy_length_scale=args.eddy_length_scale,
+        # Match the run's NetCDF time handling: a static-frame run froze one random
+        # snapshot per episode, so the rollout must too (and the tail target is drawn
+        # from that same frozen field). Older checkpoints lack the key -> default True.
+        static_frame=getattr(args, "static_frame", True),
+    )
+    # Rebuild the env exactly as trained, including the "tail" target mode (rare-P%
+    # target + opposite-extreme spawn) — now supported by BOTH envs. Older checkpoints
+    # lack these keys and fall back to the legacy "random" target.
+    common.update(
+        target_mode=getattr(args, "target_mode", "random"),
+        target_percentile=getattr(args, "target_percentile", 5.0),
+        target_samples=getattr(args, "target_samples", 1500),
     )
     if is_multi:
-        # Rebuild the env exactly as trained, including the "tail" target mode
-        # (rare-5% target + opposite-extreme spawn). Older checkpoints lack these
-        # keys and fall back to the legacy "random" target.
-        return MultiAgentEnv(
-            n_agents=args.n_agents,
-            target_mode=getattr(args, "target_mode", "random"),
-            target_percentile=getattr(args, "target_percentile", 5.0),
-            target_samples=getattr(args, "target_samples", 1500),
-            **common,
-        )
+        return MultiAgentEnv(n_agents=args.n_agents, **common)
     return SingleAgentEnv(**common)
 
 
@@ -225,7 +228,7 @@ def main():
     # Resolve "auto": keep the env's own spawn for a tail-mode checkpoint (so the
     # rollout matches training — agents spawned in the extreme opposite the target);
     # otherwise centre them as before.
-    is_tail = is_multi and getattr(args, "target_mode", "random") == "tail"
+    is_tail = getattr(args, "target_mode", "random") == "tail"
     start_mode = cli.start
     if start_mode == "auto":
         start_mode = "tail" if is_tail else "center"

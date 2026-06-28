@@ -89,6 +89,9 @@ class SingleAgentEnv(gym.Env):
                  gamma: float = 0.99,           # RL discount; MUST match the trainer's γ for shaping invariance
                  success_bonus: float = 10.0,   # sparse reward on reaching the target
                  static_frame: bool = True,     # NetCDF: freeze one random snapshot per episode (no time evolution)
+                 target_mode: str = "random",   # "random" (legacy) | "tail" (rare target + opposite-tail spawn)
+                 target_percentile: float = 5.0,  # tail width (%) for target_mode="tail"
+                 target_samples: int = 1500,    # field samples used to estimate the value distribution
                  ):
         super().__init__()
 
@@ -108,6 +111,9 @@ class SingleAgentEnv(gym.Env):
         self.gamma = gamma
         self.success_bonus = success_bonus
         self.static_frame = static_frame
+        self.target_mode = target_mode
+        self.target_percentile = target_percentile
+        self.target_samples = target_samples
         # Potential of the previous state, Φ(s); set on reset and updated each step.
         # Reward is the sparse success bonus plus the potential-based shaping term
         # γΦ(s') − Φ(s) (Ng et al. 1999), which is policy-invariant.
@@ -291,24 +297,34 @@ class SingleAgentEnv(gym.Env):
             self.sim.environment['is_current_3d'] = True
             self.sim.environment['current_3d_model'] = 'ekman'
 
-        # Compute spawn-side (S, τ) FIRST so we can pick a target that's actually far from it.
+        # Define the target (S*, τ*) and the agent spawn.
+        if self.target_mode == "tail":
+            # Rare target from the salinity value tail; the agent starts in the
+            # OPPOSITE tail, so it must navigate the field (mirrors MultiAgentEnv).
+            self._select_tail_target_and_start(salinity_at)
+        else:
+            # Legacy: compute spawn-side (S, τ) FIRST, then resample the target until
+            # it's outside the success zone w.r.t. the spawn (2*epsilon margin), so
+            # the agent has to actually navigate, not just nudge.
+            spawn = self.sim.agents[0].pos
+            self.current_salinity = salinity_at(spawn[0], spawn[1], spawn[2])
+            self.current_turbidity = compute_turbidity(spawn[2])
+            for _ in range(100):  # safety cap; in practice ~1-2 iterations
+                x_sel = self.np_random.uniform(0.0, self.domain[0])
+                y_sel = self.np_random.uniform(0.0, self.domain[1])
+                z_sel = self.np_random.uniform(0.0, self.domain[2])
+                cand_S = salinity_at(x_sel, y_sel, z_sel)
+                cand_T = compute_turbidity(z_sel)
+                if (abs(cand_S - self.current_salinity) > 2 * self.epsilon_salinity
+                        or abs(cand_T - self.current_turbidity) > 2 * self.epsilon_turbidity):
+                    break
+            self.target_salinity = cand_S
+            self.target_turbidity = cand_T
+
+        # Spawn-side (S, τ) at the agent's final position (tail mode may have moved it).
         spawn = self.sim.agents[0].pos
         self.current_salinity = salinity_at(spawn[0], spawn[1], spawn[2])
         self.current_turbidity = compute_turbidity(spawn[2])
-
-        # Resample the target point until it's outside the success zone w.r.t. the spawn.
-        # 2*epsilon margin so the agent has to actually navigate, not just nudge.
-        for _ in range(100):  # safety cap; in practice ~1-2 iterations
-            x_sel = self.np_random.uniform(0.0, self.domain[0])
-            y_sel = self.np_random.uniform(0.0, self.domain[1])
-            z_sel = self.np_random.uniform(0.0, self.domain[2])
-            cand_S = salinity_at(x_sel, y_sel, z_sel)
-            cand_T = compute_turbidity(z_sel)
-            if (abs(cand_S - self.current_salinity) > 2 * self.epsilon_salinity
-                    or abs(cand_T - self.current_turbidity) > 2 * self.epsilon_turbidity):
-                break
-        self.target_salinity = cand_S
-        self.target_turbidity = cand_T
 
         # Initialize history buffers: (action, potential) pairs and (S, τ) measurements
         self.history = np.zeros((self.k, 2), dtype=np.float32)
@@ -384,7 +400,47 @@ class SingleAgentEnv(gym.Env):
         self._prev_potential = phi_next
 
         return next_obs, reward, terminated, truncated, {}
-    
+
+    def _select_tail_target_and_start(self, salinity_at):
+        '''target_mode="tail": draw the target from a rare salinity value and place
+        the agent in the OPPOSITE tail. Single-agent counterpart of
+        MultiAgentEnv._select_tail_target_and_starts.'''
+        X, Y, Z = self.domain
+        n = self.target_samples
+        P = self.np_random.uniform([0.0, 0.0, 0.0], [X, Y, Z], size=(n, 3))
+        try:  # vectorized accessor (analytical); falls back to per-point (NetCDF)
+            S = np.asarray(salinity_at(P[:, 0], P[:, 1], P[:, 2]), dtype=float)
+            if S.shape != (n,):
+                raise ValueError
+        except Exception:
+            S = np.array([float(salinity_at(p[0], p[1], p[2])) for p in P])
+
+        med = np.median(S)
+        p = self.target_percentile
+        lo, hi = np.percentile(S, p), np.percentile(S, 100 - p)
+        if (S.max() - med) >= (med - S.min()):
+            tgt_idx = np.flatnonzero(S >= hi)      # target: rare HIGH salinity
+            opp_idx = np.flatnonzero(S <= lo)      # start:  rare LOW salinity
+            if tgt_idx.size == 0:
+                tgt_idx = np.array([int(np.argmax(S))])
+            extreme_start = int(np.argmin(S))
+        else:
+            tgt_idx = np.flatnonzero(S <= lo)      # target: rare LOW salinity
+            opp_idx = np.flatnonzero(S >= hi)      # start:  rare HIGH salinity
+            if tgt_idx.size == 0:
+                tgt_idx = np.array([int(np.argmin(S))])
+            extreme_start = int(np.argmax(S))
+
+        # Target: a random point from the chosen tail.
+        jt = int(tgt_idx[self.np_random.integers(tgt_idx.size)])
+        self.target_salinity = float(S[jt])
+        self.target_turbidity = float(compute_turbidity(P[jt, 2]))
+
+        # Agent start: a point from the opposite tail (fallback to the most extreme).
+        js = (int(opp_idx[self.np_random.integers(opp_idx.size)])
+              if opp_idx.size > 0 else extreme_start)
+        self.sim.agents[0].pos[:] = P[js]
+
     def _is_in_zone(self) -> bool:
         '''True when measured (S, tau) lie within epsilon of the target couple.'''
         return (
@@ -399,6 +455,27 @@ class SingleAgentEnv(gym.Env):
         norms[norms==0] = 1.0
         return table / norms 
 
+    def _measure(self, agent):
+        '''Salinity, turbidity and body-frame currents at an agent's position.
+        Single source of truth for the observation builder, the in-zone check and
+        external tooling (matches MultiAgentEnv._measure). Does not mutate state.'''
+        x, y, z = agent.pos[0], agent.pos[1], agent.pos[2]
+        if not self._nc_files:
+            S = compute_salinity_analytical(x=x, y=y, z=z, sources=self.sources,
+                                            sigma_h=self.sigma_h, sigma_v=self.sigma_v)
+        else:
+            S = self.sim.current_3d.salinity_at(x, y, z)
+        tau = compute_turbidity(depth=z)
+
+        # Currents the agent is advected by (NetCDF data currents in data mode,
+        # synthetic surface stack + Ekman otherwise), rotated into the body frame.
+        currents = self.sim.depth_current_at(agent)
+        psi = np.deg2rad(agent.psi)
+        u = currents[0] * np.cos(psi) + currents[1] * np.sin(psi)
+        v = currents[0] * np.sin(psi) - currents[1] * np.cos(psi)
+        w = currents[2]
+        return S, tau, u, v, w
+
     def _build_state(self, agent, action=None) -> tuple[np.ndarray, float]:
         '''
         Returns the observation of dimension (4k+6,) and the proximity potential
@@ -412,20 +489,9 @@ class SingleAgentEnv(gym.Env):
             (2)     -> target (salinity*, turbidity*)
             (1)     -> depth
         '''
-        if not self._nc_files:
-            new_salinity = compute_salinity_analytical(x=agent.pos[0], y=agent.pos[1], z=agent.pos[2], sources=self.sources,
-                                                    sigma_h=self.sigma_h, sigma_v=self.sigma_v)
-        else:
-            new_salinity = self.sim.current_3d.salinity_at(agent.pos[0], agent.pos[1], agent.pos[2])
-        new_turbidity = compute_turbidity(depth=agent.pos[2])
-
-        # Currents the agent is actually advected by (NetCDF data currents in
-        # data mode, synthetic surface stack + Ekman otherwise), rotated into
-        # the body frame so both modes share the local-frame observation.
-        currents = self.sim.depth_current_at(agent)
-        u = currents[0] * np.cos(np.deg2rad(agent.psi)) + currents[1] * np.sin(np.deg2rad(agent.psi))
-        v = currents[0] * np.sin(np.deg2rad(agent.psi)) - currents[1] * np.cos(np.deg2rad(agent.psi))
-        w = currents[2]
+        # Salinity, turbidity and body-frame currents come from _measure (single
+        # source of truth, shared with the in-zone check / external tooling).
+        new_salinity, new_turbidity, u, v, w = self._measure(agent)
 
         potential = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity)
         if action is not None:
