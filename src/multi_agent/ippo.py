@@ -115,6 +115,8 @@ class Args:
     """tail width (%) for target_mode="tail" """
     target_samples: int = 1500
     """field samples used to estimate the value distribution each reset"""
+    static_frame: bool = True
+    """NetCDF: freeze one random snapshot per episode (no intra-episode time evolution)"""
 
     # Algorithm specific arguments
     total_timesteps: int = 2000000
@@ -232,6 +234,7 @@ def make_envs(args):
             target_mode=args.target_mode,
             target_percentile=args.target_percentile,
             target_samples=args.target_samples,
+            static_frame=args.static_frame,
         ))
     return envs
 

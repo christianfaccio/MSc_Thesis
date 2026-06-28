@@ -112,6 +112,8 @@ class Args:
     """salinity plume vertical std [m]"""
     eddy_length_scale: float = 1000.0
     """vortex eddy radius [m] — scale with the domain"""
+    static_frame: bool = True
+    """NetCDF: freeze one random snapshot per episode (no intra-episode time evolution)"""
 
     # Algorithm specific arguments
     total_timesteps: int = 2000000
@@ -220,6 +222,7 @@ def make_envs(args):
             sigma_v=args.sigma_v,
             eddy_length_scale=args.eddy_length_scale,
             gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
+            static_frame=args.static_frame,
         ))
     return envs
 

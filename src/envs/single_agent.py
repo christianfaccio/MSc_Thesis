@@ -88,6 +88,7 @@ class SingleAgentEnv(gym.Env):
                  eddy_length_scale: float = 1000.0,  # vortex eddy radius [m] (scales with domain)
                  gamma: float = 0.99,           # RL discount; MUST match the trainer's γ for shaping invariance
                  success_bonus: float = 10.0,   # sparse reward on reaching the target
+                 static_frame: bool = True,     # NetCDF: freeze one random snapshot per episode (no time evolution)
                  ):
         super().__init__()
 
@@ -106,6 +107,7 @@ class SingleAgentEnv(gym.Env):
         self.eddy_length_scale = eddy_length_scale
         self.gamma = gamma
         self.success_bonus = success_bonus
+        self.static_frame = static_frame
         # Potential of the previous state, Φ(s); set on reset and updated each step.
         # Reward is the sparse success bonus plus the potential-based shaping term
         # γΦ(s') − Φ(s) (Ng et al. 1999), which is policy-invariant.
@@ -189,19 +191,26 @@ class SingleAgentEnv(gym.Env):
         # NOTE: this implementation does not prevent agent spotting close to sources, for now not a problem
 
         if self._nc_files:
-            # Episode variability comes from the file choice above plus a random
-            # time window in the data: fields are linearly interpolated in time
-            # as the episode advances (the Simulator passes sim_time each tick).
-            episode_seconds = self.max_steps * self.dt * self.frame_skip
-            max_start = loader.max_window_start(episode_seconds)
-            if (loader.times[max_start] + episode_seconds > loader.times[-1]
-                    and not self._warned_short_record):
-                warnings.warn(
-                    f"{path}: data record shorter than episode "
-                    f"({episode_seconds:.0f}s); fields will freeze at the last snapshot.")
-                self._warned_short_record = True
-            start = int(self.np_random.integers(max_start + 1))
-            loader.set_window(start)
+            if self.static_frame:
+                # Static-frame mode: freeze the fields at one randomly chosen
+                # snapshot for the whole episode (no intra-episode time evolution).
+                # Episode variability comes from the file choice plus this index.
+                idx = int(self.np_random.integers(len(loader.times)))
+                loader.set_snapshot(idx)
+            else:
+                # Dynamic mode: episode variability comes from the file choice plus
+                # a random time window in the data; fields are linearly interpolated
+                # in time as the episode advances (the Simulator passes sim_time).
+                episode_seconds = self.max_steps * self.dt * self.frame_skip
+                max_start = loader.max_window_start(episode_seconds)
+                if (loader.times[max_start] + episode_seconds > loader.times[-1]
+                        and not self._warned_short_record):
+                    warnings.warn(
+                        f"{path}: data record shorter than episode "
+                        f"({episode_seconds:.0f}s); fields will freeze at the last snapshot.")
+                    self._warned_short_record = True
+                start = int(self.np_random.integers(max_start + 1))
+                loader.set_window(start)
             salinity_at = loader.salinity_at
         else:
             # Randomize sources (using the env's seeded PRNG, not the global one).

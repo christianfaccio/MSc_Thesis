@@ -112,6 +112,8 @@ class Args:
     """salinity plume vertical std [m]"""
     eddy_length_scale: float = 1000.0
     """vortex eddy radius [m] — scale with the domain"""
+    static_frame: bool = True
+    """NetCDF: freeze one random snapshot per episode (no intra-episode time evolution)"""
 
     # Algorithm specific arguments
     # NOTE: default values are taken from Andrychowicz et. al
@@ -185,6 +187,7 @@ def make_env(args):
             sigma_v=args.sigma_v,
             eddy_length_scale=args.eddy_length_scale,
             gamma=args.gamma,
+            static_frame=args.static_frame,
         )
         env = gym.wrappers.RecordEpisodeStatistics(env)
         # Running observation normalization (Andrychowicz et al. 2021, §3.3)
