@@ -50,6 +50,10 @@ from src.envs.single_agent import SingleAgentEnv
 from src.multi_agent.policy import IppoPolicy
 # DQN checkpoints store a QNetwork (Q-values per action) instead.
 from src.single_agent.policy import QNetwork
+# For overlaying the success zone (|S-S*|<eps_S at the depth where |τ-τ*|<eps_τ).
+from src.models.salinity import compute_salinity_analytical
+
+K_TURBIDITY = 0.01  # Beer-Lambert coefficient, matches src/models/turbidity.py
 
 
 def parse_args():
@@ -61,8 +65,10 @@ def parse_args():
                    help="sample actions from the policy instead of greedy argmax")
     p.add_argument("--synthetic", action="store_true",
                    help="override the run's NetCDF data and use the synthetic salinity field")
-    p.add_argument("--start", choices=["center", "random"], default="center",
-                   help="agent spawn: 'center' of the domain (default) or the env's 'random' spawn")
+    p.add_argument("--start", choices=["auto", "center", "random", "tail"], default="auto",
+                   help="agent spawn. 'auto' (default): keep the env's own spawn — for a "
+                        "tail-mode checkpoint that is the opposite-extreme spawn used in "
+                        "training; otherwise 'center'. Or force 'center'/'random'/'tail'.")
     p.add_argument("--max-steps", type=int, default=None,
                    help="override max episode length (default: from checkpoint args)")
     p.add_argument("--save", type=str, default=None, help="save figure to this path instead of showing")
@@ -100,8 +106,55 @@ def build_env(args, is_multi):
         eddy_length_scale=args.eddy_length_scale,
     )
     if is_multi:
-        return MultiAgentEnv(n_agents=args.n_agents, **common)
+        # Rebuild the env exactly as trained, including the "tail" target mode
+        # (rare-5% target + opposite-extreme spawn). Older checkpoints lack these
+        # keys and fall back to the legacy "random" target.
+        return MultiAgentEnv(
+            n_agents=args.n_agents,
+            target_mode=getattr(args, "target_mode", "random"),
+            target_percentile=getattr(args, "target_percentile", 5.0),
+            target_samples=getattr(args, "target_samples", 1500),
+            **common,
+        )
     return SingleAgentEnv(**common)
+
+
+def compute_success_zone(env, args, is_multi, nx=90, ny=90):
+    """The success zone the env actually checks against, at the CURRENT sim time.
+
+    Turbidity τ(z)=1-exp(-k|z|) depends only on depth, so τ*=target fixes a depth
+    plane z* and a depth band [z_lo, z_hi] where |τ-τ*|<eps_τ. Within z* the
+    horizontal extent is where |S-S*|<eps_S. The NetCDF field is time-dependent, so
+    we sample it after the rollout (final-time snapshot of a dynamic zone).
+
+    Returns a dict (Xg, Yg, mask, zstar, zlo, zhi, Sstar, Tstar) or None.
+    """
+    Sstar = getattr(env, "target_salinity", None)
+    Tstar = getattr(env, "target_turbidity", None)
+    if Sstar is None or Tstar is None:
+        return None
+    eps_S = getattr(env, "epsilon_salinity", 0.05)
+    eps_T = getattr(env, "epsilon_turbidity", 0.05)
+    X, Y, Z = args.domain
+
+    def z_from_tau(t):  # invert Beer-Lambert; clip to the domain
+        t = float(np.clip(t, 0.0, 1.0 - 1e-9))
+        return float(np.clip(-np.log(1.0 - t) / K_TURBIDITY, 0.0, Z))
+
+    zstar = z_from_tau(Tstar)
+    zlo, zhi = sorted((z_from_tau(Tstar - eps_T), z_from_tau(Tstar + eps_T)))
+
+    xs, ys = np.linspace(0, X, nx), np.linspace(0, Y, ny)
+    Xg, Yg = np.meshgrid(xs, ys)
+    if getattr(env, "_nc_files", None):  # time-dependent NetCDF field
+        f = env.sim.current_3d.salinity_at
+        S = np.array([[f(x, y, zstar) for x in xs] for y in ys])
+    else:  # synthetic analytical plumes
+        S = compute_salinity_analytical(Xg, Yg, np.full_like(Xg, zstar),
+                                         env.sources, sigma_h=env.sigma_h, sigma_v=env.sigma_v)
+    mask = np.abs(S - Sstar) < eps_S
+    return dict(Xg=Xg, Yg=Yg, mask=mask, zstar=zstar, zlo=zlo, zhi=zhi,
+                Sstar=float(Sstar), Tstar=float(Tstar))
 
 
 def main():
@@ -169,9 +222,19 @@ def main():
             return np.stack([env._build_local_state(i)[0] for i in range(n_agents)])
         return np.atleast_2d(env._build_state(env.sim.agents[0])[0])
 
+    # Resolve "auto": keep the env's own spawn for a tail-mode checkpoint (so the
+    # rollout matches training — agents spawned in the extreme opposite the target);
+    # otherwise centre them as before.
+    is_tail = is_multi and getattr(args, "target_mode", "random") == "tail"
+    start_mode = cli.start
+    if start_mode == "auto":
+        start_mode = "tail" if is_tail else "center"
+
     def reset(seed):
         obs, _ = env.reset(seed=seed)
-        if cli.start == "center":
+        # "tail"/"random": keep whatever reset() placed (tail-mode reset already put
+        # the agents in the opposite extreme). "center": override to domain centre.
+        if start_mode == "center":
             center = np.array([args.domain[0] / 2, args.domain[1] / 2, args.domain[2] / 2])
             for i in range(n_agents):
                 env.sim.agents[i].pos[:] = center
@@ -186,10 +249,19 @@ def main():
         return np.atleast_2d(obs), np.array([term], bool), np.array([trunc], bool)
 
     # --- rollout (single episode) ---
+    def measure_ST(i):
+        '''Salinity, turbidity at agent i's current position, exactly as the env's
+        in-zone check sees them (single source of truth: env._measure).'''
+        S, tau = env._measure(env.sim.agents[i])[:2]
+        return float(S), float(tau)
+
     obs = reset(cli.seed)
     trajectories = [[env.sim.agents[i].pos.copy()] for i in range(n_agents)]
     done = np.zeros(n_agents, dtype=bool)
     success = np.zeros(n_agents, dtype=bool)
+    final_ST = [measure_ST(i) for i in range(n_agents)]   # (S, τ) at each agent's last pos
+    succ_pos = [None] * n_agents                          # where the success latch fired
+    succ_ST = [None] * n_agents                           # (S, τ) measured at that moment
     steps = 0
 
     while not done.all() and steps < args.max_steps:
@@ -200,21 +272,71 @@ def main():
         obs, terminateds, truncateds = step(actions)
         for i in range(n_agents):
             trajectories[i].append(env.sim.agents[i].pos.copy())
+            if not done[i]:
+                final_ST[i] = measure_ST(i)  # keep updating until the agent is done
+            if terminateds[i] and succ_pos[i] is None:
+                succ_pos[i] = env.sim.agents[i].pos.copy()
+                succ_ST[i] = measure_ST(i)
         done = done | terminateds | truncateds
         success = success | terminateds
         steps += 1
 
     print(f"Episode finished after {steps} env steps "
           f"({steps * args.dt * args.frame_skip:.0f} s of sim time).")
+
+    # Real target vs. what each agent actually measured. The drawn success zone is
+    # the FINAL-time snapshot at depth z*; an agent that succeeded earlier (the field
+    # is time-dependent) or at a different depth in the τ-band can sit off that
+    # snapshot yet still be a genuine in-zone success — these numbers show why.
+    eps_S = getattr(env, "epsilon_salinity", 0.05)
+    eps_T = getattr(env, "epsilon_turbidity", 0.05)
+    Sstar = getattr(env, "target_salinity", None)
+    Tstar = getattr(env, "target_turbidity", None)
+    if Sstar is not None:
+        print(f"  TARGET (real):  S*={Sstar:.4f}  τ*={Tstar:.4f}   "
+              f"(zone = |ΔS|<{eps_S} AND |Δτ|<{eps_T})")
     for i in range(n_agents):
-        print(f"  agent A{i+1:02d}: {'REACHED TARGET' if success[i] else 'did not reach target'} "
-              f"({len(trajectories[i])} waypoints)")
+        tag = "REACHED" if success[i] else "did NOT reach"
+        fS, fT = final_ST[i]
+        fpos = np.asarray(trajectories[i][-1])
+        line = (f"  agent A{i+1:02d}: {tag}  | final pos=({fpos[0]:.0f},{fpos[1]:.0f},{fpos[2]:.1f})  "
+                f"measured S={fS:.4f} τ={fT:.4f}")
+        if Sstar is not None:
+            inz = abs(fS - Sstar) < eps_S and abs(fT - Tstar) < eps_T
+            line += f"  |ΔS|={abs(fS-Sstar):.4f} |Δτ|={abs(fT-Tstar):.4f}  in-zone-now={inz}"
+        print(line)
+        if succ_pos[i] is not None:
+            sS, sT = succ_ST[i]
+            sp = succ_pos[i]
+            print(f"            ↳ success latch at pos=({sp[0]:.0f},{sp[1]:.0f},{sp[2]:.1f})  "
+                  f"S={sS:.4f} τ={sT:.4f}  |ΔS|={abs(sS-Sstar):.4f} |Δτ|={abs(sT-Tstar):.4f}")
+
+    # Success zone at the FINAL sim time (the field is dynamic, so this is one
+    # snapshot of a moving region). Sampled exactly as the env's in-zone check.
+    zone = compute_success_zone(env, args, is_multi)
+    if zone is not None:
+        print(f"  target  S*={zone['Sstar']:.3f}  τ*={zone['Tstar']:.3f}  "
+              f"depth band z*≈{zone['zstar']:.1f} m (∈[{zone['zlo']:.1f},{zone['zhi']:.1f}])  "
+              f"final-time zone covers {zone['mask'].mean()*100:.2f}% of the x-y plane")
 
     # --- plot the trajectories: 3D view + top-down (surface) view ---
     fig = plt.figure(figsize=(15, 7))
     ax = fig.add_subplot(121, projection="3d")
     ax2 = fig.add_subplot(122)  # top-down x-y, marginalized over depth
     colors = plt.cm.tab10(np.arange(n_agents) % 10)
+
+    # Draw the success zone first so trajectories overlay on top.
+    if zone is not None and zone["mask"].any():
+        Xg, Yg, mask = zone["Xg"], zone["Yg"], zone["mask"]
+        ax2.contourf(Xg, Yg, mask.astype(float), levels=[0.5, 1.5],
+                     colors=["gold"], alpha=0.45)
+        ax2.contour(Xg, Yg, mask.astype(float), levels=[0.5],
+                    colors=["darkorange"], linewidths=1.2)
+        ax2.scatter([], [], marker="s", c="gold", edgecolor="darkorange",
+                    s=80, label="success zone (final t)")  # legend proxy
+        # 3D: scatter the in-zone cells at z* (a slice of the depth band).
+        ax.scatter(Xg[mask], Yg[mask], np.full(int(mask.sum()), zone["zstar"]),
+                   color="gold", alpha=0.18, s=10, label="success zone (z*)")
 
     for i in range(n_agents):
         tr = np.asarray(trajectories[i])
@@ -253,8 +375,8 @@ def main():
                 else f"step {ckpt.get('global_step', '?')}")
     fig.suptitle(f"{kind} agent trajectories  "
                  f"({'stochastic' if cli.stochastic else 'greedy'} policy, "
-                 f"{progress}, start={cli.start})\n"
-                 "o = start   * = reached target   X = did not")
+                 f"{progress}, start={start_mode})\n"
+                 "o = start   * = reached target   X = did not   shaded = success zone")
     plt.tight_layout()
 
     if cli.save:

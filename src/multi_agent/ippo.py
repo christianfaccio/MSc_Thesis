@@ -106,6 +106,15 @@ class Args:
     """salinity plume vertical std [m]"""
     eddy_length_scale: float = 1000.0
     """vortex eddy radius [m] — scale with the domain"""
+    target_mode: str = "tail"
+    """target selection: "tail" = rare salinity target (the farther <P% / >100-P%
+    extreme) with agents spawned in the OPPOSITE tail at distinct positions, so the
+    success zone is small and the swarm must navigate; "random" = legacy behaviour
+    (random point >2ε from agent 0's spawn)"""
+    target_percentile: float = 5.0
+    """tail width (%) for target_mode="tail" """
+    target_samples: int = 1500
+    """field samples used to estimate the value distribution each reset"""
 
     # Algorithm specific arguments
     total_timesteps: int = 2000000
@@ -220,6 +229,9 @@ def make_envs(args):
             sigma_v=args.sigma_v,
             eddy_length_scale=args.eddy_length_scale,
             gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
+            target_mode=args.target_mode,
+            target_percentile=args.target_percentile,
+            target_samples=args.target_samples,
         ))
     return envs
 

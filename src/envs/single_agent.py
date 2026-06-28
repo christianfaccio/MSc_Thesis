@@ -117,8 +117,9 @@ class SingleAgentEnv(gym.Env):
         self.current_turbidity = 0.0
 
         self._in_zone_steps = 0
-        self.epsilon_salinity = 0.05     
-        self.epsilon_turbidity = 0.05   
+        self.epsilon_salinity = 0.05
+        self.epsilon_turbidity = 0.01
+        self._success_steps_required = 1
 
         # Action Space
         self.action_space = gym.spaces.Discrete(27) # NOTE: remember that you have to use a relative PoV, not global
@@ -359,7 +360,7 @@ class SingleAgentEnv(gym.Env):
         else:
             self._in_zone_steps = 0
         truncated = (self.t_step >= self.max_steps)
-        terminated = (self._in_zone_steps >= 3)     # NOTE: to define the right number of _in_zone_steps before success is met
+        terminated = (self._in_zone_steps >= self._success_steps_required)
 
         # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
         # Φ at a true terminal (success) state is 0; truncation is NOT terminal (the

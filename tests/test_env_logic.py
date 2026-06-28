@@ -61,12 +61,12 @@ def test_observation_dim_formula():
 
 
 def test_epsilon_defaults(env):
-    assert env.epsilon_salinity == pytest.approx(0.1)
+    assert env.epsilon_salinity == pytest.approx(0.05)
     assert env.epsilon_turbidity == pytest.approx(0.01)
 
 
 def test_max_steps_default(env):
-    assert env.max_steps == 1024
+    assert env.max_steps == 128
 
 
 def test_action_space_is_discrete_27(env):

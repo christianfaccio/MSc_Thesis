@@ -12,3 +12,4 @@ runs/
 docs/
 MODEL.md
 *.log
+debug/

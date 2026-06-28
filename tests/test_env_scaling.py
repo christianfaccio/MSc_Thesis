@@ -48,7 +48,7 @@ def test_agent_spawn_inside_domain(env):
 
 def test_observation_shape_and_finiteness(env):
     obs, _ = env.reset(seed=2)
-    assert obs.shape == (5 * env.k + 8,)
+    assert obs.shape == (4 * env.k + 6,)
     assert np.all(np.isfinite(obs))
 
 

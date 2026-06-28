@@ -112,6 +112,9 @@ class MultiAgentEnv(gym.Env):
                  eddy_length_scale: float = 1000.0,  # vortex eddy radius [m]
                  gamma: float = 0.99,           # RL discount; MUST match the trainer's γ for shaping invariance
                  success_bonus: float = 10.0,   # sparse reward on reaching the target
+                 target_mode: str = "random",   # "random" (legacy) | "tail" (rare target + opposite-tail starts)
+                 target_percentile: float = 5.0,  # tail width (%) for target_mode="tail"
+                 target_samples: int = 1500,    # field samples used to estimate the value distribution
                  ):
         super().__init__()
 
@@ -131,6 +134,9 @@ class MultiAgentEnv(gym.Env):
         self.eddy_length_scale = eddy_length_scale
         self.gamma = gamma
         self.success_bonus = success_bonus
+        self.target_mode = target_mode
+        self.target_percentile = target_percentile
+        self.target_samples = target_samples
         # Per-agent potential Φ(s) of the previous state; set on reset and updated
         # each step. Each agent's reward is the sparse success bonus plus the
         # potential-based shaping term γΦ(s') − Φ(s) (Ng et al. 1999), which is
@@ -141,8 +147,8 @@ class MultiAgentEnv(gym.Env):
         self.target_turbidity = 0.0
 
         self.epsilon_salinity = 0.05
-        self.epsilon_turbidity = 0.05
-        self._success_steps_required = 3
+        self.epsilon_turbidity = 0.01
+        self._success_steps_required = 1
 
         # Per-agent episode state (allocated for real in reset())
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
@@ -304,23 +310,28 @@ class MultiAgentEnv(gym.Env):
             self.sim.environment['is_current_3d'] = True
             self.sim.environment['current_3d_model'] = 'ekman'
 
-        # Define the target (S*, tau*), shared by all agents. Pick a point far
-        # enough from agent 0's spawn that the swarm has to actually navigate.
-        spawn = self.sim.agents[0].pos
-        spawn_S = salinity_at(spawn[0], spawn[1], spawn[2])
-        spawn_T = compute_turbidity(spawn[2])
-        cand_S, cand_T = spawn_S, spawn_T
-        for _ in range(100):  # safety cap; in practice ~1-2 iterations
-            x_sel = self.np_random.uniform(0.0, self.domain[0])
-            y_sel = self.np_random.uniform(0.0, self.domain[1])
-            z_sel = self.np_random.uniform(0.0, self.domain[2])
-            cand_S = salinity_at(x_sel, y_sel, z_sel)
-            cand_T = compute_turbidity(z_sel)
-            if (abs(cand_S - spawn_S) > 2 * self.epsilon_salinity
-                    or abs(cand_T - spawn_T) > 2 * self.epsilon_turbidity):
-                break
-        self.target_salinity = cand_S
-        self.target_turbidity = cand_T
+        # Define the target (S*, tau*), shared by all agents.
+        if self.target_mode == "tail":
+            # Rare target from the salinity value tail; agents start in the opposite
+            # tail (and at distinct positions), so the swarm must navigate the field.
+            self._select_tail_target_and_starts(salinity_at)
+        else:
+            # Legacy: pick a point far enough from agent 0's spawn to force navigation.
+            spawn = self.sim.agents[0].pos
+            spawn_S = salinity_at(spawn[0], spawn[1], spawn[2])
+            spawn_T = compute_turbidity(spawn[2])
+            cand_S, cand_T = spawn_S, spawn_T
+            for _ in range(100):  # safety cap; in practice ~1-2 iterations
+                x_sel = self.np_random.uniform(0.0, self.domain[0])
+                y_sel = self.np_random.uniform(0.0, self.domain[1])
+                z_sel = self.np_random.uniform(0.0, self.domain[2])
+                cand_S = salinity_at(x_sel, y_sel, z_sel)
+                cand_T = compute_turbidity(z_sel)
+                if (abs(cand_S - spawn_S) > 2 * self.epsilon_salinity
+                        or abs(cand_T - spawn_T) > 2 * self.epsilon_turbidity):
+                    break
+            self.target_salinity = cand_S
+            self.target_turbidity = cand_T
 
         # Initial observation (no history update: action=None). Seed each agent's
         # previous potential Φ(s_0) so the first step's shaping term is well-defined.
@@ -403,6 +414,54 @@ class MultiAgentEnv(gym.Env):
         return obs, rewards, terminateds, truncateds, info
 
     # ----------------------------------------------------------------- helpers
+    def _select_tail_target_and_starts(self, salinity_at):
+        '''target_mode="tail": draw the target from a rare salinity value and place
+        agents in the OPPOSITE tail, at distinct positions.
+
+        Salinity is the meaningful axis (turbidity is depth-only). We sample the
+        field's value distribution, pick whichever extreme tail (lower-P% or
+        upper-(100-P)%) lies farther from the median ("either extreme"), take an
+        actual point from it as the target (so the (S*, τ*) pair is reachable), and
+        spawn each agent on a distinct point from the opposite tail.'''
+        X, Y, Z = self.domain
+        n = self.target_samples
+        P = self.np_random.uniform([0.0, 0.0, 0.0], [X, Y, Z], size=(n, 3))
+        try:  # vectorized accessor (analytical); falls back to per-point (NetCDF)
+            S = np.asarray(salinity_at(P[:, 0], P[:, 1], P[:, 2]), dtype=float)
+            if S.shape != (n,):
+                raise ValueError
+        except Exception:
+            S = np.array([float(salinity_at(p[0], p[1], p[2])) for p in P])
+
+        med = np.median(S)
+        p = self.target_percentile
+        lo, hi = np.percentile(S, p), np.percentile(S, 100 - p)
+        if (S.max() - med) >= (med - S.min()):
+            tgt_idx = np.flatnonzero(S >= hi)      # target: rare HIGH salinity
+            opp_idx = np.flatnonzero(S <= lo)      # starts: rare LOW salinity
+            if tgt_idx.size == 0:
+                tgt_idx = np.array([int(np.argmax(S))])
+        else:
+            tgt_idx = np.flatnonzero(S <= lo)      # target: rare LOW salinity
+            opp_idx = np.flatnonzero(S >= hi)      # starts: rare HIGH salinity
+            if tgt_idx.size == 0:
+                tgt_idx = np.array([int(np.argmin(S))])
+
+        # Target: a random point from the chosen tail.
+        jt = int(tgt_idx[self.np_random.integers(tgt_idx.size)])
+        self.target_salinity = float(S[jt])
+        self.target_turbidity = float(compute_turbidity(P[jt, 2]))
+
+        # Agent starts: n_agents DISTINCT points from the opposite tail. If the tail
+        # has too few points, fall back to the most-extreme distinct samples.
+        if opp_idx.size >= self.n_agents:
+            sel = self.np_random.choice(opp_idx, size=self.n_agents, replace=False)
+        else:
+            ranked = np.argsort(S) if (S.max() - med) >= (med - S.min()) else np.argsort(S)[::-1]
+            sel = ranked[:self.n_agents]
+        for i, agent in enumerate(self.sim.agents):
+            agent.pos[:] = P[int(sel[i])]
+
     def _is_in_zone(self, salinity, turbidity) -> bool:
         '''True when measured (S, tau) lie within epsilon of the target couple.'''
         return (
