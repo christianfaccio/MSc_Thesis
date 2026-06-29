@@ -12,6 +12,7 @@ import itertools
 from src.models.salinity import compute_salinity_analytical
 from src.models.turbidity import compute_turbidity
 from src.utils.sources import random_sources
+from src.utils.spawn import spawn_positions_along_land_strip
 
 
 def _resolve_nc_files(spec) -> list:
@@ -112,10 +113,12 @@ class MultiAgentEnv(gym.Env):
                  eddy_length_scale: float = 1000.0,  # vortex eddy radius [m]
                  gamma: float = 0.99,           # RL discount; MUST match the trainer's γ for shaping invariance
                  success_bonus: float = 10.0,   # sparse reward on reaching the target
-                 target_mode: str = "random",   # "random" (legacy) | "tail" (rare target + opposite-tail starts)
+                 target_mode: str = "random",   # "random" (legacy) | "tail" (rare LOW-salinity target + land-strip spawn)
                  target_percentile: float = 5.0,  # tail width (%) for target_mode="tail"
                  target_samples: int = 1500,    # field samples used to estimate the value distribution
                  static_frame: bool = True,     # NetCDF: freeze one random snapshot per episode (no time evolution)
+                 land_clearance: float = 500.0,  # spawn distance (m) off the west/south land borders
+                 end_on_any_success: bool = True,  # end the episode as soon as ANY agent reaches the zone
                  ):
         super().__init__()
 
@@ -139,6 +142,8 @@ class MultiAgentEnv(gym.Env):
         self.target_percentile = target_percentile
         self.target_samples = target_samples
         self.static_frame = static_frame
+        self.land_clearance = land_clearance
+        self.end_on_any_success = end_on_any_success
         # Per-agent potential Φ(s) of the previous state; set on reset and updated
         # each step. Each agent's reward is the sparse success bonus plus the
         # potential-based shaping term γΦ(s') − Φ(s) (Ng et al. 1999), which is
@@ -323,8 +328,8 @@ class MultiAgentEnv(gym.Env):
 
         # Define the target (S*, tau*), shared by all agents.
         if self.target_mode == "tail":
-            # Rare target from the salinity value tail; agents start in the opposite
-            # tail (and at distinct positions), so the swarm must navigate the field.
+            # Rare LOW-salinity target; agents spawn on the land strip (off the
+            # west/south borders), so the swarm must navigate the field.
             self._select_tail_target_and_starts(salinity_at)
         else:
             # Legacy: pick a point far enough from agent 0's spawn to force navigation.
@@ -387,7 +392,7 @@ class MultiAgentEnv(gym.Env):
         # 2. Build next observation, reward, and success flags per agent.
         obs = np.zeros((self.n_agents, self.local_observation_space.shape[0]), dtype=np.float32)
         rewards = np.zeros(self.n_agents, dtype=np.float32)
-        truncated_flag = self.t_step >= self.max_steps
+        out_of_time = self.t_step >= self.max_steps
 
         for i in range(self.n_agents):
             if self._success[i]:
@@ -417,23 +422,33 @@ class MultiAgentEnv(gym.Env):
             self._prev_potential[i] = phi_next
             rewards[i] = r
 
-        # terminated = reached the target; truncated = ran out of time without it
+        # terminated = reached the target; truncated = the episode ended without
+        # this agent reaching it. The episode ends when time runs out OR — with
+        # end_on_any_success (the multi-agent success rule: first agent to find
+        # the zone wins) — as soon as ANY agent has succeeded. The not-yet-
+        # succeeded agents are then truncated (they bootstrap, exactly like the
+        # max_steps path) so the trainer's `if d.all(): reset` fires this step.
         terminateds = self._success.copy()
-        truncateds = np.full(self.n_agents, truncated_flag) & (~self._success)
+        episode_over = out_of_time or (self.end_on_any_success and bool(terminateds.any()))
+        truncateds = np.full(self.n_agents, episode_over) & (~self._success)
 
         info = {"global_state": self._build_global_state()}
         return obs, rewards, terminateds, truncateds, info
 
     # ----------------------------------------------------------------- helpers
     def _select_tail_target_and_starts(self, salinity_at):
-        '''target_mode="tail": draw the target from a rare salinity value and place
-        agents in the OPPOSITE tail, at distinct positions.
+        '''target_mode="tail": draw the target from the rare LOW-salinity tail and
+        spawn agents on the land strip (a fixed clearance off the west/south
+        borders).
 
-        Salinity is the meaningful axis (turbidity is depth-only). We sample the
-        field's value distribution, pick whichever extreme tail (lower-P% or
-        upper-(100-P)%) lies farther from the median ("either extreme"), take an
-        actual point from it as the target (so the (S*, τ*) pair is reachable), and
-        spawn each agent on a distinct point from the opposite tail.'''
+        Salinity is the meaningful axis (turbidity is depth-only). The salinity
+        sources sit on the west/south land borders, so high salinity hugs that
+        coast where the agents spawn; targeting the LOW tail (interior / far
+        corner) keeps the target away from the spawn strip and avoids trivially
+        short episodes. We sample the field's value distribution, take an actual
+        point from the lower-P% tail as the target (so the (S*, τ*) pair is
+        reachable), then place each agent on the land strip via
+        spawn_positions_along_land_strip.'''
         X, Y, Z = self.domain
         n = self.target_samples
         P = self.np_random.uniform([0.0, 0.0, 0.0], [X, Y, Z], size=(n, 3))
@@ -444,34 +459,28 @@ class MultiAgentEnv(gym.Env):
         except Exception:
             S = np.array([float(salinity_at(p[0], p[1], p[2])) for p in P])
 
-        med = np.median(S)
-        p = self.target_percentile
-        lo, hi = np.percentile(S, p), np.percentile(S, 100 - p)
-        if (S.max() - med) >= (med - S.min()):
-            tgt_idx = np.flatnonzero(S >= hi)      # target: rare HIGH salinity
-            opp_idx = np.flatnonzero(S <= lo)      # starts: rare LOW salinity
-            if tgt_idx.size == 0:
-                tgt_idx = np.array([int(np.argmax(S))])
-        else:
-            tgt_idx = np.flatnonzero(S <= lo)      # target: rare LOW salinity
-            opp_idx = np.flatnonzero(S >= hi)      # starts: rare HIGH salinity
-            if tgt_idx.size == 0:
-                tgt_idx = np.array([int(np.argmin(S))])
-
-        # Target: a random point from the chosen tail.
+        # Target: a random point from the rare LOW-salinity tail (argmin fallback).
+        lo = np.percentile(S, self.target_percentile)
+        tgt_idx = np.flatnonzero(S <= lo)
+        if tgt_idx.size == 0:
+            tgt_idx = np.array([int(np.argmin(S))])
         jt = int(tgt_idx[self.np_random.integers(tgt_idx.size)])
         self.target_salinity = float(S[jt])
         self.target_turbidity = float(compute_turbidity(P[jt, 2]))
 
-        # Agent starts: n_agents DISTINCT points from the opposite tail. If the tail
-        # has too few points, fall back to the most-extreme distinct samples.
-        if opp_idx.size >= self.n_agents:
-            sel = self.np_random.choice(opp_idx, size=self.n_agents, replace=False)
-        else:
-            ranked = np.argsort(S) if (S.max() - med) >= (med - S.min()) else np.argsort(S)[::-1]
-            sel = ranked[:self.n_agents]
+        # Agent starts: distinct surface points on the land strip (500 m off the
+        # west/south borders). Resample any spawn that lands already in the zone.
+        starts = spawn_positions_along_land_strip(
+            self.np_random, self.n_agents, self.domain, self.land_clearance)
         for i, agent in enumerate(self.sim.agents):
-            agent.pos[:] = P[int(sel[i])]
+            pos = starts[i]
+            for _ in range(100):  # safety cap; rare given the LOW-tail target
+                S_i = float(np.asarray(salinity_at(pos[0], pos[1], pos[2])).reshape(-1)[0])
+                if not self._is_in_zone(S_i, compute_turbidity(pos[2])):
+                    break
+                pos = spawn_positions_along_land_strip(
+                    self.np_random, 1, self.domain, self.land_clearance)[0]
+            agent.pos[:] = pos
 
     def _is_in_zone(self, salinity, turbidity) -> bool:
         '''True when measured (S, tau) lie within epsilon of the target couple.'''

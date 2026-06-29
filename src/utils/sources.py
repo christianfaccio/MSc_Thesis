@@ -19,8 +19,13 @@ def random_sources(rng: np.random.Generator | None = None, n_sources: int = 1,
                    min_depth: float = 0.0, max_depth: float = 100.0,
                    min_q: float = 0.0, max_q: float = 10.0,
                    ) -> list[Source]:
-    """Generate n_sources, each anchored to an x- or y-domain border (50/50)
-    with random depth and emission rate Q.
+    """Generate n_sources, each anchored to the west (x=0) or south (y=0) land
+    border (50/50) with random depth and emission rate Q.
+
+    Land is modelled as the west (x=0) and south (y=0) borders only; the far
+    edges (x=max, y=max) are open water and never carry sources. Each source sits
+    exactly on one of those two land borders, with its free coordinate uniform
+    along the border.
 
     Accepts a numpy Generator so the caller (env.np_random) controls
     determinism without poisoning the global RNG.
@@ -29,7 +34,7 @@ def random_sources(rng: np.random.Generator | None = None, n_sources: int = 1,
         rng = np.random.default_rng()
     sources = []
     for i in range(n_sources):
-        on_x_border = bool(rng.integers(0, 2))  # source on the y=0 edge if True, else x=0
+        on_x_border = bool(rng.integers(0, 2))  # True -> south border (y=0); False -> west border (x=0)
         x = float(rng.uniform(min_x, max_x)) if on_x_border else 0.0
         y = 0.0 if on_x_border else float(rng.uniform(min_y, max_y))
         depth = float(rng.uniform(min_depth, max_depth))

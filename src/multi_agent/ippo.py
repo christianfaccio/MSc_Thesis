@@ -107,16 +107,21 @@ class Args:
     eddy_length_scale: float = 1000.0
     """vortex eddy radius [m] — scale with the domain"""
     target_mode: str = "tail"
-    """target selection: "tail" = rare salinity target (the farther <P% / >100-P%
-    extreme) with agents spawned in the OPPOSITE tail at distinct positions, so the
-    success zone is small and the swarm must navigate; "random" = legacy behaviour
-    (random point >2ε from agent 0's spawn)"""
+    """target selection: "tail" = rare LOW-salinity target with agents spawned on the
+    land strip (a fixed clearance off the west/south borders), so the success zone is
+    small and far from the spawn and the swarm must navigate; "random" = legacy
+    behaviour (random point >2ε from agent 0's spawn)"""
     target_percentile: float = 5.0
     """tail width (%) for target_mode="tail" """
     target_samples: int = 1500
     """field samples used to estimate the value distribution each reset"""
     static_frame: bool = True
     """NetCDF: freeze one random snapshot per episode (no intra-episode time evolution)"""
+    land_clearance: float = 500.0
+    """spawn distance (m) off the west/south land borders for target_mode="tail" """
+    end_on_any_success: bool = True
+    """multi-agent success rule: end the episode as soon as ANY agent reaches the zone
+    (the first-agent-to-find-it / success_any criterion)"""
 
     # Algorithm specific arguments
     total_timesteps: int = 2000000
@@ -235,6 +240,8 @@ def make_envs(args):
             target_percentile=args.target_percentile,
             target_samples=args.target_samples,
             static_frame=args.static_frame,
+            land_clearance=args.land_clearance,
+            end_on_any_success=args.end_on_any_success,
         ))
     return envs
 

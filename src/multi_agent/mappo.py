@@ -114,6 +114,11 @@ class Args:
     """vortex eddy radius [m] — scale with the domain"""
     static_frame: bool = True
     """NetCDF: freeze one random snapshot per episode (no intra-episode time evolution)"""
+    land_clearance: float = 500.0
+    """spawn distance (m) off the west/south land borders for target_mode="tail" """
+    end_on_any_success: bool = True
+    """multi-agent success rule: end the episode as soon as ANY agent reaches the zone
+    (the first-agent-to-find-it / success_any criterion)"""
 
     # Algorithm specific arguments
     total_timesteps: int = 2000000
@@ -223,6 +228,8 @@ def make_envs(args):
             eddy_length_scale=args.eddy_length_scale,
             gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
             static_frame=args.static_frame,
+            land_clearance=args.land_clearance,
+            end_on_any_success=args.end_on_any_success,
         ))
     return envs
 
