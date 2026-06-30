@@ -112,8 +112,18 @@ class Args:
     """salinity plume vertical std [m]"""
     eddy_length_scale: float = 1000.0
     """vortex eddy radius [m] — scale with the domain"""
+    reward_mode: str = "sparse"
+    """reward: "sparse" = -1 per step and +success_bonus to ALL agents on the first
+    success; "shaped" = potential-based shaping (kept for reference)"""
     static_frame: bool = True
     """NetCDF: freeze one random snapshot per episode (no intra-episode time evolution)"""
+    target_mode: str = "random"
+    """target selection: "random" = random in-domain target with whole-domain spawn;
+    "tail" = rare LOW-salinity target with land-strip spawn"""
+    target_percentile: float = 5.0
+    """tail width (%) for target_mode="tail" """
+    target_samples: int = 1500
+    """field samples used to estimate the value distribution each reset"""
     land_clearance: float = 500.0
     """spawn distance (m) off the west/south land borders for target_mode="tail" """
     end_on_any_success: bool = True
@@ -227,7 +237,11 @@ def make_envs(args):
             sigma_v=args.sigma_v,
             eddy_length_scale=args.eddy_length_scale,
             gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
+            reward_mode=args.reward_mode,
             static_frame=args.static_frame,
+            target_mode=args.target_mode,
+            target_percentile=args.target_percentile,
+            target_samples=args.target_samples,
             land_clearance=args.land_clearance,
             end_on_any_success=args.end_on_any_success,
         ))

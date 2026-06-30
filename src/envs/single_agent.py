@@ -89,6 +89,7 @@ class SingleAgentEnv(gym.Env):
                  eddy_length_scale: float = 1000.0,  # vortex eddy radius [m] (scales with domain)
                  gamma: float = 0.99,           # RL discount; MUST match the trainer's γ for shaping invariance
                  success_bonus: float = 10.0,   # sparse reward on reaching the target
+                 reward_mode: str = "shaped",   # "shaped" (potential-based) | "sparse" (-1/step, +success_bonus on success)
                  static_frame: bool = True,     # NetCDF: freeze one random snapshot per episode (no time evolution)
                  target_mode: str = "random",   # "random" (legacy) | "tail" (rare LOW-salinity target + land-strip spawn)
                  target_percentile: float = 5.0,  # tail width (%) for target_mode="tail"
@@ -112,6 +113,7 @@ class SingleAgentEnv(gym.Env):
         self.eddy_length_scale = eddy_length_scale
         self.gamma = gamma
         self.success_bonus = success_bonus
+        self.reward_mode = reward_mode
         self.static_frame = static_frame
         self.target_mode = target_mode
         self.target_percentile = target_percentile
@@ -390,16 +392,23 @@ class SingleAgentEnv(gym.Env):
         truncated = (self.t_step >= self.max_steps)
         terminated = (self._in_zone_steps >= self._success_steps_required)
 
-        # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
-        # Φ at a true terminal (success) state is 0; truncation is NOT terminal (the
-        # agent bootstraps), so it keeps the real Φ(s') — using 0 there would break
-        # policy invariance. The dense shaping telescopes to a policy-independent
-        # constant, so it guides without creating an incentive to loiter and avoid
-        # finishing the way a raw positive dense reward did.
-        phi_next_eff = 0.0 if terminated else phi_next
-        reward = self.gamma * phi_next_eff - self._prev_potential
-        if terminated:
-            reward += self.success_bonus
+        if self.reward_mode == "sparse":
+            # Easier sparse reward: a flat -1 penalty per step (pressure to finish
+            # fast) and a pure +success_bonus on reaching the target. The potential
+            # Φ is still computed (it feeds the observation history) but does NOT
+            # enter the reward here.
+            reward = self.success_bonus if terminated else -1.0
+        else:
+            # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
+            # Φ at a true terminal (success) state is 0; truncation is NOT terminal (the
+            # agent bootstraps), so it keeps the real Φ(s') — using 0 there would break
+            # policy invariance. The dense shaping telescopes to a policy-independent
+            # constant, so it guides without creating an incentive to loiter and avoid
+            # finishing the way a raw positive dense reward did.
+            phi_next_eff = 0.0 if terminated else phi_next
+            reward = self.gamma * phi_next_eff - self._prev_potential
+            if terminated:
+                reward += self.success_bonus
         self._prev_potential = phi_next
 
         return next_obs, reward, terminated, truncated, {}

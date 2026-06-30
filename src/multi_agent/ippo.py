@@ -92,6 +92,10 @@ class Args:
     """history buffer length for (action, reward) pairs; 12 steps × 10 s = 120 s of context"""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
+    z_scale: float = 0.1
+    """vertical (heave) speed multiplier; <1 gives finer depth control. With v_agent=1,
+    frame_skip=10, dt=1, the z-step is v_agent·z_scale·frame_skip·dt ≈ 1 m (vs ~10 m at 1.0),
+    matching the ~1 m turbidity success band instead of overshooting the 40 m column"""
     max_steps: int = 720
     """maximum env steps per episode before truncation"""
     dt: float = 1.0
@@ -106,7 +110,10 @@ class Args:
     """salinity plume vertical std [m]"""
     eddy_length_scale: float = 1000.0
     """vortex eddy radius [m] — scale with the domain"""
-    target_mode: str = "tail"
+    reward_mode: str = "shaped"
+    """reward: "shaped" = potential-based shaping (dense directional gradient); "sparse"
+    = -1 per step and +success_bonus to ALL agents on the first success (kept for reference)"""
+    target_mode: str = "random"
     """target selection: "tail" = rare LOW-salinity target with agents spawned on the
     land strip (a fixed clearance off the west/south borders), so the success zone is
     small and far from the spawn and the swarm must navigate; "random" = legacy
@@ -228,6 +235,7 @@ def make_envs(args):
             n_sources=args.n_sources,
             k=args.k,
             v_agent=args.v_agent,
+            z_scale=args.z_scale,
             max_steps=args.max_steps,
             dt=args.dt,
             frame_skip=args.frame_skip,
@@ -236,6 +244,7 @@ def make_envs(args):
             sigma_v=args.sigma_v,
             eddy_length_scale=args.eddy_length_scale,
             gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
+            reward_mode=args.reward_mode,
             target_mode=args.target_mode,
             target_percentile=args.target_percentile,
             target_samples=args.target_samples,

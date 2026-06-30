@@ -104,6 +104,7 @@ class MultiAgentEnv(gym.Env):
                  n_sources: int = 4,
                  k: int = 4,                    # history length of (action, reward)
                  v_agent: float = 1.0,          # agent speed in m/s
+                 z_scale: float = 1.0,          # vertical (heave) speed multiplier; <1 gives finer depth control
                  max_steps: int = 128,          # steps of an episode before truncation
                  dt: float = 0.1,               # seconds per sub-step
                  frame_skip: int = 10,          # sim sub-steps per env step (action constant)
@@ -113,6 +114,7 @@ class MultiAgentEnv(gym.Env):
                  eddy_length_scale: float = 1000.0,  # vortex eddy radius [m]
                  gamma: float = 0.99,           # RL discount; MUST match the trainer's γ for shaping invariance
                  success_bonus: float = 10.0,   # sparse reward on reaching the target
+                 reward_mode: str = "shaped",   # "shaped" (potential-based) | "sparse" (-1/step, +success_bonus to ALL on first success)
                  target_mode: str = "random",   # "random" (legacy) | "tail" (rare LOW-salinity target + land-strip spawn)
                  target_percentile: float = 5.0,  # tail width (%) for target_mode="tail"
                  target_samples: int = 1500,    # field samples used to estimate the value distribution
@@ -129,6 +131,7 @@ class MultiAgentEnv(gym.Env):
         self.n_sources = n_sources
         self.k = k
         self.v = v_agent
+        self.z_scale = z_scale
         self.max_steps = max_steps
         self.dt = dt
         self.frame_skip = frame_skip
@@ -138,6 +141,7 @@ class MultiAgentEnv(gym.Env):
         self.eddy_length_scale = eddy_length_scale
         self.gamma = gamma
         self.success_bonus = success_bonus
+        self.reward_mode = reward_mode
         self.target_mode = target_mode
         self.target_percentile = target_percentile
         self.target_samples = target_samples
@@ -378,7 +382,7 @@ class MultiAgentEnv(gym.Env):
                 continue
             mov = self._action_to_direction[actions[i]]
             agent.cmd_local_vel = np.array([mov[0] * self.v, mov[1] * self.v])  # surge, sway
-            agent.cmd_heave = mov[2] * self.v                                   # heave (z)
+            agent.cmd_heave = mov[2] * self.v * self.z_scale                    # heave (z); z_scale<1 -> finer depth control
             agent.cmd_heading = np.rad2deg(np.arctan2(mov[0], mov[1]))          # heading tracks motion
 
         for _ in range(self.frame_skip):
@@ -394,6 +398,13 @@ class MultiAgentEnv(gym.Env):
         rewards = np.zeros(self.n_agents, dtype=np.float32)
         out_of_time = self.t_step >= self.max_steps
 
+        # Agents active (not already succeeded) at the start of this step; only
+        # these receive the sparse +success_bonus when the swarm scores. Frozen
+        # agents keep their 0.0 reward.
+        active_at_entry = ~self._success.copy()
+        # Track which agents reach the zone this step so the sparse reward can pay
+        # the +success_bonus to the whole swarm when the first agent finds it.
+        newly_terminated = np.zeros(self.n_agents, dtype=bool)
         for i in range(self.n_agents):
             if self._success[i]:
                 # Frozen: re-emit obs (no history update), zero reward.
@@ -409,18 +420,33 @@ class MultiAgentEnv(gym.Env):
                 self._in_zone_steps[i] = 0
             terminated_i = self._in_zone_steps[i] >= self._success_steps_required
 
-            # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
-            # Φ at a true terminal (success) is 0; truncation is NOT terminal (the
-            # agent bootstraps), so it keeps the real Φ(s'). The dense shaping
-            # telescopes to a policy-independent constant, guiding the agent without
-            # the loitering incentive of a raw positive dense reward.
-            phi_next_eff = 0.0 if terminated_i else phi_next
-            r = self.gamma * phi_next_eff - self._prev_potential[i]
+            if self.reward_mode == "sparse":
+                # Easier sparse reward: a flat -1 penalty per active agent per step.
+                # The +success_bonus is paid below to ALL agents once any agent
+                # reaches the target. Φ still feeds the observation history but does
+                # NOT enter the reward.
+                rewards[i] = -1.0
+            else:
+                # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
+                # Φ at a true terminal (success) is 0; truncation is NOT terminal (the
+                # agent bootstraps), so it keeps the real Φ(s'). The dense shaping
+                # telescopes to a policy-independent constant, guiding the agent without
+                # the loitering incentive of a raw positive dense reward.
+                phi_next_eff = 0.0 if terminated_i else phi_next
+                r = self.gamma * phi_next_eff - self._prev_potential[i]
+                if terminated_i:
+                    r += self.success_bonus
+                rewards[i] = r
             if terminated_i:
-                r += self.success_bonus
                 self._success[i] = True
+                newly_terminated[i] = True
             self._prev_potential[i] = phi_next
-            rewards[i] = r
+
+        # Sparse mode: as soon as ANY agent reaches the target this step, every
+        # agent (whether or not it personally found the zone) receives a pure
+        # +success_bonus, overriding the -1 step penalty for that step.
+        if self.reward_mode == "sparse" and bool(newly_terminated.any()):
+            rewards[active_at_entry] = self.success_bonus
 
         # terminated = reached the target; truncated = the episode ended without
         # this agent reaching it. The episode ends when time runs out OR — with

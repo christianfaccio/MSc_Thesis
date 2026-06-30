@@ -112,9 +112,12 @@ class Args:
     """salinity plume vertical std [m]"""
     eddy_length_scale: float = 1000.0
     """vortex eddy radius [m] — scale with the domain"""
+    reward_mode: str = "sparse"
+    """reward: "sparse" = -1 per step and +success_bonus on reaching the target;
+    "shaped" = potential-based shaping (kept for reference)"""
     static_frame: bool = True
     """NetCDF: freeze one random snapshot per episode (no intra-episode time evolution)"""
-    target_mode: str = "tail"
+    target_mode: str = "random"
     """target selection: "tail" = rare LOW-salinity target with the agent spawned on the
     land strip (a fixed clearance off the west/south borders), so the success zone is
     small and far from the spawn and the agent must navigate; "random" = legacy (random
@@ -198,6 +201,7 @@ def make_env(args):
             sigma_v=args.sigma_v,
             eddy_length_scale=args.eddy_length_scale,
             gamma=args.gamma,
+            reward_mode=args.reward_mode,
             static_frame=args.static_frame,
             target_mode=args.target_mode,
             target_percentile=args.target_percentile,
