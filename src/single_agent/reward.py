@@ -3,7 +3,7 @@ import numpy as np
 # 
 def reward_func(measured_S: float, measured_tau: float,
                 target_S: float, target_tau: float,
-                sigma_s: float = 1.5, sigma_tau: float = 0.8) -> float:
+                sigma_s: float = 1.5, sigma_tau: float = 0.3) -> float:
     '''
     Computes the reward function for the agent.
 
@@ -19,6 +19,12 @@ def reward_func(measured_S: float, measured_tau: float,
     than collapsing to ~0 away from a rare tail target (with σ_S=0.5, Φ at the spawn
     ΔS≈1.3 was exp(-(1.3/0.5)²)≈0.001 — effectively sparse; at σ_S=1.5 it is ≈0.47).
     This only changes the dense guidance, not the success test (|ΔS|<ε_S, separate).
+
+    σ_τ tightened 0.8 → 0.3 (2026-06-30): turbidity only spans ~0.33 over the 40 m
+    column (τ=1−exp(−0.01|z|)), so σ_τ=0.8 left the depth dimension of Φ nearly flat
+    (worst-depth factor 0.84 vs salinity's 0.47 — 3.4× less pull), and the agent
+    learned to ignore depth (z ping-pong). σ_τ=0.3 gives parity with σ_S (≈range/1.1):
+    worst-depth factor drops to ≈0.30, restoring a real depth-seeking gradient.
 
     TODO: to discuss using a linear function instead
     of an exponential.

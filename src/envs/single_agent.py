@@ -131,7 +131,9 @@ class SingleAgentEnv(gym.Env):
 
         self._in_zone_steps = 0
         self.epsilon_salinity = 0.05
-        self.epsilon_turbidity = 0.01
+        # ε_τ widened 0.01 → 0.03 (2026-07-01) — see MultiAgentEnv note: 0.01 made the
+        # depth band exactly one z-step wide (bang-bang z ping-pong); 0.03 = ±3 m band.
+        self.epsilon_turbidity = 0.03
         self._success_steps_required = 1
 
         # Action Space

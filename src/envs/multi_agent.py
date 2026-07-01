@@ -158,7 +158,11 @@ class MultiAgentEnv(gym.Env):
         self.target_turbidity = 0.0
 
         self.epsilon_salinity = 0.05
-        self.epsilon_turbidity = 0.01
+        # ε_τ widened 0.01 → 0.03 (2026-07-01): at 0.01 the depth success band was
+        # exactly one 1 m z-step wide (dτ/dz≈0.01·1 m step), so a discrete ±1 z-action
+        # could not move and stay inside → bang-bang z ping-pong. 0.03 gives a ±3 m band
+        # (3 steps) the agent can rest in. Depth-only, so domain coverage barely changes.
+        self.epsilon_turbidity = 0.03
         self._success_steps_required = 1
 
         # Per-agent episode state (allocated for real in reset())
