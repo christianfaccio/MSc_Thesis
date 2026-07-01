@@ -39,7 +39,6 @@ def _resolve_nc_files(spec) -> list:
     return files
 
 
-# TODO: implement the BaseEnv and inherit from that instead of gym.Env
 class MultiAgentEnv(gym.Env):
     '''
     Multi-agent SwarmSwIM environment wrapped for (I/MA)PPO training.

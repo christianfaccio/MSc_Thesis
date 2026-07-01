@@ -38,7 +38,6 @@ def _resolve_nc_files(spec) -> list:
         raise ValueError(f"No NetCDF files matched: {p}")
     return files
 
-# TODO: implement the BaseEnv and inherit from that instead of gym.Env
 class SingleAgentEnv(gym.Env):
     '''
     This class represents the wrapped environment of the simulation. It builds from

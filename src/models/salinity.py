@@ -1,15 +1,48 @@
-"""
-Lagrangian diffusion model for the salinity particles.
-The idea is to let the particles flow with the currents in the
-3D environment with the addition of a Gaussian noise.
-
-Note: `parcels` is imported lazily inside `compute_salinity` so the
-analytical training path (which only needs NumPy) can run without it.
-"""
-
 import numpy as np
 
 SECONDS_PER_DAY = 86400.0
+
+def _gaussian_raw(x, y, z, centers, weights, sigma_h, sigma_v):
+    '''Un-normalized sum of 3D Gaussians. Vectorized: scalars in -> scalar out,
+    arrays in -> array out (the exp terms broadcast against x, y, z).'''
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    z = np.asarray(z, dtype=float)
+    S = np.zeros(np.broadcast(x, y, z).shape)
+    for (cx, cy, cz), w in zip(centers, weights):
+        S = S + w * np.exp(
+            -((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma_h ** 2)
+            - (z - cz) ** 2 / (2 * sigma_v ** 2)
+        )
+    return S
+
+
+def gaussian_field_norm(centers, weights, sigma_h, sigma_v, domain, n: int = 32):
+    '''Return (raw_min, raw_max) of the un-normalized field over the domain.
+
+    Compute this ONCE per field (e.g. per episode, when the blobs are drawn) and
+    pass it to compute_salinity_gaussian, so per-point queries stay cheap instead
+    of rebuilding the normalization grid on every call.'''
+    xs = np.linspace(0.0, domain[0], n)
+    ys = np.linspace(0.0, domain[1], n)
+    zs = np.linspace(0.0, domain[2], max(8, n // 4))
+    X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
+    raw = _gaussian_raw(X, Y, Z, centers, weights, sigma_h, sigma_v)
+    return float(raw.min()), float(raw.max())
+
+
+def compute_salinity_gaussian(x, y, z, centers, weights, sigma_h, sigma_v, span,
+                              raw_min, raw_max):
+    '''
+    Synthetic salinity [PSU] at (x, y, z): a sum of 3D Gaussians affine-scaled to
+    `span` using precomputed (raw_min, raw_max) from `gaussian_field_norm`.
+
+    Scalar in -> float out; array in -> ndarray out (vectorized), so it serves
+    both per-agent queries and grid sampling (target selection, plotting).
+    '''
+    raw = _gaussian_raw(x, y, z, centers, weights, sigma_h, sigma_v)
+    S = span * (raw - raw_min) / (raw_max - raw_min)
+    return float(S) if S.ndim == 0 else S
 
 def compute_salinity_analytical(x: float | np.ndarray, y: float | np.ndarray, z: float | np.ndarray,
                                 sources: list,

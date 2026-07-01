@@ -13,3 +13,4 @@ docs/
 MODEL.md
 *.log
 debug/
+scripts/
