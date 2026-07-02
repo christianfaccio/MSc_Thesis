@@ -31,7 +31,7 @@ from rich.progress import (
 from torch.utils.tensorboard import SummaryWriter
 
 from src.single_agent.policy import PpoPolicy
-from src.envs.base_single import BaseSingleAgentEnv
+from src.envs.base import BaseEnv
 # Reuse the env-agnostic normalization-state helpers from the main PPO trainer.
 from src.single_agent.ppo import (
     get_obs_rms_state, set_obs_rms_state,
@@ -150,7 +150,7 @@ class Args:
 
 def make_env(args):
     def thunk():
-        env = BaseSingleAgentEnv(
+        env = BaseEnv(
             xml_file=args.xml_file,
             k=args.k,
             v_agent=args.v_agent,

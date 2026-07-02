@@ -266,7 +266,7 @@ class BaseEnv(gym.Env):
         )
     
     @abstractmethod 
-    def reset(self, seed=None):
+    def reset(self, seed=None, options=None):
         """ 
         Env is initialized random at each reset:
             - agent position
