@@ -4,7 +4,11 @@ from abc import abstractmethod
 from SwarmSwIM import Simulator, Agent, sim_functions
 import numpy as np
 import itertools
-from src.models.salinity import compute_salinity_gaussian, gaussian_field_norm
+from src.models.salinity import (
+    compute_salinity_gaussian,
+    compute_salinity_gradient_gaussian,
+    gaussian_field_norm,
+)
 from src.models.turbidity import compute_turbidity
 from src.single_agent.reward import reward_func
 
@@ -18,11 +22,11 @@ class BaseEnv(gym.Env):
                  xml_file: str,
                  k: int = 12,
                  v_agent: float = 1.0,
-                 max_steps: int = 1280,
+                 max_steps: int = 5120,
                  dt: float = 0.1,
                  frame_skip: int = 10,
                  domain = (1000.0, 1000.0, 100.0),
-                 gamma: float = 0.99,
+                 gamma: float = 0.999,
                  success_bonus: float = 10.0,
                  eddy_length_scale: float = 300.0,   # vortex eddy radius [m] (used by randomize_currents)
                  salinity_sigma_h: float = 300.0,    # field horizontal std [m] (domain-scale -> navigable gradient)
@@ -46,6 +50,7 @@ class BaseEnv(gym.Env):
         self.salinity_span = salinity_span
         self.n_blobs = n_blobs
         self.field_grid_n = field_grid_n
+
         # Per-episode salinity field (blob centers/weights + span normalization);
         # set in randomize_salinity_field().
         self._salinity_centers = None
@@ -54,14 +59,14 @@ class BaseEnv(gym.Env):
         self._salinity_raw_max = None
 
         # Success zone: |ΔS| and |Δτ| below these of the target couple.
-        self.epsilon_salinity = 0.05
-        self.epsilon_turbidity = 0.03
+        self.epsilon_salinity = 0.3
+        self.epsilon_turbidity = 0.05
 
         self.t_step = 0
         self._prev_potential = 0.0
 
         self.action_space = gym.spaces.Discrete(27)
-        obs_dim = 4*k + 6
+        obs_dim = 9 
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         self._action_to_direction = self._build_action_table()
 
@@ -159,9 +164,19 @@ class BaseEnv(gym.Env):
             raw_min=self._salinity_raw_min, raw_max=self._salinity_raw_max,
         )
 
+    def _salinity_grad_at(self, x, y, z):
+        return compute_salinity_gradient_gaussian(
+            x, y, z,
+            centers=self._salinity_centers, weights=self._salinity_weights,
+            sigma_h=self.salinity_sigma_h, sigma_v=self.salinity_sigma_v,
+            span=self.salinity_span,
+            raw_min=self._salinity_raw_min, raw_max=self._salinity_raw_max,
+        )
+
     def _measure(self, agent):
-        '''Salinity, turbidity and body-frame currents at the agent's position —
-        the single source of truth for _build_state and the in-zone check.'''
+        '''Salinity, turbidity, body-frame currents and body-frame salinity
+        gradient at the agent's position — the single source of truth for
+        _build_state and the in-zone check.'''
         x, y, z = agent.pos[0], agent.pos[1], agent.pos[2]
         S = self._salinity_at(x, y, z)
         tau = compute_turbidity(z)
@@ -170,7 +185,13 @@ class BaseEnv(gym.Env):
         u = currents[0] * np.cos(psi) + currents[1] * np.sin(psi)
         v = currents[0] * np.sin(psi) - currents[1] * np.cos(psi)
         w = currents[2]
-        return S, tau, u, v, w
+        # Salinity gradient rotated into the body frame (same convention as the
+        # currents) so the observation stays free of absolute position/heading.
+        gx, gy, gz = self._salinity_grad_at(x, y, z)
+        gu = gx * np.cos(psi) + gy * np.sin(psi)
+        gv = gx * np.sin(psi) - gy * np.cos(psi)
+        gw = gz
+        return S, tau, u, v, w, gu, gv, gw
 
     def _build_action_table(self) -> np.array:
         '''Returns an array of action->(dx,dy,dz) normalized.'''
@@ -181,45 +202,72 @@ class BaseEnv(gym.Env):
     
     def _build_state(self, agent, action=None) -> tuple[np.ndarray, float]:
         '''
-        Returns the observation of dimension (4k+6,) and the proximity potential
-        Φ(s) = reward_func(...). The caller turns Φ into the shaped reward; the
-        history stores (action, Φ).
+        Returns the observation and the proximity potential Φ(s) = reward_func(...).
+        The caller turns Φ into the shaped reward.
 
-        Layout:
-            (2k)    -> history of (action, potential) pairs
-            (2k)    -> history of measured (salinity, turbidity) (last row = current)
+        obs_mode="minimal" (9,):
             (3)     -> body-frame currents (u, v, w)
-            (2)     -> target (salinity*, turbidity*)
+            (3)     -> body-frame salinity gradient (gu, gv, gw)
+            (2)     -> target errors (S - S*, τ - τ*)
             (1)     -> depth
         '''
-        # Salinity, turbidity and body-frame currents come from _measure (single
-        # source of truth, shared with the in-zone check / external tooling).
-        new_salinity, new_turbidity, u, v, w = self._measure(agent)
+        # Salinity, turbidity, body-frame currents and gradient come from _measure
+        # (single source of truth, shared with the in-zone check / external tooling).
+        new_salinity, new_turbidity, u, v, w, gu, gv, gw = self._measure(agent)
 
         potential = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity)
-        if action is not None:
-            self.history = np.roll(self.history, -1, axis=0)
-            self.history[-1] = [action, potential]
-
-        # (S, τ) history rolls on every build (incl. reset): the measurement is
-        # available at every observation, so the last row is always the current
-        # (S, τ) and earlier rows are the previous k-1 steps.
-        self.st_history = np.roll(self.st_history, -1, axis=0)
-        self.st_history[-1] = [new_salinity, new_turbidity]
 
         self.current_salinity = new_salinity
         self.current_turbidity = new_turbidity
 
         agent_depth = agent.pos[2]
 
+        if self.obs_mode == "minimal":
+            return np.array([
+                u, v, w,
+                gu, gv, gw,
+                self.current_salinity - self.target_salinity,
+                self.current_turbidity - self.target_turbidity,
+                agent_depth,
+            ], dtype=np.float32), potential
+
+        #if action is not None:
+        #    self.history = np.roll(self.history, -1, axis=0)
+        #    self.history[-1] = [action, potential]
+
+        # (S, τ) history rolls on every build (incl. reset): the measurement is
+        # available at every observation, so the last row is always the current
+        # (S, τ) and earlier rows are the previous k-1 steps.
+        #self.st_history = np.roll(self.st_history, -1, axis=0)
+        #self.st_history[-1] = [new_salinity, new_turbidity]
+
         return np.concatenate([
-            self.history.flatten(),
-            self.st_history.flatten(),
+            #self.history.flatten(),
+            #self.st_history.flatten(),
             np.array([u, v, w,
+                      gu, gv, gw,
                       self.target_salinity, self.target_turbidity,
                       agent_depth]),
         ]).astype(np.float32), potential
     
+    def _zone_reachable(self, n_xy: int = 64, n_z_band: int = 5) -> bool:
+        '''True if some domain point satisfies both |S - S*| < eps_S and
+        |tau - tau*| < eps_tau, i.e. the episode has a target zone at all.
+
+        Turbidity is depth-only, so the tau condition pins a depth band: find it
+        by fine 1D sampling (no Beer-Lambert inversion needed), then test the
+        salinity condition on an xy-grid at a few depths inside the band.'''
+        zs = np.linspace(0.0, self.domain[2], 512)
+        band = zs[np.abs(compute_turbidity(zs) - self.target_turbidity) < self.epsilon_turbidity]
+        if band.size == 0:
+            return False
+        z_levels = band[np.linspace(0, band.size - 1, min(n_z_band, band.size)).astype(int)]
+        xs = np.linspace(0.0, self.domain[0], n_xy)
+        ys = np.linspace(0.0, self.domain[1], n_xy)
+        X, Y, Z = np.meshgrid(xs, ys, z_levels, indexing="ij")
+        S = self._salinity_at(X, Y, Z)
+        return bool(np.any(np.abs(S - self.target_salinity) < self.epsilon_salinity))
+
     def _is_in_zone(self) -> bool:
         '''True when measured (S, tau) lie within epsilon of the target couple.'''
         return (
@@ -257,20 +305,30 @@ class BaseEnv(gym.Env):
         # Randomize current field
         self.randomize_currents()
 
-        # Randomize the synthetic salinity field (fresh blobs each episode)
-        self.randomize_salinity_field()
-
-        # Random target: a point far enough from the spawn that the agent must
-        # navigate the field gradient to reach it (target == spawn would be trivial).
+        # Randomize the synthetic salinity field and target, resampling both until
+        # the episode actually has a target zone (_zone_reachable). The target is
+        # a point far enough from the spawn that the agent must navigate the field
+        # gradient to reach it (target == spawn would be trivial); (S*, tau*) are
+        # sampled at that point, so the zone exists at it by construction — the
+        # grid check guards against degenerate (vanishingly small) zones.
         spawn = self.sim.agents[0].pos
         min_dist = 0.3 * float(np.linalg.norm(self.domain))
-        tgt = self.np_random.uniform(0.0, 1.0, size=3) * np.array(self.domain, dtype=float)
-        for _ in range(100):
-            if np.linalg.norm(tgt - spawn) >= min_dist:
+        dom = np.array(self.domain, dtype=float)
+        for _ in range(20):
+            self.randomize_salinity_field()
+            tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
+            for _ in range(100):
+                if np.linalg.norm(tgt - spawn) >= min_dist:
+                    break
+                tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
+            self.target_salinity = self._salinity_at(tgt[0], tgt[1], tgt[2])
+            self.target_turbidity = compute_turbidity(tgt[2])
+            if self._zone_reachable():
                 break
-            tgt = self.np_random.uniform(0.0, 1.0, size=3) * np.array(self.domain, dtype=float)
-        self.target_salinity = self._salinity_at(tgt[0], tgt[1], tgt[2])
-        self.target_turbidity = compute_turbidity(tgt[2])
+        else:
+            raise RuntimeError(
+                "reset(): no reachable target zone after 20 field/target resamples"
+            )
 
         # Init RL vars
         self.history = np.zeros((self.k, 2), dtype=np.float32)

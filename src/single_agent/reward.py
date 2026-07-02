@@ -3,7 +3,7 @@ import numpy as np
 # 
 def reward_func(measured_S: float, measured_tau: float,
                 target_S: float, target_tau: float,
-                sigma_s: float = 1.5, sigma_tau: float = 0.3) -> float:
+                sigma_s: float = 3.0, sigma_tau: float = 0.3) -> float:
     '''
     Computes the reward function for the agent.
 
@@ -25,9 +25,6 @@ def reward_func(measured_S: float, measured_tau: float,
     (worst-depth factor 0.84 vs salinity's 0.47 — 3.4× less pull), and the agent
     learned to ignore depth (z ping-pong). σ_τ=0.3 gives parity with σ_S (≈range/1.1):
     worst-depth factor drops to ≈0.30, restoring a real depth-seeking gradient.
-
-    TODO: to discuss using a linear function instead
-    of an exponential.
     '''
     return np.exp(
         -((measured_S - target_S) / sigma_s) ** 2

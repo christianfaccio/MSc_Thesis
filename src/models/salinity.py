@@ -44,6 +44,24 @@ def compute_salinity_gaussian(x, y, z, centers, weights, sigma_h, sigma_v, span,
     S = span * (raw - raw_min) / (raw_max - raw_min)
     return float(S) if S.ndim == 0 else S
 
+def compute_salinity_gradient_gaussian(x, y, z, centers, weights, sigma_h, sigma_v,
+                                       span, raw_min, raw_max):
+    '''
+    Analytic gradient (dS/dx, dS/dy, dS/dz) [PSU/m] of compute_salinity_gaussian.
+    The affine span-normalization is a constant scale, so the gradient is just
+    the raw-field gradient times span / (raw_max - raw_min).
+    '''
+    dSdx = dSdy = dSdz = 0.0
+    for (cx, cy, cz), w in zip(centers, weights):
+        dx, dy, dz = x - cx, y - cy, z - cz
+        S_i = w * np.exp(-(dx * dx + dy * dy) / (2 * sigma_h ** 2)
+                         - dz * dz / (2 * sigma_v ** 2))
+        dSdx += -(dx / sigma_h ** 2) * S_i
+        dSdy += -(dy / sigma_h ** 2) * S_i
+        dSdz += -(dz / sigma_v ** 2) * S_i
+    scale = span / (raw_max - raw_min)
+    return scale * dSdx, scale * dSdy, scale * dSdz
+
 def compute_salinity_analytical(x: float | np.ndarray, y: float | np.ndarray, z: float | np.ndarray,
                                 sources: list,
                                 sigma_h: float = 15.0, sigma_v: float = 10.0) -> float:
