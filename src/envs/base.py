@@ -222,14 +222,13 @@ class BaseEnv(gym.Env):
 
         agent_depth = agent.pos[2]
 
-        if self.obs_mode == "minimal":
-            return np.array([
-                u, v, w,
-                gu, gv, gw,
-                self.current_salinity - self.target_salinity,
-                self.current_turbidity - self.target_turbidity,
-                agent_depth,
-            ], dtype=np.float32), potential
+        return np.array([
+            u, v, w,
+            gu, gv, gw,
+            self.current_salinity - self.target_salinity,
+            self.current_turbidity - self.target_turbidity,
+            agent_depth,
+        ], dtype=np.float32), potential
 
         #if action is not None:
         #    self.history = np.roll(self.history, -1, axis=0)
@@ -240,15 +239,6 @@ class BaseEnv(gym.Env):
         # (S, τ) and earlier rows are the previous k-1 steps.
         #self.st_history = np.roll(self.st_history, -1, axis=0)
         #self.st_history[-1] = [new_salinity, new_turbidity]
-
-        return np.concatenate([
-            #self.history.flatten(),
-            #self.st_history.flatten(),
-            np.array([u, v, w,
-                      gu, gv, gw,
-                      self.target_salinity, self.target_turbidity,
-                      agent_depth]),
-        ]).astype(np.float32), potential
     
     def _zone_reachable(self, n_xy: int = 64, n_z_band: int = 5) -> bool:
         '''True if some domain point satisfies both |S - S*| < eps_S and
@@ -286,8 +276,8 @@ class BaseEnv(gym.Env):
         super().reset(seed=seed)
 
         self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.xml_file)
-        self.sim.remove(self.sim.agents[0]) # remove agent to random initialize it,
-                                            # in the xml it is hard initialized
+        self.sim.remove(*self.sim.agents)   # drop ALL xml-defined agents so the
+                                            # randomly initialized one is agents[0]
         
         # Add agent randomly initialized
         agent = Agent(

@@ -185,7 +185,7 @@ class SingleAgentEnv(gym.Env):
         self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.sim_xml,
                              netcdf_file=loader)
         
-        self.sim.remove(self.sim.agents[0])
+        self.sim.remove(*self.sim.agents)  # drop ALL xml-defined agents, not just the first
         
         # Add agent
         agent = Agent(

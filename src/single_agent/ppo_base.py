@@ -93,9 +93,6 @@ class Args:
     """per episode a random 2..n_blobs Gaussian blobs"""
     field_grid_n: int = 32
     """grid resolution used to normalize the field to span"""
-    obs_mode: str = "minimal"
-    """observation layout: "minimal" (9-dim: currents, salinity gradient, target
-    errors, depth) or "full" (4k+9 legacy: histories + absolute targets)"""
     success_bonus: float = 10.0
     """reward bonus on reaching the target zone (shaped potential otherwise)"""
 
@@ -169,7 +166,6 @@ def make_env(args):
             salinity_span=args.salinity_span,
             n_blobs=args.n_blobs,
             field_grid_n=args.field_grid_n,
-            obs_mode=args.obs_mode,
         )
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env = gym.wrappers.NormalizeObservation(env)
