@@ -389,9 +389,9 @@ def train(args):
     # Rolling stats over the last STATS_WINDOW finished episodes
     ep_returns = deque(maxlen=STATS_WINDOW)   # per-agent mean return
     ep_lengths = deque(maxlen=STATS_WINDOW)
-    ep_success = deque(maxlen=STATS_WINDOW)   # fraction of the swarm that reached the target
-    ep_success_all = deque(maxlen=STATS_WINDOW)  # 1.0 if EVERY agent reached the target
-    ep_success_any = deque(maxlen=STATS_WINDOW)  # 1.0 if AT LEAST ONE agent reached the target
+    # In this framework the episode is a SUCCESS as soon as ANY agent reaches the
+    # target (end_on_any_success), so success_rate == success_any.
+    ep_success = deque(maxlen=STATS_WINDOW)   # 1.0 if AT LEAST ONE agent reached the target
 
     progress = Progress(
         TextColumn("[bold blue]iter"),
@@ -466,15 +466,13 @@ def train(args):
                 # The env does not auto-reset: when all its agents are done, log
                 # the episode and reset it.
                 if d.all():
-                    frac = float(term.mean())   # fraction of the swarm that reached the target
+                    succeeded = float(term.any())   # success = ANY agent reached the target
                     ep_returns.append(env_ep_return[e] / n_agents)
                     ep_lengths.append(float(env_ep_len[e]))
-                    ep_success.append(frac)
-                    ep_success_all.append(float(term.all()))
-                    ep_success_any.append(float(term.any()))
+                    ep_success.append(succeeded)
                     writer.add_scalar("charts/episodic_return", env_ep_return[e] / n_agents, global_step)
                     writer.add_scalar("charts/episodic_length", float(env_ep_len[e]), global_step)
-                    writer.add_scalar("charts/episode_success", frac, global_step)
+                    writer.add_scalar("charts/episode_success", succeeded, global_step)
                     env_ep_return[e] = 0.0
                     env_ep_len[e] = 0
                     o, info = env.reset()
@@ -609,9 +607,7 @@ def train(args):
         writer.add_scalar("charts/SPS", sps, global_step)
         if ep_success:
             # Rolling means over the last STATS_WINDOW episodes (smooth, matches the console bar).
-            writer.add_scalar("charts/success_rate", float(np.mean(ep_success)), global_step)        # per-agent mean
-            writer.add_scalar("charts/success_rate_all", float(np.mean(ep_success_all)), global_step)  # whole swarm
-            writer.add_scalar("charts/success_rate_any", float(np.mean(ep_success_any)), global_step)  # ≥1 agent
+            writer.add_scalar("charts/success_rate", float(np.mean(ep_success)), global_step)  # success = ≥1 agent
 
         # Live UI update
         progress.update(

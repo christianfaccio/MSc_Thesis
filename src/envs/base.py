@@ -356,9 +356,241 @@ class BaseEnv(gym.Env):
         terminated = self._is_in_zone()
 
         phi_next_eff = 0.0 if terminated else phi_next
-        reward = self.gamma * phi_next_eff - self._prev_potential 
+        reward = self.gamma * phi_next_eff - self._prev_potential
         if terminated:
-             reward += self.success_bonus 
-        self._prev_potential = phi_next 
+             reward += self.success_bonus
+        self._prev_potential = phi_next
 
         return next_obs, reward, terminated, truncated, {}
+
+
+class MultiAgentBaseEnv(BaseEnv):
+    '''
+    Multi-agent version of BaseEnv: N homogeneous agents share ONE synthetic
+    Gaussian-field domain (same randomized currents + salinity field + target).
+
+    It reuses all of BaseEnv's synthetic-field machinery (randomize_currents,
+    randomize_salinity_field, _salinity_at, _salinity_grad_at, _zone_reachable,
+    _measure, _build_action_table) and only re-implements reset/step/state for a
+    swarm, exposing the PettingZoo-parallel-flattened API that
+    src/multi_agent/ippo.py (and mappo.py) consume:
+
+        reset() -> obs (N, 9), info
+        step(actions (N,)) -> obs (N, 9), rewards (N,),
+                              terminateds (N,), truncateds (N,), info
+
+    The per-agent LOCAL observation is exactly BaseEnv's 9-dim gradient obs
+    (no history buffer):
+        [ u v w (body-frame currents) | gu gv gw (body-frame salinity gradient)
+          | S - S* | tau - tau* | depth ]
+
+    info["global_state"] carries a (9N + 2,) centralized state for a MAPPO
+    critic; IPPO ignores it (its critic uses the local obs only):
+        [ S* tau* | per agent: u v w  gu gv gw  x y z ]
+
+    Reward, per-agent success latching and end_on_any_success mirror
+    MultiAgentEnv (src/envs/multi_agent.py): each agent's reward is
+    potential-based shaping r = success_bonus·[term] + γΦ(s') − Φ(s), a frozen
+    (succeeded) agent no-ops and stops accruing reward, and the episode ends when
+    time runs out OR (with end_on_any_success) as soon as any agent scores.
+    '''
+    def __init__(self,
+                 xml_file: str,
+                 n_agents: int = 2,
+                 z_scale: float = 1.0,           # vertical (heave) speed multiplier; <1 = finer depth control
+                 reward_mode: str = "shaped",    # "shaped" (potential-based) | "sparse" (-1/step, +bonus to all on first success)
+                 end_on_any_success: bool = True,
+                 **base_kwargs):
+        super().__init__(xml_file=xml_file, **base_kwargs)
+        self.n_agents = n_agents
+        self.z_scale = z_scale
+        self.reward_mode = reward_mode
+        self.end_on_any_success = end_on_any_success
+        self._success_steps_required = 1
+
+        # Per-agent LOCAL obs = BaseEnv's 9-dim gradient observation.
+        local_obs_dim = self.observation_space.shape[0]
+        self.local_observation_space = spaces.Box(
+            -np.inf, np.inf, shape=(local_obs_dim,), dtype=np.float32)
+        # Global state (MAPPO critic): targets (2) + 9 per agent (u v w gu gv gw x y z).
+        global_obs_dim = 9 * self.n_agents + 2
+        self.global_observation_space = spaces.Box(
+            -np.inf, np.inf, shape=(global_obs_dim,), dtype=np.float32)
+
+        # Per-agent episode state (allocated for real in reset()).
+        self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
+        self._success = np.zeros(self.n_agents, dtype=bool)
+        self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
+
+    # ------------------------------------------------------------------ reset
+    def reset(self, seed=None, options=None):
+        # Go straight to gym.Env.reset (seeds self.np_random); BaseEnv.reset is
+        # single-agent, so we re-implement the body here reusing its field helpers.
+        gym.Env.reset(self, seed=seed)
+
+        self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.xml_file)
+        # Drop any XML-defined agents; we create our own below.
+        self.sim.agents.clear()
+        self.sim.history.clear()
+
+        # Create N agents with random position + heading.
+        for i in range(self.n_agents):
+            agent = Agent(
+                name=f"A{i + 1:02d}",
+                Dt=self.dt,
+                initialPosition=np.array([
+                    self.np_random.uniform(0.0, self.domain[0]),
+                    self.np_random.uniform(0.0, self.domain[1]),
+                    self.np_random.uniform(0.0, self.domain[2]),
+                ]),
+                initialHeading=self.np_random.uniform(-180.0, 180.0),
+                agent_xml="config/agent.xml",
+                rng=int(self.np_random.integers(2 ** 31)),
+            )
+            self.sim.add(agent)
+
+        # Randomize the current field.
+        self.randomize_currents()
+
+        # Randomize the salinity field and target, resampling until the episode
+        # actually has a target zone (_zone_reachable). Target is far enough from
+        # agent 0's spawn that the swarm must navigate the field (same rule as
+        # BaseEnv's single-agent reset).
+        spawn = self.sim.agents[0].pos
+        min_dist = 0.3 * float(np.linalg.norm(self.domain))
+        dom = np.array(self.domain, dtype=float)
+        for _ in range(20):
+            self.randomize_salinity_field()
+            tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
+            for _ in range(100):
+                if np.linalg.norm(tgt - spawn) >= min_dist:
+                    break
+                tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
+            self.target_salinity = self._salinity_at(tgt[0], tgt[1], tgt[2])
+            self.target_turbidity = compute_turbidity(tgt[2])
+            if self._zone_reachable():
+                break
+        else:
+            raise RuntimeError(
+                "reset(): no reachable target zone after 20 field/target resamples")
+
+        # Per-agent episode state.
+        self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
+        self._success = np.zeros(self.n_agents, dtype=bool)
+        self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
+        self.t_step = 0
+
+        obs = np.zeros((self.n_agents, self.local_observation_space.shape[0]), dtype=np.float32)
+        for i in range(self.n_agents):
+            o, phi0, _, _ = self._build_local_state(i)
+            obs[i] = o
+            self._prev_potential[i] = phi0
+        info = {"global_state": self._build_global_state()}
+        return obs, info
+
+    # ------------------------------------------------------------------- step
+    def step(self, actions):
+        '''
+        actions: array-like (n_agents,) of discrete action indices.
+        Returns obs (N, 9), rewards (N,), terminateds (N,), truncateds (N,), info.
+        '''
+        actions = np.asarray(actions).astype(np.int64)
+
+        # 1. Set commands for active agents, advance the shared sim once.
+        for i, agent in enumerate(self.sim.agents):
+            if self._success[i]:
+                agent.cmd_local_vel = np.array([0.0, 0.0])
+                agent.cmd_heave = 0.0
+                continue
+            mov = self._action_to_direction[actions[i]]
+            agent.cmd_local_vel = np.array([mov[0] * self.v_agent, mov[1] * self.v_agent])
+            agent.cmd_heave = mov[2] * self.v_agent * self.z_scale
+            agent.cmd_heading = np.rad2deg(np.arctan2(mov[0], mov[1]))
+
+        for _ in range(self.frame_skip):
+            self.sim.tick()
+            for agent in self.sim.agents:
+                agent.pos[0] = np.clip(agent.pos[0], 0.0, self.domain[0])
+                agent.pos[1] = np.clip(agent.pos[1], 0.0, self.domain[1])
+                agent.pos[2] = np.clip(agent.pos[2], 0.0, self.domain[2])
+        self.t_step += 1
+
+        # 2. Build next obs, reward and success flags per agent.
+        obs = np.zeros((self.n_agents, self.local_observation_space.shape[0]), dtype=np.float32)
+        rewards = np.zeros(self.n_agents, dtype=np.float32)
+        out_of_time = self.t_step >= self.max_steps
+
+        active_at_entry = ~self._success.copy()
+        newly_terminated = np.zeros(self.n_agents, dtype=bool)
+        for i in range(self.n_agents):
+            if self._success[i]:
+                # Frozen: re-emit obs, zero reward.
+                obs[i] = self._build_local_state(i)[0]
+                continue
+            o, phi_next, S, tau = self._build_local_state(i, actions[i])
+            obs[i] = o
+
+            if self._is_in_zone(S, tau):
+                self._in_zone_steps[i] += 1
+            else:
+                self._in_zone_steps[i] = 0
+            terminated_i = self._in_zone_steps[i] >= self._success_steps_required
+
+            if self.reward_mode == "sparse":
+                rewards[i] = -1.0
+            else:
+                phi_next_eff = 0.0 if terminated_i else phi_next
+                r = self.gamma * phi_next_eff - self._prev_potential[i]
+                if terminated_i:
+                    r += self.success_bonus
+                rewards[i] = r
+            if terminated_i:
+                self._success[i] = True
+                newly_terminated[i] = True
+            self._prev_potential[i] = phi_next
+
+        # Sparse mode: pay +success_bonus to all agents active this step once any scores.
+        if self.reward_mode == "sparse" and bool(newly_terminated.any()):
+            rewards[active_at_entry] = self.success_bonus
+
+        terminateds = self._success.copy()
+        episode_over = out_of_time or (self.end_on_any_success and bool(terminateds.any()))
+        truncateds = np.full(self.n_agents, episode_over) & (~self._success)
+
+        info = {"global_state": self._build_global_state()}
+        return obs, rewards, terminateds, truncateds, info
+
+    # ----------------------------------------------------------------- helpers
+    def _is_in_zone(self, salinity, turbidity) -> bool:
+        '''True when (S, tau) lie within epsilon of the target couple. Overrides
+        BaseEnv's zero-arg version (which reads single-agent shared state).'''
+        return (
+            abs(salinity - self.target_salinity) < self.epsilon_salinity
+            and abs(turbidity - self.target_turbidity) < self.epsilon_turbidity
+        )
+
+    def _build_local_state(self, i, action=None):
+        '''Per-agent version of BaseEnv._build_state (no shared state, no history).
+        Returns (obs (9,), potential, S, tau) for agent i; `action` is accepted for
+        signature parity with MultiAgentEnv but unused (the base obs has no history).'''
+        agent = self.sim.agents[i]
+        S, tau, u, v, w, gu, gv, gw = self._measure(agent)
+        potential = reward_func(S, tau, self.target_salinity, self.target_turbidity)
+        obs = np.array([
+            u, v, w,
+            gu, gv, gw,
+            S - self.target_salinity,
+            tau - self.target_turbidity,
+            agent.pos[2],
+        ], dtype=np.float32)
+        return obs, potential, S, tau
+
+    def _build_global_state(self):
+        '''Centralized state (9N + 2,) for the MAPPO critic:
+            (2)        target salinity*, turbidity*
+            per agent (9): u v w | gu gv gw | x y z '''
+        parts = [self.target_salinity, self.target_turbidity]
+        for agent in self.sim.agents:
+            S, tau, u, v, w, gu, gv, gw = self._measure(agent)
+            parts.extend([u, v, w, gu, gv, gw, agent.pos[0], agent.pos[1], agent.pos[2]])
+        return np.array(parts, dtype=np.float32)

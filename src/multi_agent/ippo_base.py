@@ -1,33 +1,30 @@
 '''
-IPPO (Independent PPO, de Witt et al. 2020) with parameter sharing.
+IPPO (Independent PPO, de Witt et al. 2020) with parameter sharing on the
+synthetic Gaussian-field baseline env (src/envs/base.py: MultiAgentBaseEnv).
 
-This is single-agent PPO (CleanRL lineage) lifted to a homogeneous swarm:
-    - ONE actor-critic network is shared by every agent (parameter sharing).
-    - The critic is fully DECENTRALIZED: it takes the agent's LOCAL observation,
-      exactly like the actor. There is NO centralized critic — that is MAPPO,
-      which only differs by feeding the critic the global state (see
-      src/multi_agent/policy.py: MappoPolicy and env info["global_state"]).
-    - PPO's clipped objective is what keeps learning stable under the
-      non-stationarity of other agents learning at the same time.
+This is to src/multi_agent/ippo.py what src/single_agent/ppo_base.py is to
+src/single_agent/ppo.py: the SAME IPPO machinery (one actor-critic shared by
+every agent, a fully DECENTRALIZED critic on the LOCAL obs, per-(env, agent,
+step) samples, frozen-agent masking, manual RunningMeanStd normalization), but
+pointed at the easy synthetic swarm scenario — N agents sharing one randomized
+Gaussian salinity field with a strong navigable gradient — instead of the
+Oceananigans/analytical MultiAgentEnv. Use it to validate the IPPO pipeline
+where the field gradient is NOT ~0.
 
-Every (env, agent, step) tuple is an independent training sample: the rollout
-buffers carry an explicit agent axis (num_steps, num_envs, n_agents, ...) and
-are flattened over all three for the update.
-
-The multi-agent env (src/envs/multi_agent.py) follows the PettingZoo-parallel
-convention flattened over agents and does NOT auto-reset, so this loop manages a
-plain Python list of `num_envs` MultiAgentEnv instances, resets an env when all
-its agents are done, and normalizes observations/rewards with its own
-RunningMeanStd (the gym.vector + NormalizeObservation/Reward wrapper stack used
-in the single-agent code cannot handle a per-agent obs/reward layout).
+The env keeps BaseEnv's 9-dim gradient observation (currents + salinity
+gradient + target error + depth, no history buffer), so the actor sees the
+gradient directly. The algorithm hyperparameters follow ppo_base.py (tuned for
+the base env's ~1000-step horizon); the batch additionally collapses the agent
+axis (num_envs · num_steps · n_agents).
 
 Usage (from root):
-    - train       -> `python -m src.multi_agent.ippo`
+    - train       -> `python -m src.multi_agent.ippo_base`
     - tensorboard -> `tensorboard --logdir runs --port 6006`
 '''
 import random
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -48,9 +45,8 @@ from rich.progress import (
 from torch.utils.tensorboard import SummaryWriter
 
 from src.multi_agent.policy import IppoPolicy
-from src.envs.multi_agent import MultiAgentEnv
-
-from dataclasses import dataclass
+from src.multi_agent.ippo import RunningMeanStd
+from src.envs.base import MultiAgentBaseEnv
 
 DEBUG = True
 console = Console()
@@ -59,7 +55,7 @@ STATS_WINDOW = 100
 
 @dataclass
 class Args:
-    exp_name: str = "ippo"
+    exp_name: str = "ippo_base"
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
@@ -74,63 +70,52 @@ class Args:
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
 
-    # Environment arguments
-    env_id: str = "MultiAgent-ippo"
+    # Environment arguments (synthetic Gaussian-field baseline; mirrors ppo_base.py)
+    env_id: str = "MultiAgentBase-ippo"
     """the id of the environment"""
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML (environment physics only; agents are created
     programmatically, any <agents> block in the XML is ignored)"""
-    netcdf_file: str = "data/oceananigans/"
-    """optional Oceananigans NetCDF data: single file, glob pattern (quote it in the
-    shell, e.g. --netcdf-file 'data/oceananigans/hydrostatic_winter_run*.nc'), or
-    directory; a random file + snapshot is sampled each episode reset"""
     n_agents: int = 2
     """number of agents in the swarm (parameter-shared policy)"""
-    n_sources: int = 4
-    """number of pollution sources spawned each reset"""
     k: int = 12
-    """history buffer length for (action, reward) pairs; 12 steps × 10 s = 120 s of context"""
+    """history buffer length (kept for parity; the base obs carries no history)"""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
-    z_scale: float = 0.1
-    """vertical (heave) speed multiplier; <1 gives finer depth control. With v_agent=1,
-    frame_skip=10, dt=1, the z-step is v_agent·z_scale·frame_skip·dt ≈ 1 m (vs ~10 m at 1.0),
-    matching the ~1 m turbidity success band instead of overshooting the 40 m column"""
-    max_steps: int = 720
+    z_scale: float = 1.0
+    """vertical (heave) speed multiplier; <1 gives finer depth control"""
+    max_steps: int = 5120
     """maximum env steps per episode before truncation"""
-    dt: float = 1.0
-    """simulator timestep (s) per env step"""
+    dt: float = 0.1
+    """simulator timestep (s) per sim sub-step"""
     frame_skip: int = 10
-    """sim sub-steps per env step (action repeated); one env step is dt · frame_skip = 10 s"""
-    domain: tuple[float, float, float] = (5000.0, 5000.0, 40.0)
+    """sim sub-steps per env step; one env step = dt·frame_skip = 1 s of sim time,
+    so distance per step ≈ v_agent·dt·frame_skip = 1 m (1000 m domain -> ~1000 steps
+    to cross; targets spawn ≥30% of the diagonal away)"""
+    domain: tuple[float, float, float] = (1000.0, 1000.0, 100.0)
     """domain extent in (x, y, z) meters"""
-    sigma_h: float = 500.0
-    """salinity plume horizontal std [m] — scale with the domain"""
-    sigma_v: float = 12.0
-    """salinity plume vertical std [m]"""
-    eddy_length_scale: float = 1000.0
-    """vortex eddy radius [m] — scale with the domain"""
+    eddy_length_scale: float = 300.0
+    """vortex eddy radius [m]"""
+    salinity_sigma_h: float = 300.0
+    """salinity Gaussian horizontal std [m] (domain-scale -> navigable gradient)"""
+    salinity_sigma_v: float = 40.0
+    """salinity Gaussian vertical std [m]"""
+    salinity_span: float = 10.0
+    """salinity field span [PSU] across the domain"""
+    n_blobs: int = 3
+    """per episode a random 2..n_blobs Gaussian blobs"""
+    field_grid_n: int = 32
+    """grid resolution used to normalize the field to span"""
+    success_bonus: float = 10.0
+    """reward bonus on reaching the target zone (shaped potential otherwise)"""
     reward_mode: str = "shaped"
-    """reward: "shaped" = potential-based shaping (dense directional gradient); "sparse"
-    = -1 per step and +success_bonus to ALL agents on the first success (kept for reference)"""
-    target_mode: str = "random"
-    """target selection: "tail" = rare LOW-salinity target with agents spawned on the
-    land strip (a fixed clearance off the west/south borders), so the success zone is
-    small and far from the spawn and the swarm must navigate; "random" = legacy
-    behaviour (random point >2ε from agent 0's spawn)"""
-    target_percentile: float = 5.0
-    """tail width (%) for target_mode="tail" """
-    target_samples: int = 1500
-    """field samples used to estimate the value distribution each reset"""
-    static_frame: bool = True
-    """NetCDF: freeze one random snapshot per episode (no intra-episode time evolution)"""
-    land_clearance: float = 500.0
-    """spawn distance (m) off the west/south land borders for target_mode="tail" """
+    """reward: "shaped" = potential-based shaping (dense directional gradient);
+    "sparse" = -1 per step and +success_bonus to ALL agents on the first success"""
     end_on_any_success: bool = True
-    """multi-agent success rule: end the episode as soon as ANY agent reaches the zone
-    (the first-agent-to-find-it / success_any criterion)"""
+    """multi-agent success rule: end the episode as soon as ANY agent reaches the
+    zone (the first-agent-to-find-it / success_any criterion)"""
 
-    # Algorithm specific arguments
+    # Algorithm specific arguments (follow ppo_base.py; batch adds the agent axis)
     total_timesteps: int = 2000000
     """total timesteps of the experiment (counts agent-env steps)"""
     learning_rate: float = 3.0e-4
@@ -141,34 +126,30 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.995
-    """the discount factor gamma; effective horizon 1/(1-γ) = 200 steps ≈ 2000 s"""
-    gae_lambda: float = 0.9
-    """the lambda for the general advantage estimation (matched to the single-agent
-    PPO run that reached ~95%; was 0.95)"""
-    num_minibatches: int = 8
-    """the number of mini-batches. Raised from 2: with only 2 the optimizer applied
-    ~6x fewer gradient steps/iteration than the single-agent run (approx_kl ~0.003 vs
-    ~0.024), leaving the policy diffuse (entropy stuck ~2.2). 8 -> 80 grad steps/iter."""
+    gamma: float = 0.999
+    """discount factor; effective horizon 1/(1-γ) = 1000 steps ≈ 1000 m, matched to
+    the ~1 m/step, up-to-5120-step episodes. MUST equal the env's γ for the
+    potential-based shaping to stay policy-invariant (passed to the env below)."""
+    gae_lambda: float = 0.95
+    """the lambda for the general advantage estimation"""
+    num_minibatches: int = 12
+    """the number of mini-batches"""
     update_epochs: int = 10
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2
-    """the surrogate clipping coefficient (raised from 0.1; clipfrac was only ~0.11 so
-    the tight clip was needlessly shrinking steps)"""
+    clip_coef: float = 0.25
+    """the surrogate clipping coefficient"""
     clip_vloss: bool = False
     """Toggles whether or not to use a clipped loss for the value function"""
-    ent_coef: float = 0.005
-    """coefficient of the entropy (lowered from 0.01: with weak policy gradients the
-    entropy bonus was dominating and holding the policy diffuse)"""
+    ent_coef: float = 0.003
+    """coefficient of the entropy"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    target_kl: float = 0.02
-    """the target KL divergence threshold (was None): a safety brake now that the
-    larger minibatch count drives bigger per-iteration updates"""
+    target_kl: float = None
+    """the target KL divergence threshold"""
 
     # Checkpointing
     save_model: bool = True
@@ -189,68 +170,30 @@ class Args:
     """the number of iterations (computed in runtime)"""
 
 
-class RunningMeanStd:
-    '''Welford running mean/variance, batched (Parallel algorithm). Used for
-    observation and reward normalization in place of the gym wrappers.'''
-    def __init__(self, shape=(), epsilon=1e-4):
-        self.mean = np.zeros(shape, dtype=np.float64)
-        self.var = np.ones(shape, dtype=np.float64)
-        self.count = float(epsilon)
-
-    def update(self, x):
-        x = np.asarray(x, dtype=np.float64)
-        batch_mean = x.mean(axis=0)
-        batch_var = x.var(axis=0)
-        batch_count = x.shape[0]
-        self._update_from_moments(batch_mean, batch_var, batch_count)
-
-    def _update_from_moments(self, batch_mean, batch_var, batch_count):
-        delta = batch_mean - self.mean
-        tot_count = self.count + batch_count
-        new_mean = self.mean + delta * batch_count / tot_count
-        m_a = self.var * self.count
-        m_b = batch_var * batch_count
-        M2 = m_a + m_b + np.square(delta) * self.count * batch_count / tot_count
-        self.var = M2 / tot_count
-        self.mean = new_mean
-        self.count = tot_count
-
-    def state_dict(self):
-        return {"mean": self.mean.copy(), "var": self.var.copy(), "count": self.count}
-
-    def load_state_dict(self, state):
-        self.mean = np.array(state["mean"], dtype=np.float64)
-        self.var = np.array(state["var"], dtype=np.float64)
-        self.count = float(state["count"])
-
-
 def make_envs(args):
-    '''Build a list of `num_envs` raw MultiAgentEnv instances (no gym wrappers).'''
+    '''Build a list of `num_envs` raw MultiAgentBaseEnv instances (no gym wrappers).'''
     envs = []
     for _ in range(args.num_envs):
-        envs.append(MultiAgentEnv(
+        envs.append(MultiAgentBaseEnv(
             xml_file=args.xml_file,
-            netcdf_file=args.netcdf_file,
             n_agents=args.n_agents,
-            n_sources=args.n_sources,
+            z_scale=args.z_scale,
+            reward_mode=args.reward_mode,
+            end_on_any_success=args.end_on_any_success,
             k=args.k,
             v_agent=args.v_agent,
-            z_scale=args.z_scale,
             max_steps=args.max_steps,
             dt=args.dt,
             frame_skip=args.frame_skip,
             domain=args.domain,
-            sigma_h=args.sigma_h,
-            sigma_v=args.sigma_v,
-            eddy_length_scale=args.eddy_length_scale,
             gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
-            reward_mode=args.reward_mode,
-            target_mode=args.target_mode,
-            target_percentile=args.target_percentile,
-            target_samples=args.target_samples,
-            static_frame=args.static_frame,
-            land_clearance=args.land_clearance,
-            end_on_any_success=args.end_on_any_success,
+            success_bonus=args.success_bonus,
+            eddy_length_scale=args.eddy_length_scale,
+            salinity_sigma_h=args.salinity_sigma_h,
+            salinity_sigma_v=args.salinity_sigma_v,
+            salinity_span=args.salinity_span,
+            n_blobs=args.n_blobs,
+            field_grid_n=args.field_grid_n,
         ))
     return envs
 
@@ -580,7 +523,7 @@ def train(args):
         sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/SPS", sps, global_step)
         if ep_success:
-            # Rolling means over the last STATS_WINDOW episodes (smooth, matches the console bar).
+            # Rolling success_any over the last STATS_WINDOW episodes (matches the console bar).
             writer.add_scalar("charts/success_rate", float(np.mean(ep_success)), global_step)  # success = ≥1 agent
 
         # Live UI update
