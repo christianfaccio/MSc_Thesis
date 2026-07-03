@@ -62,34 +62,6 @@ def compute_salinity_gradient_gaussian(x, y, z, centers, weights, sigma_h, sigma
     scale = span / (raw_max - raw_min)
     return scale * dSdx, scale * dSdy, scale * dSdz
 
-def compute_salinity_analytical(x: float | np.ndarray, y: float | np.ndarray, z: float | np.ndarray,
-                                sources: list,
-                                sigma_h: float = 15.0, sigma_v: float = 10.0) -> float:
-    """
-    S_i(x, y, z) = Q_i · exp(-[(x-x_i)² + (y-y_i)²] / (2 σ_h²) - (z-z_i)² / (2 σ_v²))
-    """
-    S = 0.0
-    for source in sources:
-        x_source = source["x"]
-        y_source = source["y"]
-        depth_source = source["depth"]
-        
-        S += source["Q"] * np.exp(-((x - x_source)**2 + (y - y_source)**2) / (2 * sigma_h**2) - (z - depth_source)**2 / (2 * sigma_v**2))
-
-    return S
-
-def compute_salinity_gradient_analytical(x, y, z, sources, sigma_h=15.0, sigma_v=10.0):
-      dSdx = dSdy = dSdz = 0.0
-      for s in sources:
-          dx = x - s["x"]
-          dy = y - s["y"]
-          dz = z - s["depth"]
-          S_i = s["Q"] * np.exp(-(dx*dx + dy*dy)/(2*sigma_h**2) - dz*dz/(2*sigma_v**2))
-          dSdx += -(dx / sigma_h**2) * S_i
-          dSdy += -(dy / sigma_h**2) * S_i
-          dSdz += -(dz / sigma_v**2) * S_i
-      return dSdx, dSdy, dSdz
-
 def _cell_edges(centers: np.ndarray) -> np.ndarray:
     """Convert cell-center coordinates to cell-edge boundaries."""
     centers = np.asarray(centers, dtype=float)

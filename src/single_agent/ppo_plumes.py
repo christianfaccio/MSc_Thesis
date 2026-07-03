@@ -1,14 +1,16 @@
 '''
-PPO on the synthetic Gaussian-field baseline env (src/envs/base.py via
-BaseSingleAgentEnv). Separate from src/single_agent/ppo.py (which trains on the
-Oceananigans/analytical SingleAgentEnv) so the two don't overlap.
+PPO on the source-plume baseline env (src/envs/plumes.py: PlumesEnv). Separate
+from src/single_agent/ppo.py (Oceananigans/analytical SingleAgentEnv) and from
+src/single_agent/ppo_base.py (random-blob BaseEnv).
 
-The env keeps the SwarmSwIM currents (+ Ekman) and Beer-Lambert turbidity, but the
-salinity is a randomized sum of 3D Gaussians spanning ~10 PSU — a strong, navigable
-gradient — to test whether the agent learns when the field gradient is NOT ~0.
+Same synthetic scenario as ppo_base.py — SwarmSwIM currents (+ Ekman),
+Beer-Lambert turbidity, a Gaussian salinity field spanning ~10 PSU with a strong
+navigable gradient — EXCEPT the field's blobs are pollution sources anchored to
+the west/south land borders instead of scattered anywhere in the domain. Use it
+to check the agent still learns when the salinity emanates from the coastline.
 
 Usage (from root):
-    python -m src.single_agent.ppo_base
+    python -m src.single_agent.ppo_plumes
     tensorboard --logdir runs --port 6006
 '''
 import random
@@ -31,21 +33,83 @@ from rich.progress import (
 from torch.utils.tensorboard import SummaryWriter
 
 from src.single_agent.policy import PpoPolicy
-from src.envs.base import BaseEnv
-# Reuse the env-agnostic normalization-state helpers from the main PPO trainer.
-from src.single_agent.ppo import (
-    get_obs_rms_state, set_obs_rms_state,
-    get_return_rms_state, set_return_rms_state,
-)
+from src.envs.plumes import PlumesEnv
 
 DEBUG = True
 console = Console()
 STATS_WINDOW = 100
 
 
+# --- Normalization-state checkpoint helpers -------------------------------------
+# Inlined (rather than imported from src.single_agent.ppo) so this trainer doesn't
+# pull in SingleAgentEnv, which is unrelated to the synthetic plume scenario.
+def _find_norm_obs(env):
+    while hasattr(env, "env"):
+        if isinstance(env, gym.wrappers.NormalizeObservation):
+            return env
+        env = env.env
+    return None
+
+
+def _find_norm_reward(env):
+    while hasattr(env, "env"):
+        if isinstance(env, gym.wrappers.NormalizeReward):
+            return env
+        env = env.env
+    return None
+
+
+def get_obs_rms_state(envs):
+    states = []
+    for env in envs.envs:
+        norm = _find_norm_obs(env)
+        if norm is None:
+            continue
+        states.append({
+            "mean": norm.obs_rms.mean.copy(),
+            "var": norm.obs_rms.var.copy(),
+            "count": float(norm.obs_rms.count),
+        })
+    return states
+
+
+def set_obs_rms_state(envs, states):
+    for env, state in zip(envs.envs, states):
+        norm = _find_norm_obs(env)
+        if norm is None:
+            continue
+        norm.obs_rms.mean = state["mean"].copy()
+        norm.obs_rms.var = state["var"].copy()
+        norm.obs_rms.count = state["count"]
+
+
+def get_return_rms_state(envs):
+    states = []
+    for env in envs.envs:
+        norm = _find_norm_reward(env)
+        if norm is None:
+            continue
+        states.append({
+            "mean": float(norm.return_rms.mean),
+            "var": float(norm.return_rms.var),
+            "count": float(norm.return_rms.count),
+        })
+    return states
+
+
+def set_return_rms_state(envs, states):
+    for env, state in zip(envs.envs, states):
+        norm = _find_norm_reward(env)
+        if norm is None:
+            continue
+        norm.return_rms.mean = np.array(state["mean"])
+        norm.return_rms.var = np.array(state["var"])
+        norm.return_rms.count = state["count"]
+
+
 @dataclass
 class Args:
-    exp_name: str = "ppo_base"
+    exp_name: str = "ppo_plumes"
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
@@ -62,8 +126,8 @@ class Args:
     capture_video: bool = False
     """whether to capture videos of the agent performances"""
 
-    # Environment arguments (synthetic Gaussian-field baseline)
-    env_id: str = "BaseSingleAgent-ppo"
+    # Environment arguments (synthetic source-plume baseline)
+    env_id: str = "PlumesSingleAgent-ppo"
     """the id of the environment"""
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML"""
@@ -83,16 +147,22 @@ class Args:
     """domain extent in (x, y, z) meters"""
     eddy_length_scale: float = 300.0
     """vortex eddy radius [m]"""
-    salinity_sigma_h: float = 300.0
-    """salinity Gaussian horizontal std [m] (domain-scale -> navigable gradient)"""
+    salinity_sigma_h: float = 450.0
+    """salinity Gaussian horizontal std [m] (domain-scale -> navigable gradient; widened
+    300->450 so border-anchored plumes overlap and the NE far-field keeps a usable slope)"""
     salinity_sigma_v: float = 40.0
     """salinity Gaussian vertical std [m]"""
     salinity_span: float = 10.0
     """salinity field span [PSU] across the domain"""
-    n_blobs: int = 3
-    """per episode a random 2..n_blobs Gaussian blobs"""
+    n_sources: int = 10
+    """per episode a random min_sources..n_sources land-anchored pollution sources"""
+    min_sources: int = 6
+    """lower bound on the per-episode source count (more sources shrink the flat far-field)"""
     field_grid_n: int = 32
     """grid resolution used to normalize the field to span"""
+    min_band_grad: float = 0.004
+    """reject targets whose success band is ~flat (median |grad_xy S| < this, PSU/m) at
+    reset, so every episode has a local gradient to home on; <=0 disables the guard"""
     success_bonus: float = 10.0
     """reward bonus on reaching the target zone (shaped potential otherwise)"""
 
@@ -150,7 +220,7 @@ class Args:
 
 def make_env(args):
     def thunk():
-        env = BaseEnv(
+        env = PlumesEnv(
             xml_file=args.xml_file,
             k=args.k,
             v_agent=args.v_agent,
@@ -164,8 +234,10 @@ def make_env(args):
             salinity_sigma_h=args.salinity_sigma_h,
             salinity_sigma_v=args.salinity_sigma_v,
             salinity_span=args.salinity_span,
-            n_blobs=args.n_blobs,
+            n_sources=args.n_sources,
+            min_sources=args.min_sources,
             field_grid_n=args.field_grid_n,
+            min_band_grad=args.min_band_grad,
         )
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env = gym.wrappers.NormalizeObservation(env)
