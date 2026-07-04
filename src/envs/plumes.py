@@ -499,16 +499,18 @@ class MultiAgentPlumesEnv(PlumesEnv):
 
         # Randomize the salinity field and target, resampling until the episode
         # actually has a target zone (_zone_reachable). Target is far enough from
-        # agent 0's spawn that the swarm must navigate the field (same rule as
-        # PlumesEnv's single-agent reset).
-        spawn = self.sim.agents[0].pos
+        # EVERY agent's spawn that the whole swarm must navigate the field —
+        # constraining only agent 0 let the other agents spawn next to the target
+        # and inflate the success_any metric (same navigate rule as PlumesEnv's
+        # single-agent reset, extended to all agents).
+        spawns = np.array([a.pos for a in self.sim.agents], dtype=float)
         min_dist = 0.3 * float(np.linalg.norm(self.domain))
         dom = np.array(self.domain, dtype=float)
         for _ in range(20):
             self.randomize_salinity_field()
             tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
             for _ in range(100):
-                if np.linalg.norm(tgt - spawn) >= min_dist:
+                if np.min(np.linalg.norm(spawns - tgt, axis=1)) >= min_dist:
                     break
                 tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
             self.target_salinity = self._salinity_at(tgt[0], tgt[1], tgt[2])

@@ -171,12 +171,14 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 3.0e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 6
+    num_envs: int = 12
     """the number of parallel environments"""
     num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = False
-    """Toggle learning rate annealing for policy and value networks"""
+    anneal_lr: bool = True
+    """Toggle learning rate annealing for policy and value networks. On by default
+    to freeze the policy near its converged point and prevent late-training drift
+    (the ~0.8→0.4 peak-and-collapse seen with a flat lr + constant entropy bonus)."""
     gamma: float = 0.999
     """discount factor; effective horizon 1/(1-γ) = 1000 steps ≈ 1000 m, matched to
     the ~1 m/step, up-to-1280-step episodes. MUST equal the env's γ for the
@@ -194,12 +196,18 @@ class Args:
     clip_vloss: bool = False
     """Toggles whether or not to use a clipped loss for the value function"""
     ent_coef: float = 0.003
-    """coefficient of the entropy"""
+    """coefficient of the entropy (initial value; see anneal_ent)"""
+    anneal_ent: bool = True
+    """Linearly anneal ent_coef → ent_coef_final over training. Removes the constant
+    late-stage push toward randomness that fights the (saturating, potential-shaped)
+    policy gradient once the policy is good."""
+    ent_coef_final: float = 0.0
+    """the entropy coefficient at the end of training when anneal_ent is on"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    target_kl: float = None
+    target_kl: float = 0.02
     """the target KL divergence threshold"""
 
     # Checkpointing
@@ -340,9 +348,13 @@ def train(args):
 
     progress.start()
     for iteration in range(start_iteration, args.num_iterations + 1):
+        frac = 1.0 - (iteration - 1.0) / args.num_iterations
         if args.anneal_lr:
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
             optimizer.param_groups[0]["lr"] = frac * args.learning_rate
+        ent_coef_now = (
+            args.ent_coef_final + frac * (args.ent_coef - args.ent_coef_final)
+            if args.anneal_ent else args.ent_coef
+        )
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -444,7 +456,7 @@ def train(args):
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                loss = pg_loss - ent_coef_now * entropy_loss + v_loss * args.vf_coef
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -459,6 +471,7 @@ def train(args):
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("charts/ent_coef", ent_coef_now, global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)

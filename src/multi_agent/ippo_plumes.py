@@ -165,8 +165,9 @@ class Args:
     """the number of parallel environments"""
     num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = False
-    """Toggle learning rate annealing for policy and value networks"""
+    anneal_lr: bool = True
+    """Toggle learning rate annealing for policy and value networks. On by default
+    to freeze the policy near its converged point and prevent late-training drift."""
     gamma: float = 0.999
     """discount factor; effective horizon 1/(1-γ) = 1000 steps ≈ 1000 m, matched to
     the ~1 m/step, up-to-5120-step episodes. MUST equal the env's γ for the
@@ -184,7 +185,12 @@ class Args:
     clip_vloss: bool = False
     """Toggles whether or not to use a clipped loss for the value function"""
     ent_coef: float = 0.003
-    """coefficient of the entropy"""
+    """coefficient of the entropy (initial value; see anneal_ent)"""
+    anneal_ent: bool = True
+    """Linearly anneal ent_coef → ent_coef_final over training. Removes the constant
+    late-stage push toward randomness that fights the saturating policy gradient."""
+    ent_coef_final: float = 0.0
+    """the entropy coefficient at the end of training when anneal_ent is on"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
@@ -397,10 +403,14 @@ def train(args):
     progress.start()
     for iteration in range(start_iteration, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
+        frac = 1.0 - (iteration - 1.0) / args.num_iterations
         if args.anneal_lr:
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
+        ent_coef_now = (
+            args.ent_coef_final + frac * (args.ent_coef - args.ent_coef_final)
+            if args.anneal_ent else args.ent_coef
+        )
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs * n_agents
@@ -537,7 +547,7 @@ def train(args):
                     v_loss = 0.5 * (((newvalue - b_returns[mb_inds]) ** 2) * mb_mask).sum() / mask_sum
 
                 entropy_loss = (entropy * mb_mask).sum() / mask_sum
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                loss = pg_loss - ent_coef_now * entropy_loss + v_loss * args.vf_coef
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -556,6 +566,7 @@ def train(args):
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("charts/ent_coef", ent_coef_now, global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
