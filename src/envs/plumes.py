@@ -10,11 +10,11 @@ from src.models.salinity import (
     gaussian_field_norm,
 )
 from src.models.turbidity import compute_turbidity
-from src.single_agent.reward import reward_func
+from src.models.reward import reward_func
 from src.utils.sources import random_sources
 
 """
-Env baseline with a (1000,1000,100) domain, synthetic currents and fields.
+Env baseline with a (5000,5000,40) domain, synthetic currents and fields.
 
 Identical to src/envs/base.py (BaseEnv) EXCEPT the salinity field: instead of a
 sum of Gaussian blobs whose centers are scattered anywhere in the domain, the
@@ -31,20 +31,20 @@ class PlumesEnv(gym.Env):
                  xml_file: str,
                  k: int = 12,
                  v_agent: float = 1.0,
-                 max_steps: int = 5120,
+                 max_steps: int = 7200,             # 2 hours
                  dt: float = 0.1,
                  frame_skip: int = 10,
                  domain = (1000.0, 1000.0, 100.0),
                  gamma: float = 0.999,
                  success_bonus: float = 10.0,
-                 eddy_length_scale: float = 300.0,   # vortex eddy radius [m] (used by randomize_currents)
-                 salinity_sigma_h: float = 450.0,    # field horizontal std [m] (domain-scale -> navigable gradient)
-                 salinity_sigma_v: float = 40.0,     # field vertical std [m]
-                 salinity_span: float = 10.0,        # field span [PSU] across the domain (max - min)
-                 n_sources: int = 10,                 # per episode a random min_sources..n_sources land-anchored sources
-                 min_sources: int = 6,               # lower bound on the per-episode source count (fills the flat far-field)
-                 field_grid_n: int = 32,             # grid resolution used to normalize the field to span
-                 min_band_grad: float = 0.004,       # reject targets whose success band is ~flat (PSU/m); <=0 disables
+                 eddy_length_scale: float = 300.0,  # vortex eddy radius [m] (used by randomize_currents)
+                 salinity_sigma_h: float = 300.0,   # field horizontal std [m] (domain-scale -> navigable gradient)
+                 salinity_sigma_v: float = 40.0,    # field vertical std [m] (< the 40 m column -> vertical gradient)
+                 salinity_span: float = 10.0,       # field span [PSU] across the domain (max - min)
+                 n_sources: int = 10,               # per episode a random min_sources..n_sources land-anchored sources
+                 min_sources: int = 6,              # lower bound on the per-episode source count (fills the flat far-field)
+                 field_grid_n: int = 32,            # grid resolution used to normalize the field to span
+                 min_band_grad: float = 0.004,      # reject targets whose success band is ~flat (PSU/m); <=0 disables     
                  ):
         self.xml_file = xml_file
         self.k = k
@@ -499,18 +499,16 @@ class MultiAgentPlumesEnv(PlumesEnv):
 
         # Randomize the salinity field and target, resampling until the episode
         # actually has a target zone (_zone_reachable). Target is far enough from
-        # EVERY agent's spawn that the whole swarm must navigate the field —
-        # constraining only agent 0 let the other agents spawn next to the target
-        # and inflate the success_any metric (same navigate rule as PlumesEnv's
-        # single-agent reset, extended to all agents).
-        spawns = np.array([a.pos for a in self.sim.agents], dtype=float)
+        # agent 0's spawn that the swarm must navigate the field (same rule as
+        # PlumesEnv's single-agent reset).
+        spawn = self.sim.agents[0].pos
         min_dist = 0.3 * float(np.linalg.norm(self.domain))
         dom = np.array(self.domain, dtype=float)
         for _ in range(20):
             self.randomize_salinity_field()
             tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
             for _ in range(100):
-                if np.min(np.linalg.norm(spawns - tgt, axis=1)) >= min_dist:
+                if np.linalg.norm(tgt - spawn) >= min_dist:
                     break
                 tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
             self.target_salinity = self._salinity_at(tgt[0], tgt[1], tgt[2])

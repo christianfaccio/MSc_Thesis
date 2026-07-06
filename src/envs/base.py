@@ -10,10 +10,10 @@ from src.models.salinity import (
     gaussian_field_norm,
 )
 from src.models.turbidity import compute_turbidity
-from src.single_agent.reward import reward_func
+from src.models.reward import reward_func
 
 """
-Env baseline with a (1000,1000,100) domain, synthetic currents and fields 
+Env baseline with a (5000,5000,40) domain, synthetic currents and fields
 and no salinity sources.
 """
 
@@ -22,18 +22,20 @@ class BaseEnv(gym.Env):
                  xml_file: str,
                  k: int = 12,
                  v_agent: float = 1.0,
-                 max_steps: int = 5120,
+                 max_steps: int = 7200,             # 2 hours
                  dt: float = 0.1,
                  frame_skip: int = 10,
                  domain = (1000.0, 1000.0, 100.0),
-                 gamma: float = 0.999,
+                 gamma: float = 0.999,              # set in accordance with the domain
                  success_bonus: float = 10.0,
-                 eddy_length_scale: float = 300.0,   # vortex eddy radius [m] (used by randomize_currents)
-                 salinity_sigma_h: float = 300.0,    # field horizontal std [m] (domain-scale -> navigable gradient)
-                 salinity_sigma_v: float = 40.0,     # field vertical std [m]
-                 salinity_span: float = 10.0,        # field span [PSU] across the domain (max - min)
-                 n_blobs: int = 3,                   # per episode a random 2..n_blobs Gaussian blobs
-                 field_grid_n: int = 32,             # grid resolution used to normalize the field to span
+                 eddy_length_scale: float = 300.0,  # vortex eddy radius [m] (used by randomize_currents)
+                 salinity_sigma_h: float = 300.0,   # field horizontal std [m] (domain-scale -> navigable gradient)
+                 salinity_sigma_v: float = 40.0,    # field vertical std [m] (< the 40 m column -> vertical gradient)
+                 salinity_span: float = 10.0,       # field span [PSU] across the domain (max - min)
+                 n_blobs: int = 3,                  # per episode a random 2..n_blobs Gaussian blobs
+                 field_grid_n: int = 32,            # grid resolution used to normalize the field to span
+                 epsilon_salinity = 0.3,
+                 epsilon_turbidity = 0.05,
                  ):
         self.xml_file = xml_file
         self.k = k
@@ -59,8 +61,8 @@ class BaseEnv(gym.Env):
         self._salinity_raw_max = None
 
         # Success zone: |ΔS| and |Δτ| below these of the target couple.
-        self.epsilon_salinity = 0.3
-        self.epsilon_turbidity = 0.05
+        self.epsilon_salinity = epsilon_salinity
+        self.epsilon_turbidity = epsilon_turbidity
 
         self.t_step = 0
         self._prev_potential = 0.0
