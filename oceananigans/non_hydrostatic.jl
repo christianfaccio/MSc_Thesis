@@ -122,18 +122,29 @@ const BETA_S  = 0.0        # haline contraction [1/PSU]; 0 ⇒ S passive (see no
 # the box) and the source count raised (see sample_params) so the plumes overlap
 # into a domain-scale slope. σ_V spans the upper column.
 #
-# The relaxation brings the core excess to S_SOURCE_ANOMALY·(plume sum) on the
+# The relaxation brings the field to S_SOURCE_ANOMALY·(normalised plume) on the
 # timescale S_DECAY_TIME as (1 − e^{−t/τ}); τ short (15 min) so a ~30 min warmup
-# (= 2τ) saturates before recording. NOTE the plume sum can exceed 1 where many
-# wide sources overlap, so the realised peak is anomaly × (overlap factor): the
-# anomaly is lowered 12 → 8 to keep the span near ~10 despite the extra overlap.
-# Peak still varies run-to-run with source count/geometry — verify S.max() on the
-# output (want ~50); if it drifts high, drop the anomaly further.
+# (= 2τ) saturates before recording. The plume sum is normalised by its domain max
+# (see build_and_run) so the realised core peak is EXACTLY S_SOURCE_ANOMALY above
+# baseline regardless of how many wide sources overlap — span is set solely by the
+# anomaly and stays put when σ_H or the source count change. So span ≈ 10 PSU here.
 const SIGMA_H          = 300.0     # plume horizontal std [m]
 const SIGMA_V          = 15.0      # plume vertical std [m]
-const S_SOURCE_ANOMALY = 8.0       # per-source core excess [PSU]; realised span ~10 after overlap
+const S_SOURCE_ANOMALY = 10.0      # core salinity excess above baseline [PSU] = the span
 const S_DECAY_TIME     = 15minutes # relaxation timescale back to baseline
 const γ_S              = 1 / S_DECAY_TIME
+
+# Q-weighted sum of source Gaussians (the un-normalised plume shape). Top-level
+# (not a closure) so it stays type-stable / GPU-capturable when called from the
+# S_target closure; srcs is passed as an isbits Tuple.
+@inline function plume_excess(x, y, z, srcs, qmax)
+    e = 0.0
+    for src in srcs
+        e += (src.Q / qmax) * exp(-((x - src.x0)^2 + (y - src.y0)^2) / (2 * SIGMA_H^2)
+                                  - (z - src.z0)^2 / (2 * SIGMA_V^2))
+    end
+    return e
+end
 
 # Durations. Wind-driven boundary-layer turbulence spins up in ~10–20 min; the
 # plumes saturate in ~2·S_DECAY_TIME. Warmup default 30 min (=2τ) so the span is
@@ -231,18 +242,26 @@ function build_and_run(arch, params::RunParams, output_path::AbstractString; war
     srcs  = Tuple(params.sources)
     qmax  = maximum(s -> s.Q, srcs)
 
-    # Continuous injection balanced by a γ_S sink is exactly RELAXATION toward
-    # `S_baseline + S_SOURCE_ANOMALY·(normalised plume)` at rate γ_S. We give that
-    # target to Oceananigans' built-in `Relaxation`, which is type-stable — a
+    # Normalise the plume sum by its domain max so the realised core peak is
+    # exactly S_SOURCE_ANOMALY above baseline no matter how many wide (σ_H) sources
+    # overlap — decouples the salinity SPAN (the anomaly) from spatial COVERAGE
+    # (σ_H, source count). Without it, N overlapping σ_H=300 plumes drive the sum
+    # past 1 and the span balloons (8 sources ⇒ ~20 PSU). The global max of a sum
+    # of Gaussians sits at a source core, so scan the centres plus a coarse grid.
+    # Single assignment — reassigning a captured local boxes it (Core.Box) and
+    # breaks the isbits/GPU-capture check below.
+    excess_max = max(
+        maximum(s -> plume_excess(s.x0, s.y0, s.z0, srcs, qmax), srcs),
+        maximum(plume_excess(x, y, z, srcs, qmax)
+                for x in range(0, LX; length=48),
+                    y in range(0, LY; length=48),
+                    z in range(-DEPTH, 0; length=24)),
+    )
+
+    # Continuous injection balanced by a γ_S sink is exactly RELAXATION toward this
+    # target at rate γ_S. Oceananigans' built-in `Relaxation` is type-stable — a
     # hand-rolled field-dependent Forcing boxes per cell and GC-thrashes the step.
-    function S_target(x, y, z, t)
-        excess = 0.0
-        for src in srcs
-            excess += (src.Q / qmax) * exp(-((x - src.x0)^2 + (y - src.y0)^2) / (2 * SIGMA_H^2)
-                                           - (z - src.z0)^2 / (2 * SIGMA_V^2))
-        end
-        return sbase + S_SOURCE_ANOMALY * excess
-    end
+    S_target(x, y, z, t) = sbase + S_SOURCE_ANOMALY * plume_excess(x, y, z, srcs, qmax) / excess_max
 
     # Stable T stratification (surface warmer) over the 100 m column.
     T_init(x, y, z) = Tbot + (Tsurf - Tbot) * (1 + z / DEPTH)
