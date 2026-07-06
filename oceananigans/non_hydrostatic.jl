@@ -115,18 +115,23 @@ const BETA_S  = 0.0        # haline contraction [1/PSU]; 0 ⇒ S passive (see no
 # target so turbulent stirring cannot flatten the span (the failure mode of the
 # original weak-forcing runs, which realised only ~1 PSU).
 #
-# σ_H is deliberately localized (~8 % of the 1 km box) so plumes leave a
-# navigable gradient rather than filling the domain; σ_V spans the upper column.
+# σ_H is sized so overlapping coastal plumes fill the domain with a navigable
+# gradient rather than leaving 90 %+ of it flat at baseline. The first 1 km run
+# used σ_H = 80 m (~8 % of the box) and left only ~6 % of cells above baseline —
+# an agent in the interior saw a gradient-free field. Widened to 300 m (~30 % of
+# the box) and the source count raised (see sample_params) so the plumes overlap
+# into a domain-scale slope. σ_V spans the upper column.
 #
-# The relaxation brings the core excess to S_SOURCE_ANOMALY on the timescale
-# S_DECAY_TIME as (1 − e^{−t/τ}); turbulent stirring then erodes the peak, so the
-# REALISED span settles a bit below the anomaly. To land near ~10 PSU we set the
-# anomaly to 12 and keep τ short (15 min) so a ~30 min warmup (= 2τ ⇒ ~86 % of
-# target) already saturates the plume before recording — verified locally that a
-# 32³ smoke climbs past 8 PSU within ~30 min and keeps rising toward ~10–11.
-const SIGMA_H          = 80.0      # plume horizontal std [m]
+# The relaxation brings the core excess to S_SOURCE_ANOMALY·(plume sum) on the
+# timescale S_DECAY_TIME as (1 − e^{−t/τ}); τ short (15 min) so a ~30 min warmup
+# (= 2τ) saturates before recording. NOTE the plume sum can exceed 1 where many
+# wide sources overlap, so the realised peak is anomaly × (overlap factor): the
+# anomaly is lowered 12 → 8 to keep the span near ~10 despite the extra overlap.
+# Peak still varies run-to-run with source count/geometry — verify S.max() on the
+# output (want ~50); if it drifts high, drop the anomaly further.
+const SIGMA_H          = 300.0     # plume horizontal std [m]
 const SIGMA_V          = 15.0      # plume vertical std [m]
-const S_SOURCE_ANOMALY = 12.0      # target core salinity excess [PSU]; realised span ~10
+const S_SOURCE_ANOMALY = 8.0       # per-source core excess [PSU]; realised span ~10 after overlap
 const S_DECAY_TIME     = 15minutes # relaxation timescale back to baseline
 const γ_S              = 1 / S_DECAY_TIME
 
@@ -168,8 +173,9 @@ function sample_params(season::Symbol, run_index::Int, base_seed::Int)
 
     # Sources: border-anchored like src/utils/sources.py random_sources —
     # half on the y=0 coast, half on the periodic x edge. Depths shallow
-    # (coastal outfalls), so structure lives in the upper column.
-    n_sources = rand(rng, 3:6)
+    # (coastal outfalls), so structure lives in the upper column. Count raised
+    # 3:6 → 6:10 so the wider (σ_H=300) plumes overlap into domain-wide coverage.
+    n_sources = rand(rng, 6:10)
     sources = SourceSpec[]
     for _ in 1:n_sources
         Q     = unif(rng, 2.0, 10.0)
