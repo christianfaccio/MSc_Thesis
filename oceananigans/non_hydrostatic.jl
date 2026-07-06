@@ -1,15 +1,49 @@
 """
-Oceananigans non-hydrostatic LES of a 100×100×30 m patch of Abu Dhabi
-coastal waters (Arabian Gulf shelf depth), driven by NW shamal wind stress
-+ Coriolis, with stratified T, baseline S ≈ 40 PSU, and four pollution
-sources mirrored from config/sources.json (with Q rescaled from peak-PSU
-to PSU/s emission rate via Q_SCALE).
+Oceananigans NON-HYDROSTATIC LES of a 1000×1000×100 m patch of Abu Dhabi
+coastal waters (Arabian Gulf shelf), driven by NW shamal wind stress + Coriolis,
+with stratified T (buoyancy-active) and a salinity field built from coastal
+pollution/brine plumes relaxed toward a Gaussian target — tuned to realise a
+~10 PSU salinity span for the RL homing task.
 
-Output → data/oceananigans/scenario_01_<season>.nc
-        (u, v, w, T, S snapshots every minute of simulated time).
+WHY NON-HYDROSTATIC AT 1 km (vs. the hydrostatic 5 km script):
+a 1 km box is smaller than the baroclinic deformation radius (Rd = N·H/f ≈ 2 km),
+so the front-driven mesoscale-eddy mechanism the hydrostatic script relies on
+CANNOT operate here. Instead the spatial structure in this domain comes from
+(a) the localized brine plumes themselves and (b) wind-driven boundary-layer
+turbulence stirring them into filaments — both of which need the full 3-D
+pressure solve. At 1000×1000×100 m with ~8 m horizontal / ~1.6 m vertical cells
+the aspect ratio (~5) is mild enough for a non-hydrostatic LES to stay stable,
+unlike the 39×0.85 m hydrostatic cells. Use THIS script for the 1 km × 100 m
+turbulence-resolving training domain.
 
-Edit SEASON below to switch between winter (well-mixed, weaker stratification)
-and summer (stratified, stronger winds) presets.
+MULTI-RUN DATASET GENERATION (mirrors hydrostatic.jl):
+runs N independent simulations in one Julia session (amortizing compile time),
+each with per-run randomized — but Abu-Dhabi-plausible — parameters: sources
+(number, position, depth, Q), wind speed/direction around the seasonal shamal,
+and a seeded IC temperature perturbation so identical parameters still diverge.
+
+    julia --project=oceananigans oceananigans/non_hydrostatic.jl \\
+        --n-runs 4 --season winter --seed 1337
+
+Output → <output-dir>/nonhydro_<season>_run<NNN>.nc
+        (u, v, w, T, S snapshots) plus a sidecar nonhydro_<season>_run<NNN>.json
+        recording every sampled parameter (sources in the config/sources.json
+        schema, depth positive-down). The sidecar is written only after a
+        successful run, so it doubles as a completion marker.
+
+ARCHITECTURE (Leonardo Booster GPU vs. Mac CPU):
+choose at run time with the OCEAN_ARCH environment variable —
+    Mac (CPU):            OCEAN_ARCH=CPU julia --project=oceananigans non_hydrostatic.jl
+    Leonardo (A100 GPU):  OCEAN_ARCH=GPU julia --project=oceananigans non_hydrostatic.jl
+On Leonardo Booster (CINECA, 4× NVIDIA A100 64 GB per node, CUDA) launch one MPI
+task / one Julia process per GPU under SLURM; CUDA.jl auto-selects the visible
+device. Verify first with `julia -e 'using CUDA; CUDA.functional()'`. The CPU
+path is the guaranteed fallback (slow — use OCEAN_NX/NY/NZ to shrink the grid
+for a local smoke test, e.g. OCEAN_NX=32 OCEAN_NY=32 OCEAN_NZ=32).
+
+GRID RESOLUTION is overridable via OCEAN_NX / OCEAN_NY / OCEAN_NZ (defaults
+128 / 128 / 64) so the same script serves the full Leonardo run and a fast local
+CPU debug without editing source. Use powers of two for the FFT pressure solver.
 """
 
 using Oceananigans
@@ -18,59 +52,140 @@ using NCDatasets
 using Printf
 using Random
 
-Random.seed!(1337)
+# ─────────────────────────────────────────────────────────────────────────────
+# Architecture switch (CPU on the Mac, GPU/CUDA on Leonardo Booster)
+# ─────────────────────────────────────────────────────────────────────────────
+const USE_GPU = uppercase(get(ENV, "OCEAN_ARCH", "CPU")) == "GPU"
+if USE_GPU
+    using CUDA   # loads OceananigansCUDAExt, which defines zero-arg GPU()
+end
+const ARCH = USE_GPU ? GPU(CUDABackend()) : CPU()
+@info "Oceananigans architecture: $(ARCH)  (set OCEAN_ARCH=GPU|CPU to change)"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Abu Dhabi season presets
+# Domain size — 1 km × 1 km × 100 m turbulence-resolving coastal patch
 # ─────────────────────────────────────────────────────────────────────────────
-const SEASON = :winter   # :winter | :summer
+const LX    = 1000.0   # along-shore extent [m]
+const LY    = 1000.0   # cross-shore extent [m]
+const DEPTH = 100.0    # water column depth [m]
 
-# tau_mag = |τ| derived from wind_speed via τ = ρ_air · C_d · U² / ρ_water
-# with ρ_air = 1.225, C_d = 1.3e-3, ρ_water = 1027.
+# Grid resolution (overridable so a local CPU smoke test can shrink it).
+const NX = parse(Int, get(ENV, "OCEAN_NX", "128"))
+const NY = parse(Int, get(ENV, "OCEAN_NY", "128"))
+const NZ = parse(Int, get(ENV, "OCEAN_NZ", "64"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Abu Dhabi season presets (same physics baselines as hydrostatic.jl).
+# wind_speed is the seasonal MEAN; each run samples around it and derives the
+# kinematic stress via the bulk drag law τ = ρ_air · C_d · U² / ρ_water.
+# ─────────────────────────────────────────────────────────────────────────────
 const SEASON_PARAMS = Dict(
     :winter => (T_surface = 22.0, T_bottom = 20.0, S_baseline = 40.0,
-                N2 = 1.0e-5, wind_speed = 5.0, tau_mag = 3.87e-5),
+                N2 = 1.0e-5, wind_speed = 5.0),
     :summer => (T_surface = 33.0, T_bottom = 22.0, S_baseline = 42.0,
-                N2 = 1.0e-4, wind_speed = 8.0, tau_mag = 1.05e-4),
+                N2 = 1.0e-4, wind_speed = 8.0),
 )
-const p = SEASON_PARAMS[SEASON]
+
+const RHO_AIR   = 1.225    # air density [kg/m³]
+const C_DRAG    = 1.3e-3   # 10-m neutral drag coefficient
+const RHO_WATER = 1027.0   # seawater reference density [kg/m³]
 
 # Abu Dhabi reference latitude 24.5°N → f ≈ 6.06e-5 s⁻¹.
 const LATITUDE_DEG = 24.5
 const Ω_EARTH      = 7.292e-5
 const f_coriolis   = 2 * Ω_EARTH * sind(LATITUDE_DEG)
 
-# NW shamal wind. WIND_DIR_DEG is the meteorological "wind from" direction
-# (315° = NW, blowing toward SE → stress on water in (+x, -y) coords).
-# Oceananigans top-flux sign convention: a negative kinematic top-flux drives
-# the corresponding velocity component in the +axis direction.
-const WIND_DIR_DEG = 315.0
-const tau_x_top    = -p.tau_mag * cosd(WIND_DIR_DEG - 270)   # negative → +x flow
-const tau_y_top    = +p.tau_mag * sind(WIND_DIR_DEG - 270)   # positive → -y flow
+# Linear equation of state. S is kept DYNAMICALLY PASSIVE (haline_contraction = 0)
+# for this first pass: buoyancy comes from the T stratification only, so the
+# strong (~10 PSU) brine anomaly cannot drive resolved convective downdrafts that
+# would hammer the vertical CFL on the first (expensive) Leonardo run. The plume
+# is still fully advected + LES-mixed, so the sensed field has real 3-D structure.
+# To make the brine buoyancy-active later, set BETA_S = 7.8e-4.
+const G_GRAV  = 9.81
+const ALPHA_T = 1.67e-4    # thermal expansion  [1/°C]
+const BETA_S  = 0.0        # haline contraction [1/PSU]; 0 ⇒ S passive (see note)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pollution sources (mirrors config/sources.json — keep Q values in sync).
-# Q_SCALE converts the synthetic-model "peak amplitude" interpretation of Q
-# (used in src/models/salinity.py) into an LES emission *rate* in PSU/s.
-# Order-of-magnitude estimate for a desal outfall driving a ~5–10 PSU plume
-# above ambient is ~1e-3 PSU/s.
+# Salinity plume shape and strength.
+# Each coastal source is a Gaussian brine injection balanced by a linear
+# relaxation back to baseline (timescale S_DECAY_TIME). The two balance at a
+# steady core excess of S_SOURCE_ANOMALY PSU at the strongest source, giving a
+# controlled realised span: baseline (≈40 PSU) far from any source up to
+# baseline + anomaly at the strongest core. A SHORT decay pins the field to its
+# target so turbulent stirring cannot flatten the span (the failure mode of the
+# original weak-forcing runs, which realised only ~1 PSU).
+#
+# σ_H is deliberately localized (~8 % of the 1 km box) so plumes leave a
+# navigable gradient rather than filling the domain; σ_V spans the upper column.
+#
+# The relaxation brings the core excess to S_SOURCE_ANOMALY on the timescale
+# S_DECAY_TIME as (1 − e^{−t/τ}); turbulent stirring then erodes the peak, so the
+# REALISED span settles a bit below the anomaly. To land near ~10 PSU we set the
+# anomaly to 12 and keep τ short (15 min) so a ~30 min warmup (= 2τ ⇒ ~86 % of
+# target) already saturates the plume before recording — verified locally that a
+# 32³ smoke climbs past 8 PSU within ~30 min and keeps rising toward ~10–11.
+const SIGMA_H          = 80.0      # plume horizontal std [m]
+const SIGMA_V          = 15.0      # plume vertical std [m]
+const S_SOURCE_ANOMALY = 12.0      # target core salinity excess [PSU]; realised span ~10
+const S_DECAY_TIME     = 15minutes # relaxation timescale back to baseline
+const γ_S              = 1 / S_DECAY_TIME
+
+# Durations. Wind-driven boundary-layer turbulence spins up in ~10–20 min; the
+# plumes saturate in ~2·S_DECAY_TIME. Warmup default 30 min (=2τ) so the span is
+# built before recording; record long enough for a few decorrelated snapshots.
+const DEFAULT_WARMUP_MINUTES    = 30.0
+const DEFAULT_RECORDING_MINUTES = 60.0
+const OUTPUT_INTERVAL           = 2minutes
+const DEBUG_DURATIONS           = (2minutes, 5minutes)   # --debug smoke test
+
 # ─────────────────────────────────────────────────────────────────────────────
-const Q_SCALE = 1.0e-3   # PSU/s per unit Q
+# Per-run randomized parameters (sources + wind + IC noise; no thermal front).
+# ─────────────────────────────────────────────────────────────────────────────
+const SourceSpec = NamedTuple{(:Q, :x0, :y0, :z0), NTuple{4, Float64}}
 
-const sources = [
-    (Q = 8.0, x0 = 22.4, y0 =  0.0, z0 = -2.0, σh = 15.0, σv = 10.0),
-    (Q = 6.0, x0 = 75.7, y0 =  0.0, z0 = -2.0, σh = 15.0, σv = 10.0),
-    (Q = 4.0, x0 =  0.0, y0 = 11.4, z0 = -2.0, σh = 15.0, σv = 10.0),
-    (Q = 5.0, x0 =  0.0, y0 = 45.2, z0 = -2.0, σh = 15.0, σv = 10.0),
-]
+struct RunParams
+    season       :: Symbol
+    run_index    :: Int
+    run_seed     :: UInt64
+    wind_speed   :: Float64   # [m/s]
+    wind_dir_deg :: Float64   # direction the wind blows FROM
+    tau_mag      :: Float64   # kinematic stress [m²/s²], derived from wind_speed
+    t_noise_amp  :: Float64   # IC temperature perturbation amplitude [°C]
+    sources      :: Vector{SourceSpec}
+end
 
-@inline function salinity_source(x, y, z, t)
-    s = 0.0
-    for src in sources
-        s += Q_SCALE * src.Q * exp(-((x-src.x0)^2 + (y-src.y0)^2) / (2*src.σh^2)
-                                   - (z-src.z0)^2 / (2*src.σv^2))
+unif(rng, lo, hi) = lo + (hi - lo) * rand(rng)
+
+function sample_params(season::Symbol, run_index::Int, base_seed::Int)
+    run_seed = hash((base_seed, run_index))   # resume-stable: depends only on (seed, index)
+    rng = Xoshiro(run_seed)
+    sp = SEASON_PARAMS[season]
+
+    # Wind around the seasonal shamal (NW = 315°)
+    wind_speed   = unif(rng, sp.wind_speed - 2.5, sp.wind_speed + 2.5)
+    wind_dir_deg = unif(rng, 275.0, 355.0)
+    tau_mag      = RHO_AIR * C_DRAG * wind_speed^2 / RHO_WATER
+
+    # Sources: border-anchored like src/utils/sources.py random_sources —
+    # half on the y=0 coast, half on the periodic x edge. Depths shallow
+    # (coastal outfalls), so structure lives in the upper column.
+    n_sources = rand(rng, 3:6)
+    sources = SourceSpec[]
+    for _ in 1:n_sources
+        Q     = unif(rng, 2.0, 10.0)
+        depth = unif(rng, 0.0, 15.0)
+        if rand(rng) < 0.5
+            x0, y0 = unif(rng, 0.0, LX), 0.0
+        else
+            x0, y0 = 0.0, unif(rng, 0.0, LY)
+        end
+        push!(sources, (Q = Q, x0 = x0, y0 = y0, z0 = -depth))
     end
-    return s
+
+    t_noise_amp = unif(rng, 0.01, 0.02)
+
+    return RunParams(season, run_index, run_seed, wind_speed, wind_dir_deg,
+                     tau_mag, t_noise_amp, sources)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,83 +200,241 @@ function progress(simulation)
                    maximum(abs, u), maximum(abs, v), maximum(abs, w),
                    prettytime(simulation.run_wall_time))
     @info msg
+    flush(stderr)
     return nothing
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Grid: 100×100×30 m at ~0.78 m horiz / ~0.625 m vert resolution.
-# 30 m depth matches Abu Dhabi coastal bathymetry (Arabian Gulf avg ~35 m,
-# coastal 15–30 m).
+# One full simulation. Parameter-dependent functions are closures over plain
+# local bindings that are NEVER reassigned (reassignment creates a Core.Box,
+# breaking GPU kernel capture and CPU type stability). Sources are converted to a
+# Tuple so the captured value is isbits — a Vector is not GPU-capturable.
 # ─────────────────────────────────────────────────────────────────────────────
-grid = RectilinearGrid(
-    size     = (128, 128, 48),
-    x        = (0, 100),
-    y        = (0, 100),
-    z        = (-30, 0),                # z negative downward, surface at 0
-    topology = (Periodic, Periodic, Bounded),
-)
+function build_and_run(arch, params::RunParams, output_path::AbstractString; warmup, recording)
+    sp = SEASON_PARAMS[params.season]
+
+    # Wind stress: a negative kinematic top-flux drives the matching velocity
+    # component in the +axis direction.
+    tau_x_top = -params.tau_mag * cosd(params.wind_dir_deg - 270)
+    tau_y_top = +params.tau_mag * sind(params.wind_dir_deg - 270)
+
+    # Locals captured by the closures (never reassigned)
+    sbase = sp.S_baseline
+    Tsurf = sp.T_surface
+    Tbot  = sp.T_bottom
+    srcs  = Tuple(params.sources)
+    qmax  = maximum(s -> s.Q, srcs)
+
+    # Continuous injection balanced by a γ_S sink is exactly RELAXATION toward
+    # `S_baseline + S_SOURCE_ANOMALY·(normalised plume)` at rate γ_S. We give that
+    # target to Oceananigans' built-in `Relaxation`, which is type-stable — a
+    # hand-rolled field-dependent Forcing boxes per cell and GC-thrashes the step.
+    function S_target(x, y, z, t)
+        excess = 0.0
+        for src in srcs
+            excess += (src.Q / qmax) * exp(-((x - src.x0)^2 + (y - src.y0)^2) / (2 * SIGMA_H^2)
+                                           - (z - src.z0)^2 / (2 * SIGMA_V^2))
+        end
+        return sbase + S_SOURCE_ANOMALY * excess
+    end
+
+    # Stable T stratification (surface warmer) over the 100 m column.
+    T_init(x, y, z) = Tbot + (Tsurf - Tbot) * (1 + z / DEPTH)
+    S_init(x, y, z) = sbase
+
+    # Fail fast if any closure captured a non-isbits value (cryptic GPU error).
+    @assert isbits(S_target) && isbits(T_init) "closures must capture only isbits values"
+
+    # Grid: Periodic along-shore (x), Bounded cross-shore (y, coast at y=0),
+    # Bounded in z. ~7.8 m × 1.6 m cells at the default 128×128×64.
+    grid = RectilinearGrid(arch;
+        size     = (NX, NY, NZ),
+        x        = (0, LX),
+        y        = (0, LY),
+        z        = (-DEPTH, 0),              # z negative downward, surface at 0
+        topology = (Periodic, Bounded, Bounded),
+    )
+
+    u_bcs = FieldBoundaryConditions(top = FluxBoundaryCondition(tau_x_top))
+    v_bcs = FieldBoundaryConditions(top = FluxBoundaryCondition(tau_y_top))
+
+    # Non-hydrostatic LES: AMD subgrid closure, buoyancy-active T (S passive via
+    # BETA_S = 0), Gaussian brine plumes via Relaxation.
+    model = NonhydrostaticModel(grid;
+        advection           = WENO(),
+        coriolis            = FPlane(f = f_coriolis),
+        closure             = AnisotropicMinimumDissipation(),
+        tracers             = (:T, :S),
+        buoyancy            = SeawaterBuoyancy(equation_of_state =
+                                LinearEquationOfState(thermal_expansion  = ALPHA_T,
+                                                      haline_contraction = BETA_S)),
+        boundary_conditions = (u = u_bcs, v = v_bcs),
+        forcing             = (S = Relaxation(rate = γ_S, target = S_target),),
+    )
+
+    # Small random kicks on u/w concentrated in the upper few metres to seed
+    # boundary-layer turbulence; T stratification + S baseline.
+    u★ = sqrt(params.tau_mag)
+    Ξ(z) = randn() * exp(z / 4)
+    uᵢ(x, y, z) = u★ * 1e-1 * Ξ(z)
+    wᵢ(x, y, z) = u★ * 1e-1 * Ξ(z)
+    set!(model, u = uᵢ, w = wᵢ, T = T_init, S = S_init)
+
+    # Seeded IC temperature noise so identical parameters still diverge.
+    noise_rng = Xoshiro(params.run_seed + 1)
+    T_cpu = Array(interior(model.tracers.T))
+    T_cpu .+= params.t_noise_amp .* randn(noise_rng, size(T_cpu))
+    set!(model, T = T_cpu)
+
+    # Adaptive Δt — LES + resolved turbulence set the CFL limit.
+    simulation = Simulation(model, Δt = 0.5, stop_time = warmup)
+    simulation.callbacks[:progress] = Callback(progress, IterationInterval(50))
+    wizard = TimeStepWizard(cfl = 0.7, max_change = 1.1, max_Δt = 3.0)
+    simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(10))
+
+    @info "Run $(params.run_index) warmup ($(params.season), $(arch)): $(prettytime(warmup)) with no output..."
+    run!(simulation)
+    @info "Warmup complete at t = $(prettytime(time(simulation))); attaching output writer."
+
+    simulation.output_writers[:fields] = NetCDFWriter(
+        model,
+        (u = model.velocities.u,
+         v = model.velocities.v,
+         w = model.velocities.w,
+         T = model.tracers.T,
+         S = model.tracers.S),
+        filename           = output_path,
+        schedule           = TimeInterval(OUTPUT_INTERVAL),
+        overwrite_existing = true,
+    )
+
+    simulation.stop_time = warmup + recording
+
+    @info "Run $(params.run_index) recording ($(prettytime(recording))) → $output_path"
+    run!(simulation)
+    return nothing
+end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Boundary conditions: NW shamal wind stress on (u, v); no buoyancy fluxes.
+# Metadata sidecar: sampled parameters, sources in config/sources.json schema
+# ({name, x, y, depth, Q}, depth positive-down) so src/utils/sources.load_sources
+# reads it directly. Hand-rolled JSON to keep the Julia env dependency-free.
 # ─────────────────────────────────────────────────────────────────────────────
-u_bcs = FieldBoundaryConditions(top = FluxBoundaryCondition(tau_x_top))
-v_bcs = FieldBoundaryConditions(top = FluxBoundaryCondition(tau_y_top))
+function write_metadata(path::AbstractString, params::RunParams, base_seed::Int;
+                        warmup, recording, debug::Bool=false)
+    src_lines = join(["""    { "name": "$(k)", "x": $(s.x0), "y": $(s.y0), "depth": $(-s.z0), "Q": $(s.Q) }"""
+                      for (k, s) in enumerate(params.sources)], ",\n")
+    open(path, "w") do io
+        print(io, """
+        {
+          "model": "non_hydrostatic",
+          "season": "$(params.season)",
+          "run_index": $(params.run_index),
+          "base_seed": $(base_seed),
+          "run_seed": $(params.run_seed),
+          "debug": $(debug),
+          "domain": { "LX": $(LX), "LY": $(LY), "DEPTH": $(DEPTH) },
+          "grid": { "NX": $(NX), "NY": $(NY), "NZ": $(NZ) },
+          "wind_speed": $(params.wind_speed),
+          "wind_dir_deg": $(params.wind_dir_deg),
+          "tau_mag": $(params.tau_mag),
+          "t_noise_amp": $(params.t_noise_amp),
+          "warmup_seconds": $(Float64(warmup)),
+          "recording_seconds": $(Float64(recording)),
+          "output_interval_seconds": $(Float64(OUTPUT_INTERVAL)),
+          "sigma_h": $(SIGMA_H),
+          "sigma_v": $(SIGMA_V),
+          "s_source_anomaly": $(S_SOURCE_ANOMALY),
+          "s_decay_seconds": $(Float64(S_DECAY_TIME)),
+          "sources": [
+        $(src_lines)
+          ]
+        }
+        """)
+    end
+end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Model: non-hydrostatic LES with T (buoyancy-active) and S (with source forcing)
+# CLI parsing + main loop
 # ─────────────────────────────────────────────────────────────────────────────
-model = NonhydrostaticModel(grid;
-    coriolis            = FPlane(f = f_coriolis),
-    advection           = WENO(),
-    closure             = AnisotropicMinimumDissipation(),
-    tracers             = (:T, :S),
-    buoyancy            = SeawaterBuoyancy(equation_of_state = LinearEquationOfState()),
-    boundary_conditions = (u = u_bcs, v = v_bcs),
-    forcing             = (S = Forcing(salinity_source),),
-)
+const USAGE = """
+Usage: julia --project=oceananigans non_hydrostatic.jl [options]
+  --n-runs N              number of simulations to run (default 1)
+  --season S              winter | summer (default winter)
+  --seed N                base seed; run k is seeded by hash((seed, k)) (default 1337)
+  --start-index N         index of the first run (default 1)
+  --output-dir DIR        output directory (default data/oceananigans)
+  --warmup-minutes M      spin-up before recording (default $(DEFAULT_WARMUP_MINUTES))
+  --recording-minutes M   recorded span per run (default $(DEFAULT_RECORDING_MINUTES))
+  --debug                 short run (2 min warmup + 5 min recording) for smoke tests
+Env: OCEAN_ARCH=GPU|CPU, OCEAN_NX/NY/NZ override grid resolution.
+"""
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Initial conditions: linear T stratification (surface warmer), uniform S baseline.
-# Small random kicks on u/w concentrated in the upper few meters.
-# ─────────────────────────────────────────────────────────────────────────────
-T_init(x, y, z) = p.T_bottom + (p.T_surface - p.T_bottom) * (1 + z / grid.Lz)
-S_init(x, y, z) = p.S_baseline
+function parse_cli(args::Vector{String})
+    n_runs            = 1
+    season            = :winter
+    seed              = 1337
+    start_index       = 1
+    output_dir        = joinpath(@__DIR__, "..", "data", "oceananigans")
+    warmup_minutes    = DEFAULT_WARMUP_MINUTES
+    recording_minutes = DEFAULT_RECORDING_MINUTES
+    debug             = false
+    i = 1
+    while i <= length(args)
+        a = args[i]
+        if a == "--n-runs"
+            n_runs = parse(Int, args[i+1]); i += 2
+        elseif a == "--season"
+            season = Symbol(args[i+1]); i += 2
+        elseif a == "--seed"
+            seed = parse(Int, args[i+1]); i += 2
+        elseif a == "--start-index"
+            start_index = parse(Int, args[i+1]); i += 2
+        elseif a == "--output-dir"
+            output_dir = args[i+1]; i += 2
+        elseif a == "--warmup-minutes"
+            warmup_minutes = parse(Float64, args[i+1]); i += 2
+        elseif a == "--recording-minutes"
+            recording_minutes = parse(Float64, args[i+1]); i += 2
+        elseif a == "--debug"
+            debug = true; i += 1
+        else
+            error("Unknown argument '$(a)'\n" * USAGE)
+        end
+    end
+    season in (:winter, :summer) || error("--season must be winter or summer\n" * USAGE)
+    n_runs >= 1 || error("--n-runs must be >= 1\n" * USAGE)
+    start_index >= 1 || error("--start-index must be >= 1\n" * USAGE)
+    warmup_minutes > 0 && recording_minutes > 0 ||
+        error("--warmup-minutes and --recording-minutes must be > 0\n" * USAGE)
+    return (; n_runs, season, seed, start_index, output_dir,
+              warmup_minutes, recording_minutes, debug)
+end
 
-u★ = sqrt(p.tau_mag)
-Ξ(z) = randn() * exp(z / 4)
-uᵢ(x, y, z) = u★ * 1e-1 * Ξ(z)
-wᵢ(x, y, z) = u★ * 1e-1 * Ξ(z)
+function main(cli)
+    mkpath(cli.output_dir)
+    warmup, recording = cli.debug ? DEBUG_DURATIONS :
+                        (cli.warmup_minutes * 1minute, cli.recording_minutes * 1minute)
+    last_index = cli.start_index + cli.n_runs - 1
+    for run_index in cli.start_index:last_index
+        tag       = lpad(run_index, 3, '0')
+        base      = joinpath(cli.output_dir, "nonhydro_$(cli.season)_run$(tag)")
+        nc_path   = base * ".nc"
+        meta_path = base * ".json"
+        if isfile(meta_path)
+            @warn "Skipping run $(run_index): $(meta_path) already exists (delete it to re-run)."
+            continue
+        end
+        params = sample_params(cli.season, run_index, cli.seed)
+        @info @sprintf("Run %d/%d: wind %.2f m/s from %.0f°, %d sources, grid %d×%d×%d",
+                       run_index, last_index, params.wind_speed, params.wind_dir_deg,
+                       length(params.sources), NX, NY, NZ)
+        build_and_run(ARCH, params, nc_path; warmup, recording)
+        write_metadata(meta_path, params, cli.seed; warmup, recording, debug = cli.debug)
+        GC.gc(true)
+        USE_GPU && CUDA.reclaim()
+    end
+    @info "All runs complete."
+end
 
-set!(model, u = uᵢ, w = wᵢ, T = T_init, S = S_init)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Simulation + adaptive Δt
-# ─────────────────────────────────────────────────────────────────────────────
-simulation = Simulation(model, Δt = 0.5, stop_time = 30minutes)
-simulation.callbacks[:progress] = Callback(progress, IterationInterval(50))
-
-wizard = TimeStepWizard(cfl = 0.7, max_change = 1.1, max_Δt = 2.0)
-simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(10))
-
-# ─────────────────────────────────────────────────────────────────────────────
-# NetCDF output → data/oceananigans/scenario_01_<season>.nc
-# ─────────────────────────────────────────────────────────────────────────────
-output_dir  = joinpath(@__DIR__, "..", "data", "oceananigans")
-mkpath(output_dir)
-output_path = joinpath(output_dir, "scenario_01_$(SEASON).nc")
-
-simulation.output_writers[:fields] = NetCDFWriter(
-    model,
-    (u = model.velocities.u,
-     v = model.velocities.v,
-     w = model.velocities.w,
-     T = model.tracers.T,
-     S = model.tracers.S),
-    filename           = output_path,
-    schedule           = TimeInterval(60),       # one snapshot per simulated minute
-    overwrite_existing = true,
-)
-
-@info "Starting Oceananigans LES ($(SEASON)) → $output_path"
-run!(simulation)
-@info "Done."
+main(parse_cli(ARGS))
