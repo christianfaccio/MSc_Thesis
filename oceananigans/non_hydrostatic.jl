@@ -129,7 +129,7 @@ const BETA_S  = 0.0        # haline contraction [1/PSU]; 0 ⇒ S passive (see no
 # baseline regardless of how many wide sources overlap — span is set solely by the
 # anomaly and stays put when σ_H or the source count change. So span ≈ 10 PSU here.
 const SIGMA_H          = 300.0     # plume horizontal std [m]
-const SIGMA_V          = 15.0      # plume vertical std [m]
+const SIGMA_V          = 40.0      # plume vertical std [m]
 const S_SOURCE_ANOMALY = 10.0      # core salinity excess above baseline [PSU] = the span
 const S_DECAY_TIME     = 15minutes # relaxation timescale back to baseline
 const γ_S              = 1 / S_DECAY_TIME
@@ -186,11 +186,11 @@ function sample_params(season::Symbol, run_index::Int, base_seed::Int)
     # half on the y=0 coast, half on the periodic x edge. Depths shallow
     # (coastal outfalls), so structure lives in the upper column. Count raised
     # 3:6 → 6:10 so the wider (σ_H=300) plumes overlap into domain-wide coverage.
-    n_sources = rand(rng, 6:10)
+    n_sources = rand(rng, 10:30)
     sources = SourceSpec[]
     for _ in 1:n_sources
         Q     = unif(rng, 2.0, 10.0)
-        depth = unif(rng, 0.0, 15.0)
+        depth = unif(rng, 0.0, 0.7*DEPTH)
         if rand(rng) < 0.5
             x0, y0 = unif(rng, 0.0, LX), 0.0
         else
