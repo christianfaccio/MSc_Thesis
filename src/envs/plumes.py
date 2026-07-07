@@ -13,19 +13,6 @@ from src.models.turbidity import compute_turbidity
 from src.models.reward import reward_func
 from src.utils.sources import random_sources
 
-"""
-Env baseline with a (5000,5000,40) domain, synthetic currents and fields.
-
-Identical to src/envs/base.py (BaseEnv) EXCEPT the salinity field: instead of a
-sum of Gaussian blobs whose centers are scattered anywhere in the domain, the
-blobs are pollution SOURCES anchored to the west (x=0) and south (y=0) land
-borders (see src/utils/sources.random_sources). Each source is still a 3D
-Gaussian weighted by its emission rate Q, and the summed field is affine-scaled
-to `salinity_span` PSU exactly as in BaseEnv — so the observation, currents,
-reward and target logic are unchanged; only WHERE the salinity comes from moves
-onto the coastline.
-"""
-
 class PlumesEnv(gym.Env):
     def __init__(self,
                  xml_file: str,

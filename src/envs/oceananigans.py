@@ -1,6 +1,7 @@
 import glob
 import os
 import warnings
+from collections import OrderedDict
 from pathlib import Path
 import gymnasium as gym
 from gymnasium import spaces
@@ -89,7 +90,8 @@ class SingleAgentEnv(gym.Env):
                  gamma: float = 0.999,              # RL discount; MUST match the trainer's γ for shaping invariance
                  success_bonus: float = 10.0,       # sparse reward on reaching the target
                  static_frame: bool = True,         # NetCDF: freeze one random snapshot per episode (no time evolution)
-                 min_band_grad: float = 0.004,      # reject targets whose success band is ~flat (PSU/m); <=0 disables     
+                 min_band_grad: float = 0.004,      # reject targets whose success band is ~flat (PSU/m); <=0 disables
+                 max_cached_loaders: int = 8,       # LRU cap on cached FieldLoaders (~90 MB each) per env instance
                  ):
         super().__init__()
 
@@ -97,6 +99,7 @@ class SingleAgentEnv(gym.Env):
         self.netcdf_file = netcdf_file
         self._nc_files = _resolve_nc_files(netcdf_file)
         self.k = k
+        self.max_cached_loaders = max_cached_loaders
         self.v = v_agent
         self.max_steps = max_steps
         self.dt = dt
@@ -126,9 +129,12 @@ class SingleAgentEnv(gym.Env):
         self._action_to_direction = self._build_action_table()  # scalar -> [dx,dy,dz] normalized
 
         self.sim = None
-        # NetCDF ocean-data loaders, one per file, created lazily and reused
-        # across episodes (re-opening files each reset leaks file handles).
-        self._loaders = {}
+        # NetCDF ocean-data loaders, created lazily and reused across episodes
+        # (re-opening files each reset leaks file handles). Bounded LRU cache: with
+        # a large file set, caching every touched file (~90 MB each) blows memory
+        # across parallel envs, so the least-recently-used loader is evicted and
+        # closed once max_cached_loaders is exceeded — a cache miss just re-opens.
+        self._loaders = OrderedDict()
         self.active_netcdf_path = None
         self._warned_short_record = False
 
@@ -176,7 +182,8 @@ class SingleAgentEnv(gym.Env):
         '''
         new_salinity, new_turbidity, u, v, w, gu, gv, gw = self._measure(agent)
 
-        potential = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity)
+        potential = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity,
+                                eps_s=self.epsilon_salinity, eps_tau=self.epsilon_turbidity)
 
         self.current_salinity = new_salinity
         self.current_turbidity = new_turbidity
@@ -229,7 +236,12 @@ class SingleAgentEnv(gym.Env):
         if self._nc_files:
             from SwarmSwIM.ocean_data import FieldLoader
             path = self._nc_files[int(self.np_random.integers(len(self._nc_files)))]
-            if path not in self._loaders:
+            if path in self._loaders:
+                self._loaders.move_to_end(path)  # mark most-recently-used
+            else:
+                if len(self._loaders) >= self.max_cached_loaders:
+                    _, evicted = self._loaders.popitem(last=False)  # drop LRU
+                    evicted.close()
                 self._loaders[path] = FieldLoader(path)
             loader = self._loaders[path]
             self.active_netcdf_path = path
@@ -272,26 +284,41 @@ class SingleAgentEnv(gym.Env):
             loader.set_window(start)
         salinity_at = loader.salinity_at
 
-        # Target selection (agent should be a bit far from target for better learning)
+        # Target selection: sample a point that is (a) far from the spawn, (b) has
+        # an (S, τ) couple meaningfully different from the spawn's, and (c) sits on a
+        # non-flat salinity band so a local-sensing agent has a gradient to home on.
+        # (S*, τ*) are read AT that point, so the success zone exists there by
+        # construction. The target is ALWAYS assigned to the accepted candidate — the
+        # previous logic broke out without assigning, leaving S*≈0 (unreachable).
+        grad_at = loader.salinity_gradient_at
         spawn = self.sim.agents[0].pos
         self.current_salinity = salinity_at(spawn[0], spawn[1], spawn[2])
         self.current_turbidity = compute_turbidity(spawn[2])
-        for _ in range(10):  # safety cap; in practice ~1-2 iterations
+        min_dist = 0.3 * float(np.linalg.norm(self.domain))
+        # Fallback: if no candidate qualifies (extremely unlikely on these fields),
+        # keep spawn (S, τ) so the couple is at least valid and reachable.
+        self.target_salinity = self.current_salinity
+        self.target_turbidity = self.current_turbidity
+        for _ in range(50):
             x_sel = self.np_random.uniform(0.0, self.domain[0])
             y_sel = self.np_random.uniform(0.0, self.domain[1])
             z_sel = self.np_random.uniform(0.0, self.domain[2])
+            if np.linalg.norm(np.array([x_sel, y_sel, z_sel]) - spawn) < min_dist:
+                continue
             cand_S = salinity_at(x_sel, y_sel, z_sel)
             cand_T = compute_turbidity(z_sel)
-            if (abs(cand_S - self.current_salinity) > 2 * self.epsilon_salinity
-                    or abs(cand_T - self.current_turbidity) > 2 * self.epsilon_turbidity):
-                break
+            # Reject trivial targets: both S and τ already within reach of spawn.
+            if (abs(cand_S - self.current_salinity) <= 2 * self.epsilon_salinity
+                    and abs(cand_T - self.current_turbidity) <= 2 * self.epsilon_turbidity):
+                continue
+            # Reject flat-band targets with no local directional signal.
+            if self.min_band_grad > 0.0:
+                gx, gy, _ = grad_at(x_sel, y_sel, z_sel)
+                if np.hypot(gx, gy) < self.min_band_grad:
+                    continue
             self.target_salinity = cand_S
             self.target_turbidity = cand_T
-
-        # Spawn-side (S, τ) at the agent's final position (tail mode may have moved it).
-        spawn = self.sim.agents[0].pos
-        self.current_salinity = salinity_at(spawn[0], spawn[1], spawn[2])
-        self.current_turbidity = compute_turbidity(spawn[2])
+            break
 
         # Initialize history buffers: (action, potential) pairs and (S, τ) measurements
         self.history = np.zeros((self.k, 2), dtype=np.float32)
