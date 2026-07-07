@@ -76,7 +76,6 @@ class PlumesEnv(gym.Env):
         self.epsilon_salinity = 0.3
         self.epsilon_turbidity = 0.05
 
-        self.t_step = 0
         self._prev_potential = 0.0
 
         self.action_space = gym.spaces.Discrete(27)
@@ -360,10 +359,10 @@ class PlumesEnv(gym.Env):
             self.target_turbidity = compute_turbidity(tgt[2])
             if self._zone_reachable() and self._band_grad_ok():
                 break
-        else:
-            raise RuntimeError(
-                "reset(): no reachable target zone after 20 field/target resamples"
-            )
+            else:
+                raise RuntimeError(
+                    "reset(): no reachable target zone after 20 field/target resamples"
+                )
 
         # Init RL vars
         self.history = np.zeros((self.k, 2), dtype=np.float32)
