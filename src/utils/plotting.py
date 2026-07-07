@@ -289,6 +289,123 @@ def plot_volume_netcdf(field_zyx: np.ndarray, xc, yc, zc,
     fig.write_html(str(out_path))
     print(f"saved {out_path}")
 
+def animate_volume_netcdf(ds: xr.Dataset, field_name: str, xc, yc, zc,
+                vol_grid: int, colorscale: str, title: str, value_label: str,
+                z_aspect: float, sources: list[dict] | None, out_path: Path,
+                *, frame_stride: int = 1, frame_ms: int = 250) -> None:
+    """Animated 3D Plotly volume of a tracer's time-evolution → interactive HTML.
+
+    Same look as `plot_volume_netcdf`, but one frame per (subsampled) time snapshot
+    with a Play/Pause button and a time slider; the volume stays fully rotatable.
+    The color scale AND the iso-range are fixed across all frames (global min/max)
+    so the evolution is directly comparable frame to frame. Depth-static fields
+    (e.g. turbidity) are pointless to animate — use it for S / T.
+
+    `frame_stride` temporally subsamples snapshots; `frame_ms` is the per-frame
+    hold time in the Play loop (smaller = faster playback).
+    """
+    sx = max(len(xc) // vol_grid, 1)
+    sy = max(len(yc) // vol_grid, 1)
+    sz = max(len(zc) // vol_grid, 1)
+    xd, yd, zd = xc[::sx], yc[::sy], zc[::sz]
+    Z, Y, X = np.meshgrid(zd, yd, xd, indexing="ij")
+
+    t_indices = list(range(ds.sizes["time"]))[::frame_stride]
+    times = ds.time.values
+
+    # Downsample every snapshot once; keep a global min/max for a fixed color scale.
+    vols = []
+    for ti in t_indices:
+        F = _to_center_zyx(ds[field_name].isel(time=ti), xc, yc, zc)[::sz, ::sy, ::sx]
+        vols.append(F)
+    fmin = float(min(v.min() for v in vols))
+    fmax = float(max(v.max() for v in vols))
+    if fmax <= fmin:
+        fmax = fmin + 1e-9
+
+    def _volume(F):
+        return go.Volume(
+            x=X.flatten(), y=Y.flatten(), z=Z.flatten(), value=F.flatten(),
+            isomin=fmin + 0.05 * (fmax - fmin), isomax=fmax,
+            cmin=fmin, cmax=fmax,               # fixed color scale across frames
+            opacity=0.1,
+            opacityscale=[[0.0, 0.0], [0.2, 0.05], [0.5, 0.2], [1.0, 0.8]],
+            surface_count=20, colorscale=colorscale,
+            colorbar=dict(title=value_label),
+            caps=dict(x_show=False, y_show=False, z_show=False),
+            name=value_label,
+        )
+
+    fig = go.Figure(data=[_volume(vols[0])])
+    frames = [go.Frame(data=[_volume(vols[i])], name=str(i),
+                       traces=[0])                       # only the volume animates
+              for i in range(len(vols))]
+    fig.frames = frames
+
+    # Static source markers (drawn once, outside the animated trace).
+    x_lo, x_hi = _domain_edges(xc)
+    y_lo, y_hi = _domain_edges(yc)
+    z_lo, _ = _domain_edges(zc)
+    if sources:
+        in_dom = [s for s in sources
+                  if x_lo <= s["x"] <= x_hi and y_lo <= s["y"] <= y_hi]
+        if len(in_dom) < len(sources):
+            print(f"  (skipped {len(sources) - len(in_dom)} source marker(s) outside "
+                  f"the file domain — pass the matching sidecar via --sources-file)")
+        if in_dom:
+            fig.add_trace(go.Scatter3d(
+                x=[s["x"] for s in in_dom], y=[s["y"] for s in in_dom],
+                z=[-float(s["depth"]) for s in in_dom],
+                mode="markers+text", text=[s["name"] for s in in_dom],
+                textposition="top center",
+                marker=dict(size=6, color="red", symbol="x"), name="sources",
+            ))
+
+    def _t_label(i):
+        return _fmt_time(times[t_indices[i]] - times[0])
+
+    steps = [dict(method="animate", label=_t_label(i),
+                  args=[[str(i)], dict(mode="immediate",
+                                       frame=dict(duration=frame_ms, redraw=True),
+                                       transition=dict(duration=0))])
+             for i in range(len(vols))]
+
+    x_range = float(xc.max() - xc.min()) or 1.0
+    y_range = float(yc.max() - yc.min()) or 1.0
+    max_h = max(x_range, y_range)
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis=dict(title="x [m]", range=[x_lo, x_hi]),
+            yaxis=dict(title="y [m]", range=[y_lo, y_hi]),
+            zaxis=dict(title="z [m]", range=[z_lo, 0.0]),
+            aspectmode="manual",
+            aspectratio=dict(x=x_range / max_h, y=y_range / max_h, z=z_aspect),
+        ),
+        margin=dict(l=0, r=0, t=40, b=0),
+        updatemenus=[dict(
+            type="buttons", direction="left", x=0.0, y=0.0,
+            xanchor="left", yanchor="top", pad=dict(t=60, r=10),
+            buttons=[
+                dict(label="▶ Play", method="animate",
+                     args=[None, dict(mode="immediate", fromcurrent=True,
+                                      frame=dict(duration=frame_ms, redraw=True),
+                                      transition=dict(duration=0))]),
+                dict(label="⏸ Pause", method="animate",
+                     args=[[None], dict(mode="immediate",
+                                        frame=dict(duration=0, redraw=False),
+                                        transition=dict(duration=0))]),
+            ],
+        )],
+        sliders=[dict(active=0, x=0.1, y=0.0, len=0.9,
+                      currentvalue=dict(prefix="t = "), pad=dict(t=60),
+                      steps=steps)],
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(out_path))
+    print(f"saved {out_path}  ({len(vols)} frames)")
+
 def plot_target_zone_netcdf(target_pts: np.ndarray, target_marker: dict | None,
                 xc, yc, zc, z_aspect: float, title: str, out_path: Path) -> None:
     """Standalone 3D Plotly view of a target SUCCESS ZONE — every domain point whose

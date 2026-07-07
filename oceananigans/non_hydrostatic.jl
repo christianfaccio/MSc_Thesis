@@ -103,7 +103,7 @@ const f_coriolis   = 2 * Ω_EARTH * sind(LATITUDE_DEG)
 # To make the brine buoyancy-active later, set BETA_S = 7.8e-4.
 const G_GRAV  = 9.81
 const ALPHA_T = 1.67e-4    # thermal expansion  [1/°C]
-const BETA_S  = 0.0        # haline contraction [1/PSU]; 0 ⇒ S passive (see note)
+const BETA_S  = 0.0        # haline contraction [1/PSU]; TODO: set to 7.8e-4 for buoyancy active salinity
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Salinity plume shape and strength.
