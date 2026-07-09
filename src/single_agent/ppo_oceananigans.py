@@ -138,7 +138,11 @@ class Args:
     (v_agent·dt·frame_skip = 1 m), the domain is 1 km and targets spawn ~0.3·diagonal
     ≈ 425 m away, so 1440 steps (~24 min sim) is ~3.4× the optimal path — enough slack
     without burning compute on 7200-step failed episodes. Also matches the γ=0.999
-    effective horizon (~1000 steps)."""
+    effective horizon (~1000 steps). 7200 (run 1783528628) let the STOCHASTIC policy
+    rack up ~0.5 'success' by pure diffusion (7.2 km of travel vs a zone covering
+    ~5.5% of the xy-plane) while the greedy policy sat in no-op/ping-pong loops — a
+    gradient-following oracle needs only ~350 steps, so 1440 keeps diffusion from
+    masquerading as navigation."""
     dt: float = 0.1
     """simulator timestep (s) per sim sub-step"""
     domain: tuple[float, float, float] = (1000.0, 1000.0, 100.0)
@@ -154,6 +158,25 @@ class Args:
     min_band_grad: float = 0.004
     """reject targets whose success band is ~flat (median |grad_xy S| < this, PSU/m) at
     reset, so every episode has a local gradient to home on; <=0 disables the guard"""
+    target_min_dist_frac: float = 0.0
+    """minimum spawn→target distance as a fraction of the domain diagonal. 0 = no
+    distance check, so targets may land close to the spawn — episode difficulty then
+    varies (some easy, near-target episodes), giving a stuck sparse-reward policy
+    denser success signal to bootstrap from. Raise (e.g. 0.3) to force far targets."""
+    wall_penalty: float = 0.05
+    """per-step reward penalty for pinning against a domain wall, scaled by the
+    fraction of the step's frame_skip ticks that were clamped. Discourages the
+    degenerate 'drive into a boundary and stall' local optimum. 0 disables."""
+    success_steps_required: int = 3
+    """consecutive in-zone steps required to count as success. 1 (run 1783508432) let
+    a single lucky in-zone step terminate: on the turbulent LES field the STOCHASTIC
+    policy wiggles across the thin |ΔS|<ε band and clips it by chance, which (a)
+    inflates train success, (b) makes success DECAY as entropy anneals down and the
+    wiggle vanishes (the ~5M-step regression), and (c) never reproduces under a greedy
+    rollout (agent parks just outside the band). Requiring 3 consecutive steps (=30 s
+    of dwell at dt·frame_skip=10 s) forces the agent to arrive AND hold, so the metric
+    is honest and matches rollouts. Holding is feasible: no-op action + monotonic depth
+    + ~0.003 m/s currents on the frozen field."""
 
     # Algorithm specific arguments
     total_timesteps: int = 10000000
@@ -164,10 +187,13 @@ class Args:
     """the number of parallel environments"""
     num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
-    """Toggle learning rate annealing for policy and value networks. On by default
-    to freeze the policy near its converged point and prevent late-training drift
-    (the ~0.8→0.4 peak-and-collapse seen with a flat lr + constant entropy bonus)."""
+    anneal_lr: bool = False
+    """OFF for this field. When ON (run 1783459789) lr decayed to 0 by the end and
+    FROZE the policy while it was still improving: success PEAKED 0.69 @7.5M then
+    regressed to 0.53 @10M as lr/kl/clipfrac all went to 0. The task is still learning
+    at 7.5M, so a full lr→0 decay by 10M throws away the best policy. Base runs never
+    annealed lr either. Keep a flat lr and let the entropy anneal do the late-stage
+    sharpening instead."""
     gamma: float = 0.999
     """discount factor; effective horizon 1/(1-γ) = 1000 steps ≈ 1000 m, matched to
     the ~1 m/step, up-to-1280-step episodes. MUST equal the env's γ for the
@@ -184,20 +210,53 @@ class Args:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = False
     """Toggles whether or not to use a clipped loss for the value function"""
-    ent_coef: float = 0.003
-    """coefficient of the entropy (initial value; see anneal_ent)"""
+    ent_coef: float = 0.01
+    """starting entropy coefficient. The turbulent LES salinity is deceptive, so the
+    early failure mode is premature lock-in (wall-pinning / circling) — 0.01 keeps a
+    high exploration floor at the start. But held CONSTANT (run 1783449635) entropy
+    plateaus at ~2.79 of a 3.30 max (eff. ~16/27 actions, near-uniform): the policy
+    never commits and success caps at ~0.40. So anneal DOWN to a nonzero floor to let
+    it sharpen late without the run 1783417603 collapse-to-0 lock-in."""
     anneal_ent: bool = True
-    """Linearly anneal ent_coef → ent_coef_final over training. Removes the constant
-    late-stage push toward randomness that fights the (saturating, potential-shaped)
-    policy gradient once the policy is good."""
+    """ON: anneal ent_coef → ent_coef_final over the FIRST `ent_anneal_frac` of
+    training, then HOLD the floor. For this field we anneal to a NONZERO floor (not 0)
+    so late-stage commitment coexists with a residual exploration bonus — full
+    anneal-to-0 collapsed entropy to 0.62 and locked in at 37%."""
+    ent_anneal_frac: float = 0.5
+    """fraction of training over which ent_coef anneals from ent_coef → ent_coef_final;
+    after that it HOLDS the floor. The old linear-over-full-run schedule (run
+    1783499930) kept ent_coef ~0.007 at 3.5M so entropy stayed ~2.4 and the policy
+    never reached a low-entropy COMMIT phase — base spent its whole 2nd half at
+    entropy ~1.0 refining 0.48→0.76. 0.5 = explore hard early (escape the deceptive
+    local optima that locked run-1 at 37%), then give the back half at the 0.001 floor
+    to commit + refine like base. Lower toward 0.3 if it still won't commit; raise
+    toward 0.7 if entropy collapses too early and locks in."""
     ent_coef_final: float = 0.0
-    """the entropy coefficient at the end of training when anneal_ent is on"""
+    """entropy coefficient at end of training (anneal_ent on). 0.001 (run 1783528628)
+    still left final entropy at 1.47 of 3.30 — the 'policy' was a biased random walk
+    whose train success came from stochastic diffusion, and its greedy argmax
+    collapsed to no-op/ping-pong (2026-07-09 diagnosis). Anneal fully to 0 so the
+    back half of training must commit; the greedy_success_rate eval (below) is the
+    honest metric to watch for lock-in. (The earlier anneal-to-0 lock-in at 37%,
+    run 1783417603, predates the frame fix in the env's _measure and the shorter
+    max_steps, so its caveat no longer binds.)"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
     target_kl: float = 0.02
     """the target KL divergence threshold"""
+
+    # Greedy evaluation (the honest metric — see 2026-07-09 diagnosis: the training
+    # success_rate measures the STOCHASTIC policy, which can score ~0.5 by diffusion
+    # alone; deployment/plot_trajectories.py uses greedy argmax)
+    eval_every_iterations: int = 50
+    """run a deterministic (argmax) evaluation every N iterations; 0 disables.
+    Cost: eval_episodes × up to max_steps env steps on one env (~worst case a couple
+    of minutes per eval at 1440 steps), amortized over ~11 min of training."""
+    eval_episodes: int = 4
+    """greedy episodes per evaluation. Fixed seeds (reused every eval) so the
+    logged charts/greedy_success_rate is comparable across the run."""
 
     # Checkpointing
     save_model: bool = True
@@ -215,23 +274,31 @@ class Args:
     num_iterations: int = 0
 
 
+def make_raw_env(args):
+    """Bare SingleAgentEnv with the training configuration (no gym wrappers)."""
+    return SingleAgentEnv(
+        xml_file=args.xml_file,
+        netcdf_file=args.netcdf_file,
+        k=args.k,
+        v_agent=args.v_agent,
+        max_steps=args.max_steps,
+        dt=args.dt,
+        domain=args.domain,
+        frame_skip=args.frame_skip,
+        gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
+        success_bonus=args.success_bonus,
+        static_frame=args.static_frame,
+        min_band_grad=args.min_band_grad,
+        target_min_dist_frac=args.target_min_dist_frac,
+        wall_penalty=args.wall_penalty,
+        success_steps_required=args.success_steps_required,
+        max_cached_loaders=args.max_cached_loaders,
+    )
+
+
 def make_env(args):
     def thunk():
-        env = SingleAgentEnv(
-            xml_file=args.xml_file,
-            netcdf_file=args.netcdf_file,
-            k=args.k,
-            v_agent=args.v_agent,
-            max_steps=args.max_steps,
-            dt=args.dt,
-            domain=args.domain,
-            frame_skip=args.frame_skip,
-            gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
-            success_bonus=args.success_bonus,
-            static_frame=args.static_frame,
-            min_band_grad=args.min_band_grad,
-            max_cached_loaders=args.max_cached_loaders,
-        )
+        env = make_raw_env(args)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env = gym.wrappers.NormalizeObservation(env)
         env = gym.wrappers.TransformObservation(
@@ -242,6 +309,44 @@ def make_env(args):
         return env
 
     return thunk
+
+
+def combine_obs_rms(states):
+    """Count-weighted merge of the per-env NormalizeObservation RMS states
+    (same helper as scripts/plot_trajectories.py) -> (mean, var)."""
+    counts = np.array([s["count"] for s in states], dtype=np.float64)
+    w = counts / counts.sum()
+    mean = sum(wi * np.asarray(s["mean"], np.float64) for wi, s in zip(w, states))
+    var = sum(wi * np.asarray(s["var"], np.float64) for wi, s in zip(w, states))
+    return mean, var
+
+
+def greedy_eval(agent, eval_env, obs_rms_states, device, n_episodes, max_steps,
+                base_seed=1_000_000):
+    """Deterministic (argmax) rollouts on a raw env with the current training
+    obs normalization applied — the same conditions as plot_trajectories.py.
+    Fixed seeds so the metric is comparable across evaluations. Returns the
+    success rate under the TRAINING bar (env's success_steps_required)."""
+    mean, var = combine_obs_rms(obs_rms_states)
+    successes = 0
+    was_training = agent.training
+    agent.eval()
+    with torch.no_grad():
+        for ep in range(n_episodes):
+            obs, _ = eval_env.reset(seed=base_seed + ep)
+            for _ in range(max_steps):
+                norm = np.clip((np.asarray(obs) - mean) / np.sqrt(var + 1e-8),
+                               -10.0, 10.0).astype(np.float32)
+                logits = agent.actor(torch.tensor(norm, device=device).unsqueeze(0))
+                obs, _, term, trunc, _ = eval_env.step(int(logits.argmax(dim=-1)[0]))
+                if term:
+                    successes += 1
+                    break
+                if trunc:
+                    break
+    if was_training:
+        agent.train()
+    return successes / n_episodes
 
 
 def train(args):
@@ -276,9 +381,22 @@ def train(args):
     if DEBUG:
         print(f"Device: {device}")
         print("--- Setting up the environment...")
-    envs = gym.vector.SyncVectorEnv([make_env(args) for _ in range(args.num_envs)])
+    # SAME_STEP autoreset restores the classic CleanRL semantics this loop assumes:
+    # when an episode ends, next_obs is already the NEW episode's reset obs and the
+    # true terminal obs arrives in infos["final_obs"]. Gymnasium 1.x's default
+    # NEXT_STEP mode would instead hand back the old episode's final obs, pair it
+    # with an ignored action and a 0 reward on the following step, polluting the
+    # on-policy batch with one bogus transition per episode.
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(args) for _ in range(args.num_envs)],
+        autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
+    )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), \
         "only discrete action space is supported"
+
+    # Dedicated raw env (no wrappers) for the periodic greedy evaluation; created
+    # once so its FieldLoader LRU cache persists across evals.
+    eval_env = make_raw_env(args) if args.eval_every_iterations > 0 else None
 
     agent = PpoPolicy(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -336,10 +454,14 @@ def train(args):
         frac = 1.0 - (iteration - 1.0) / args.num_iterations
         if args.anneal_lr:
             optimizer.param_groups[0]["lr"] = frac * args.learning_rate
-        ent_coef_now = (
-            args.ent_coef_final + frac * (args.ent_coef - args.ent_coef_final)
-            if args.anneal_ent else args.ent_coef
-        )
+        if args.anneal_ent:
+            # anneal ent_coef -> ent_coef_final over the first ent_anneal_frac of
+            # training, then HOLD the floor (explore early, commit late).
+            train_frac = (iteration - 1.0) / args.num_iterations
+            a = min(train_frac / max(args.ent_anneal_frac, 1e-8), 1.0)
+            ent_coef_now = args.ent_coef + a * (args.ent_coef_final - args.ent_coef)
+        else:
+            ent_coef_now = args.ent_coef
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -354,32 +476,37 @@ def train(args):
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
+
+            # Truncation is not termination: the potential-based shaping relies on
+            # bootstrapping from the truncated state's value (the env keeps the real
+            # Φ(s') there for exactly this reason). With SAME_STEP autoreset next_obs
+            # is already the NEW episode's reset obs, so fold the bootstrap into the
+            # reward using the recorded final observation (already normalized/clipped
+            # by the wrapper stack). done=1 then correctly stops GAE at this step.
+            if truncations.any() and "final_obs" in infos:
+                final_obs = np.stack([np.asarray(o, dtype=np.float32)
+                                      for o in infos["final_obs"][truncations]])
+                with torch.no_grad():
+                    final_v = agent.get_value(torch.Tensor(final_obs).to(device)).view(-1)
+                rewards[step][torch.as_tensor(truncations, device=device)] += args.gamma * final_v
+
             next_obs = torch.Tensor(next_obs).to(device)
             next_done = torch.Tensor(next_done).to(device)
 
-            if "episode" in infos:
-                ep_r = infos["episode"]["r"]
-                ep_l = infos["episode"]["l"]
-                mask = infos.get("_episode", [True] * len(ep_r))
-                for i, finished in enumerate(mask):
-                    if finished:
-                        ep_returns.append(float(ep_r[i]))
-                        ep_lengths.append(float(ep_l[i]))
-                        succ = 1.0 if bool(terminations[i]) else 0.0
-                        ep_terminated.append(succ)
-                        writer.add_scalar("charts/episodic_return", float(ep_r[i]), global_step)
-                        writer.add_scalar("charts/episodic_length", float(ep_l[i]), global_step)
-                        writer.add_scalar("charts/episode_success", succ, global_step)
-            elif "final_info" in infos:
-                for i, info in enumerate(infos["final_info"]):
-                    if info and "episode" in info:
-                        ep_returns.append(float(info["episode"]["r"]))
-                        ep_lengths.append(float(info["episode"]["l"]))
-                        succ = 1.0 if bool(terminations[i]) else 0.0
-                        ep_terminated.append(succ)
-                        writer.add_scalar("charts/episodic_return", float(info["episode"]["r"]), global_step)
-                        writer.add_scalar("charts/episodic_length", float(info["episode"]["l"]), global_step)
-                        writer.add_scalar("charts/episode_success", succ, global_step)
+            # SAME_STEP vector format: episode stats arrive as dict-of-arrays under
+            # infos["final_info"]["episode"], with the "_episode" boolean mask
+            # marking which envs actually finished this step.
+            if "final_info" in infos and "episode" in infos["final_info"]:
+                fin = infos["final_info"]
+                ep_stats = fin["episode"]
+                for i in np.where(fin["_episode"])[0]:
+                    ep_returns.append(float(ep_stats["r"][i]))
+                    ep_lengths.append(float(ep_stats["l"][i]))
+                    succ = 1.0 if bool(terminations[i]) else 0.0
+                    ep_terminated.append(succ)
+                    writer.add_scalar("charts/episodic_return", float(ep_stats["r"][i]), global_step)
+                    writer.add_scalar("charts/episodic_length", float(ep_stats["l"][i]), global_step)
+                    writer.add_scalar("charts/episode_success", succ, global_step)
 
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
@@ -469,6 +596,17 @@ def train(args):
         if ep_terminated:
             writer.add_scalar("charts/success_rate", float(np.mean(ep_terminated)), global_step)
 
+        # Periodic deterministic evaluation — charts/success_rate above tracks the
+        # STOCHASTIC policy, which can score ~0.5 by diffusion alone (2026-07-09
+        # diagnosis); greedy argmax is what plot_trajectories.py and deployment use.
+        if eval_env is not None and (iteration % args.eval_every_iterations == 0
+                                     or iteration == args.num_iterations):
+            greedy_sr = greedy_eval(agent, eval_env, get_obs_rms_state(envs), device,
+                                    args.eval_episodes, args.max_steps)
+            writer.add_scalar("charts/greedy_success_rate", greedy_sr, global_step)
+            console.log(f"iter {iteration}: greedy eval success "
+                        f"{greedy_sr:.2f} ({args.eval_episodes} episodes)")
+
         progress.update(
             task_id, completed=iteration,
             ret=(float(np.mean(ep_returns)) if ep_returns else float("nan")),
@@ -501,6 +639,8 @@ def train(args):
 
     progress.stop()
     envs.close()
+    if eval_env is not None:
+        eval_env.close()
     writer.close()
 
 

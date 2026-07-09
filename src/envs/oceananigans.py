@@ -55,8 +55,11 @@ class SingleAgentEnv(gym.Env):
 
     Position and heading are deliberately excluded: per the project's design rule
     the agent does not know where it is and acts in its local frame. Heading ψ is
-    still tracked internally by the simulator so currents and the salinity gradient
-    can be rotated into body frame — the policy just never sees ψ directly.
+    fixed per episode at a random value (agent.xml heading_control='yawrate', no
+    yaw commanded) and used internally to rotate currents and the salinity
+    gradient into the body frame — actions are body-frame (surge, sway, heave)
+    and SwarmSwIM maps them to world via the same Rot(ψ), so the two frames are
+    coherent and the policy never needs to see ψ directly.
 
     Parameters:
         - xml_file -> SwarmSwIM simulation .xml
@@ -91,6 +94,9 @@ class SingleAgentEnv(gym.Env):
                  success_bonus: float = 10.0,       # sparse reward on reaching the target
                  static_frame: bool = True,         # NetCDF: freeze one random snapshot per episode (no time evolution)
                  min_band_grad: float = 0.004,      # reject targets whose success band is ~flat (PSU/m); <=0 disables
+                 target_min_dist_frac: float = 0.0, # min spawn→target distance as a fraction of the domain diagonal; 0 = no check (targets may land near spawn -> varied difficulty)
+                 wall_penalty: float = 0.0,         # per-step reward penalty when the agent is pinned against a domain wall (fraction of frame_skip ticks clamped); 0 disables
+                 success_steps_required: int = 1,   # consecutive in-zone steps needed to terminate as success; >1 forces the agent to arrive AND hold (kills single-step luck crossings on turbulent fields)
                  max_cached_loaders: int = 8,       # LRU cap on cached FieldLoaders (~90 MB each) per env instance
                  ):
         super().__init__()
@@ -109,6 +115,9 @@ class SingleAgentEnv(gym.Env):
         self.success_bonus = success_bonus
         self.static_frame = static_frame
         self.min_band_grad = min_band_grad
+        self.target_min_dist_frac = target_min_dist_frac
+        self.wall_penalty = wall_penalty
+        self._success_steps_required = int(success_steps_required)
         # Potential of the previous state, Φ(s); set on reset and updated each step.
         # Reward is the sparse success bonus plus the potential-based shaping term
         # γΦ(s') − Φ(s) (Ng et al. 1999), which is policy-invariant.
@@ -158,13 +167,20 @@ class SingleAgentEnv(gym.Env):
 
         currents = self.sim.depth_current_at(agent)
         psi = np.deg2rad(agent.psi)
-        u = currents[0] * np.cos(psi) + currents[1] * np.sin(psi)
-        v = currents[0] * np.sin(psi) - currents[1] * np.cos(psi)
+        # World -> body frame via Rot(psi)^T, the exact inverse of SwarmSwIM's
+        # body->world map for cmd_local_vel (agent_class.update_planar applies
+        # world = Rot(psi) @ (surge, sway)). Using the true inverse keeps sensed
+        # directions coherent with how actions actually move the agent — the
+        # previous form negated the body-y (sway) component (a reflection, not
+        # a rotation), so "follow the sensed gradient" was laterally mirrored.
+        cos_psi, sin_psi = np.cos(psi), np.sin(psi)
+        u = currents[0] * cos_psi + currents[1] * sin_psi
+        v = -currents[0] * sin_psi + currents[1] * cos_psi
         w = currents[2]
 
-         # rotate salinity gradient into body frame (same rotation as currents)
-        gu = gx * np.cos(psi) + gy * np.sin(psi)
-        gv = gx * np.sin(psi) - gy * np.cos(psi)
+        # rotate salinity gradient into body frame (same rotation as currents)
+        gu = gx * cos_psi + gy * sin_psi
+        gv = -gx * sin_psi + gy * cos_psi
         gw = gz
 
         return S, tau, u, v, w, gu, gv, gw
@@ -284,17 +300,19 @@ class SingleAgentEnv(gym.Env):
             loader.set_window(start)
         salinity_at = loader.salinity_at
 
-        # Target selection: sample a point that is (a) far from the spawn, (b) has
-        # an (S, τ) couple meaningfully different from the spawn's, and (c) sits on a
-        # non-flat salinity band so a local-sensing agent has a gradient to home on.
-        # (S*, τ*) are read AT that point, so the success zone exists there by
-        # construction. The target is ALWAYS assigned to the accepted candidate — the
-        # previous logic broke out without assigning, leaving S*≈0 (unreachable).
+        # Target selection: sample a point that is (a) at least target_min_dist_frac
+        # of the domain diagonal from the spawn (0 -> no distance check, so targets
+        # may land near the spawn and episode difficulty varies), (b) has an (S, τ)
+        # couple meaningfully different from the spawn's, and (c) sits on a non-flat
+        # salinity band so a local-sensing agent has a gradient to home on. (S*, τ*)
+        # are read AT that point, so the success zone exists there by construction.
+        # The target is ALWAYS assigned to the accepted candidate — the previous logic
+        # broke out without assigning, leaving S*≈0 (unreachable).
         grad_at = loader.salinity_gradient_at
         spawn = self.sim.agents[0].pos
         self.current_salinity = salinity_at(spawn[0], spawn[1], spawn[2])
         self.current_turbidity = compute_turbidity(spawn[2])
-        min_dist = 0.3 * float(np.linalg.norm(self.domain))
+        min_dist = self.target_min_dist_frac * float(np.linalg.norm(self.domain))
         # Fallback: if no candidate qualifies (extremely unlikely on these fields),
         # keep spawn (S, τ) so the couple is at least valid and reachable.
         self.target_salinity = self.current_salinity
@@ -342,15 +360,20 @@ class SingleAgentEnv(gym.Env):
             - terminated (Bool)
             - truncated (Bool)
         '''
-        # Translate action into movement 
+        # Translate action into movement. The action triple is a BODY-frame
+        # direction (surge, sway, heave): config/agent.xml uses
+        # heading_control='yawrate' and no yaw is ever commanded, so psi stays
+        # FIXED at its random initial value for the whole episode and SwarmSwIM
+        # maps (surge, sway) to world coordinates via Rot(psi). The observation
+        # rotates currents/gradient into the same body frame (see _measure), so
+        # sensing and actuation share one coherent frame. (A previous version
+        # also set cmd_heading here expecting the heading to auto-track the
+        # motion direction — silently ignored in yawrate mode.)
         mov = self._action_to_direction[action]
         agent = self.sim.agents[0]
         agent.cmd_local_vel = np.array([mov[0]*self.v, mov[1]*self.v])  # surge (x) and sway (y)
         agent.cmd_heave = mov[2]*self.v                                 # heave (z)
-        agent.cmd_heading = np.rad2deg(np.arctan2(mov[0], mov[1]))      # NOTE: heading now auto-tracks motion direction,
-                                                                        # simple but not fully realistic. Probably needs 
-                                                                        # to be changed or at least discussed.
-        
+
         # Doing the step in the sim
         # NOTE: reward is sampled only at the final sub-step (only-last), not summed across
         # the frame_skip ticks. This preserves the reward scale (and the meaning of the
@@ -358,23 +381,37 @@ class SingleAgentEnv(gym.Env):
         # signal of any high-reward region the agent passed through mid-skip. Worth
         # revisiting later — compare against summed-reward aggregation (paper convention,
         # Andrychowicz et al. 2021 §3.6) once a frame_skip ablation has been run.
+        clamped_ticks = 0
         for _ in range(self.frame_skip):
             self.sim.tick()
             # Keep the agent inside the domain box: motion commands and currents
             # would otherwise push it above the surface (z < 0), below the seabed
             # (z > domain depth) or out of the horizontal extent. Clamped every
-            # tick so field queries never run from out-of-bounds positions.
-            agent.pos[0] = np.clip(agent.pos[0], 0.0, self.domain[0])
-            agent.pos[1] = np.clip(agent.pos[1], 0.0, self.domain[1])
-            agent.pos[2] = np.clip(agent.pos[2], 0.0, self.domain[2])
+            # tick so field queries never run from out-of-bounds positions. A tick
+            # that actually needed clamping means the agent was driving into a wall
+            # (wasted motion) — counted so step() can penalize wall-pinning.
+            clipped = np.clip(agent.pos, [0.0, 0.0, 0.0], self.domain)
+            if not np.array_equal(clipped, agent.pos):
+                clamped_ticks += 1
+            agent.pos[:] = clipped
         self.t_step += 1
+        # Fraction of the frame_skip spent pinned against a wall (0..1).
+        wall_frac = clamped_ticks / self.frame_skip
 
         # Next state (s'); phi_next = Φ(s') is the proximity potential.
         next_obs, phi_next = self._build_state(agent, action)
 
-        # Truncation and termination checks
+        # Truncation and termination checks. Success requires the agent to STAY in
+        # the zone for `_success_steps_required` consecutive steps, not just clip
+        # through it once: on a turbulent field a single in-zone step is achievable by
+        # stochastic luck (inflates train success, evaporates as entropy drops, and
+        # never reproduces under a greedy rollout). Holding is what we actually want.
         truncated = (self.t_step >= self.max_steps)
-        terminated = self._is_in_zone()
+        if self._is_in_zone():
+            self._in_zone_steps += 1
+        else:
+            self._in_zone_steps = 0
+        terminated = self._in_zone_steps >= self._success_steps_required
 
         # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
         # Φ at a true terminal (success) state is 0; truncation is NOT terminal (the
@@ -386,6 +423,12 @@ class SingleAgentEnv(gym.Env):
         reward = self.gamma * phi_next_eff - self._prev_potential
         if terminated:
             reward += self.success_bonus
+        # Wall-pinning penalty (breaks strict shaping invariance by design): a small
+        # cost proportional to the fraction of the step spent clamped against a
+        # domain boundary, to discourage the degenerate "drive into a wall and stall"
+        # local optimum. 0 by default (opt-in via the wall_penalty constructor arg).
+        if self.wall_penalty > 0.0:
+            reward -= self.wall_penalty * wall_frac
         self._prev_potential = phi_next
 
         return next_obs, reward, terminated, truncated, {}
