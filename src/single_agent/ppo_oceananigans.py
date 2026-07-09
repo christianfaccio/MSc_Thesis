@@ -23,7 +23,7 @@ from rich.progress import (
 from torch.utils.tensorboard import SummaryWriter
 
 from src.single_agent.policy import PpoPolicy
-from src.envs.oceananigans import SingleAgentEnv
+from src.envs.oceananigans import OceananigansEnv
 
 DEBUG = True
 console = Console()
@@ -275,8 +275,8 @@ class Args:
 
 
 def make_raw_env(args):
-    """Bare SingleAgentEnv with the training configuration (no gym wrappers)."""
-    return SingleAgentEnv(
+    """Bare OceananigansEnv (n_agents=1) with the training configuration (no gym wrappers)."""
+    return OceananigansEnv(
         xml_file=args.xml_file,
         netcdf_file=args.netcdf_file,
         k=args.k,

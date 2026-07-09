@@ -35,7 +35,7 @@ def _resolve_nc_files(spec) -> list:
         raise ValueError(f"No NetCDF files matched: {p}")
     return files
 
-class SingleAgentEnv(gym.Env):
+class OceananigansEnv(gym.Env):
     '''
     This class represents the wrapped environment of the simulation. It builds from
     SwarmSwIM and is enclosed with Gymnasium for standardization. Training runs on
@@ -43,7 +43,28 @@ class SingleAgentEnv(gym.Env):
     of BaseEnv/PlumesEnv (no (S, τ) history buffer): the salinity gradient is
     queried directly from the field and handed to the agent.
 
-    Observation (9,) — pure local-sensor + mission info, no global coordinates:
+    ONE class serves both the single- and the multi-agent scenario; the switch is
+    `n_agents` (default 1). N homogeneous agents share the same frozen/dynamic
+    NetCDF field and ONE (S*, τ*) target.
+
+    API — single-agent (n_agents == 1), plain Gymnasium, wrapper-compatible:
+        reset() -> obs (9,), info
+        step(action scalar) -> obs (9,), reward float, terminated bool,
+                               truncated bool, info
+
+    API — multi-agent (n_agents > 1), PettingZoo-parallel flattened, as consumed
+    by src/multi_agent/ippo.py and mappo.py:
+        reset() -> obs (N, 9), info
+        step(actions (N,)) -> obs (N, 9), rewards (N,),
+                              terminateds (N,), truncateds (N,), info
+
+    In BOTH modes info["global_state"] carries the centralized state (11·N,) for
+    a MAPPO critic (see _build_global_state); IPPO and single-agent PPO simply
+    ignore it. `local_observation_space` / `global_observation_space` expose the
+    per-agent and centralized shapes to the trainers.
+
+    Per-agent observation (9,) — pure local-sensor + mission info, no global
+    coordinates:
         (3) u v w      -> body-frame current vector (m/s)
         (3) gu gv gw   -> body-frame salinity gradient (PSU/m), gw down-positive
         (2) S-S* τ-τ*  -> target errors in salinity and turbidity
@@ -61,6 +82,12 @@ class SingleAgentEnv(gym.Env):
     and SwarmSwIM maps them to world via the same Rot(ψ), so the two frames are
     coherent and the policy never needs to see ψ directly.
 
+    Multi-agent episode logic (mirrors MultiAgentBaseEnv): each agent's success
+    flag LATCHES — a succeeded agent is frozen (no-op commands, zero reward,
+    obs still emitted) — and the episode ends when time runs out OR, with
+    end_on_any_success (default), as soon as any agent scores. `truncateds` marks
+    the not-succeeded agents when the episode ends.
+
     Parameters:
         - xml_file -> SwarmSwIM simulation .xml
         - netcdf_file -> Oceananigans NetCDF data: a single file, a glob pattern, a
@@ -71,6 +98,8 @@ class SingleAgentEnv(gym.Env):
           so keep the set small (~10 files is fine).
         - k -> history buffer length (vestigial; retained for API parity, unused by
           the gradient-based observation)
+        - n_agents -> number of agents (1 = single-agent Gym API, >1 = flattened
+          PettingZoo-parallel API)
         - v_agent -> agent commanded speed (m/s)
         - max_steps -> maximum env steps per episode before truncation
         - dt -> simulator timestep (s) per env step
@@ -80,11 +109,14 @@ class SingleAgentEnv(gym.Env):
         - static_frame -> NetCDF: freeze one random snapshot per episode (no time
           evolution) vs. dynamic time window
         - min_band_grad -> reject targets whose success band is ~flat (PSU/m)
+        - end_on_any_success -> multi-agent only: end the episode on the first
+          agent success (2026-06-29 meeting decision); no effect for n_agents=1
     '''
     def __init__(self,
                  xml_file: str,
                  netcdf_file: str,
                  k: int = 12,                       # history length of (action, reward)
+                 n_agents: int = 1,                 # number of agents
                  v_agent: float = 1.0,              # agent speed in m/s
                  max_steps: int = 7200,             # steps of an episode before truncation - 2 hours
                  dt: float = 0.1,                   # seconds per step
@@ -95,9 +127,10 @@ class SingleAgentEnv(gym.Env):
                  static_frame: bool = True,         # NetCDF: freeze one random snapshot per episode (no time evolution)
                  min_band_grad: float = 0.004,      # reject targets whose success band is ~flat (PSU/m); <=0 disables
                  target_min_dist_frac: float = 0.0, # min spawn→target distance as a fraction of the domain diagonal; 0 = no check (targets may land near spawn -> varied difficulty)
-                 wall_penalty: float = 0.0,         # per-step reward penalty when the agent is pinned against a domain wall (fraction of frame_skip ticks clamped); 0 disables
+                 wall_penalty: float = 0.0,         # per-step reward penalty when an agent is pinned against a domain wall (fraction of frame_skip ticks clamped); 0 disables
                  success_steps_required: int = 1,   # consecutive in-zone steps needed to terminate as success; >1 forces the agent to arrive AND hold (kills single-step luck crossings on turbulent fields)
                  max_cached_loaders: int = 8,       # LRU cap on cached FieldLoaders (~90 MB each) per env instance
+                 end_on_any_success: bool = True,   # multi-agent: end the episode on the first success
                  ):
         super().__init__()
 
@@ -106,6 +139,7 @@ class SingleAgentEnv(gym.Env):
         self._nc_files = _resolve_nc_files(netcdf_file)
         self.k = k
         self.max_cached_loaders = max_cached_loaders
+        self.n_agents = int(n_agents)
         self.v = v_agent
         self.max_steps = max_steps
         self.dt = dt
@@ -118,23 +152,36 @@ class SingleAgentEnv(gym.Env):
         self.target_min_dist_frac = target_min_dist_frac
         self.wall_penalty = wall_penalty
         self._success_steps_required = int(success_steps_required)
-        # Potential of the previous state, Φ(s); set on reset and updated each step.
-        # Reward is the sparse success bonus plus the potential-based shaping term
-        # γΦ(s') − Φ(s) (Ng et al. 1999), which is policy-invariant.
-        self._prev_potential = 0.0
+        self.end_on_any_success = end_on_any_success
 
         self.target_salinity = 0.0
         self.target_turbidity = 0.0
+        # Latest measured (S, τ) of agent 0, refreshed every reset/step — kept for
+        # external tooling/back-compat; per-agent logic uses local values instead.
         self.current_salinity = 0.0
         self.current_turbidity = 0.0
 
-        self._in_zone_steps = 0
         self.epsilon_salinity = 0.3
         self.epsilon_turbidity = 0.05   # TODO: try with epsilon turbidity bound to meters
+
+        # Per-agent episode state (re-allocated in reset()).
+        # Potential of the previous state, Φ(s); reward is the sparse success bonus
+        # plus the potential-based shaping term γΦ(s') − Φ(s) (Ng et al. 1999),
+        # which is policy-invariant.
+        self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
+        self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
+        self._success = np.zeros(self.n_agents, dtype=bool)
 
         self.action_space = gym.spaces.Discrete(27)
         obs_dim = 9
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
+        # Per-agent local obs (== observation_space) and centralized MAPPO state,
+        # 11 per agent (see _build_global_state) — named to match the interface
+        # the multi-agent trainers consume (MultiAgentBaseEnv/MultiAgentPlumesEnv).
+        self.local_observation_space = spaces.Box(
+            -np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
+        self.global_observation_space = spaces.Box(
+            -np.inf, np.inf, shape=(11 * self.n_agents,), dtype=np.float32)
         self._action_to_direction = self._build_action_table()  # scalar -> [dx,dy,dz] normalized
 
         self.sim = None
@@ -153,13 +200,13 @@ class SingleAgentEnv(gym.Env):
         norms = np.linalg.norm(table, axis=1, keepdims=True)
         norms[norms==0] = 1.0
         return table / norms
-    
+
     def _measure(self, agent):
         '''Salinity, turbidity and body-frame currents at an agent's position.
         Single source of truth for the observation builder, the in-zone check and
-        external tooling (matches MultiAgentEnv._measure). Does not mutate state.'''
+        external tooling. Does not mutate state.'''
         x, y, z = agent.pos[0], agent.pos[1], agent.pos[2]
-        
+
         S = self.sim.current_3d.salinity_at(x, y, z)
         tau = compute_turbidity(depth=z)
 
@@ -184,11 +231,12 @@ class SingleAgentEnv(gym.Env):
         gw = gz
 
         return S, tau, u, v, w, gu, gv, gw
-    
-    def _build_state(self, agent, action=None) -> tuple[np.ndarray, float]:
+
+    def _build_state(self, agent, action=None) -> tuple[np.ndarray, float, float, float]:
         '''
-        Returns the observation of dimension (9,) and the proximity potential
-        Φ(s) = reward_func(...). The caller turns Φ into the shaped reward.
+        Returns (obs (9,), Φ(s), S, τ) for ONE agent; the caller turns the
+        proximity potential Φ = reward_func(...) into the shaped reward and uses
+        (S, τ) for the in-zone check. Does not mutate per-agent episode state.
 
         Observation layout (9,):
             (3)     -> body-frame currents (u, v, w)
@@ -196,31 +244,58 @@ class SingleAgentEnv(gym.Env):
             (2)     -> target errors (S - S*, τ - τ*)
             (1)     -> depth
         '''
-        new_salinity, new_turbidity, u, v, w, gu, gv, gw = self._measure(agent)
+        S, tau, u, v, w, gu, gv, gw = self._measure(agent)
 
-        potential = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity,
+        potential = reward_func(S, tau, self.target_salinity, self.target_turbidity,
                                 eps_s=self.epsilon_salinity, eps_tau=self.epsilon_turbidity)
 
-        self.current_salinity = new_salinity
-        self.current_turbidity = new_turbidity
-
-        agent_depth = agent.pos[2]
-
-        return np.array([
+        obs = np.array([
                 u, v, w,
                 gu, gv, gw,
-                self.current_salinity - self.target_salinity,
-                self.current_turbidity - self.target_turbidity,
-                agent_depth,
-        ], dtype=np.float32), potential
-    
-    def _is_in_zone(self) -> bool:
-        '''True when measured (S, tau) lie within epsilon of the target couple.'''
+                S - self.target_salinity,
+                tau - self.target_turbidity,
+                agent.pos[2],
+        ], dtype=np.float32)
+        return obs, potential, S, tau
+
+    def _build_global_state(self):
+        '''Centralized state (11·N,) for the MAPPO critic — per agent:
+            (2): target errors (S - S*, τ - τ*)
+            (3): body-frame currents u v w
+            (3): body-frame salinity gradient gu gv gw
+            (3): absolute position x y z (the critic MAY see global coordinates;
+                 only the actor is restricted to local sensing)
+        '''
+        parts = []
+        for agent in self.sim.agents:
+            S, tau, u, v, w, gu, gv, gw = self._measure(agent)
+            parts.extend([S - self.target_salinity,
+                          tau - self.target_turbidity,
+                          u, v, w,
+                          gu, gv, gw,
+                          agent.pos[0], agent.pos[1], agent.pos[2]])
+        return np.array(parts, dtype=np.float32)
+
+    def _global_state_from_obs(self, obs) -> np.ndarray:
+        '''Same layout as _build_global_state, assembled from the per-agent obs
+        rows already built this step (obs = [u v w gu gv gw S-S* τ-τ* depth]) —
+        avoids re-querying the field interpolators a second time per step.'''
+        parts = []
+        for i, agent in enumerate(self.sim.agents):
+            o = obs[i]
+            parts.extend([o[6], o[7],                    # S - S*, τ - τ*
+                          o[0], o[1], o[2],              # u v w
+                          o[3], o[4], o[5],              # gu gv gw
+                          agent.pos[0], agent.pos[1], agent.pos[2]])
+        return np.array(parts, dtype=np.float32)
+
+    def _is_in_zone(self, salinity, turbidity) -> bool:
+        '''True when the given (S, τ) lie within epsilon of the target couple.'''
         return (
-            abs(self.current_salinity - self.target_salinity) < self.epsilon_salinity
-            and abs(self.current_turbidity - self.target_turbidity) < self.epsilon_turbidity
+            abs(salinity - self.target_salinity) < self.epsilon_salinity
+            and abs(turbidity - self.target_turbidity) < self.epsilon_turbidity
         )
-    
+
     def close(self):
         for loader in self._loaders.values():
             loader.close()
@@ -236,14 +311,17 @@ class SingleAgentEnv(gym.Env):
             - options (dict | None) — Gymnasium passes this through wrappers; unused here.
 
         Output:
-            - state (np.array)
-            - info (dict)
+            - obs: (9,) for n_agents == 1, (N, 9) otherwise
+            - info (dict) with "global_state" (11·N,)
         '''
         super().reset(seed=seed)
 
-        # Reset success counter — without this, a successful previous episode
-        # leaves _in_zone_steps == 3 and the next episode could terminate immediately.
-        self._in_zone_steps = 0
+        # Reset per-agent episode state — without this, a successful previous
+        # episode leaves _in_zone_steps at the threshold (or _success latched)
+        # and the next episode could terminate immediately.
+        self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
+        self._success = np.zeros(self.n_agents, dtype=bool)
+        self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
 
         # Create the env (Simulator class). A random NetCDF file is drawn each
         # episode; its FieldLoader is cached and shared across resets, and the
@@ -262,21 +340,22 @@ class SingleAgentEnv(gym.Env):
             loader = self._loaders[path]
             self.active_netcdf_path = path
         self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.sim_xml, netcdf_file=loader)
-        
+
         self.sim.remove(*self.sim.agents)  # drop ALL xml-defined agents, not just the first
-        
-        # Add agent
-        agent = Agent(
-                name="A",
-                Dt=self.dt,
-                initialPosition=np.array([self.np_random.uniform(0.0, self.domain[0]), 
-                                          self.np_random.uniform(0.0, self.domain[1]), 
-                                          self.np_random.uniform(0.0, self.domain[2])]),
-                initialHeading=self.np_random.uniform(-180.0, 180.0),
-                agent_xml="config/agent.xml",
-                rng=self.np_random.integers(2**31)
-            )
-        self.sim.add(agent)
+
+        # Add N agents with random position + heading.
+        for i in range(self.n_agents):
+            agent = Agent(
+                    name=f"A{i + 1:02d}",
+                    Dt=self.dt,
+                    initialPosition=np.array([self.np_random.uniform(0.0, self.domain[0]),
+                                              self.np_random.uniform(0.0, self.domain[1]),
+                                              self.np_random.uniform(0.0, self.domain[2])]),
+                    initialHeading=self.np_random.uniform(-180.0, 180.0),
+                    agent_xml="config/agent.xml",
+                    rng=int(self.np_random.integers(2**31))
+                )
+            self.sim.add(agent)
 
         if self.static_frame:
             # Static-frame mode: freeze the fields at one randomly chosen
@@ -300,23 +379,26 @@ class SingleAgentEnv(gym.Env):
             loader.set_window(start)
         salinity_at = loader.salinity_at
 
-        # Target selection: sample a point that is (a) at least target_min_dist_frac
-        # of the domain diagonal from the spawn (0 -> no distance check, so targets
-        # may land near the spawn and episode difficulty varies), (b) has an (S, τ)
-        # couple meaningfully different from the spawn's, and (c) sits on a non-flat
+        # Target selection (ONE shared target for the whole swarm): sample a point
+        # that is (a) at least target_min_dist_frac of the domain diagonal from
+        # agent 0's spawn (0 -> no distance check, so targets may land near the
+        # spawn and episode difficulty varies), (b) has an (S, τ) couple
+        # meaningfully different from that spawn's, and (c) sits on a non-flat
         # salinity band so a local-sensing agent has a gradient to home on. (S*, τ*)
         # are read AT that point, so the success zone exists there by construction.
         # The target is ALWAYS assigned to the accepted candidate — the previous logic
         # broke out without assigning, leaving S*≈0 (unreachable).
         grad_at = loader.salinity_gradient_at
         spawn = self.sim.agents[0].pos
-        self.current_salinity = salinity_at(spawn[0], spawn[1], spawn[2])
-        self.current_turbidity = compute_turbidity(spawn[2])
+        spawn_S = salinity_at(spawn[0], spawn[1], spawn[2])
+        spawn_T = compute_turbidity(spawn[2])
+        self.current_salinity = spawn_S
+        self.current_turbidity = spawn_T
         min_dist = self.target_min_dist_frac * float(np.linalg.norm(self.domain))
         # Fallback: if no candidate qualifies (extremely unlikely on these fields),
         # keep spawn (S, τ) so the couple is at least valid and reachable.
-        self.target_salinity = self.current_salinity
-        self.target_turbidity = self.current_turbidity
+        self.target_salinity = spawn_S
+        self.target_turbidity = spawn_T
         for _ in range(50):
             x_sel = self.np_random.uniform(0.0, self.domain[0])
             y_sel = self.np_random.uniform(0.0, self.domain[1])
@@ -326,8 +408,8 @@ class SingleAgentEnv(gym.Env):
             cand_S = salinity_at(x_sel, y_sel, z_sel)
             cand_T = compute_turbidity(z_sel)
             # Reject trivial targets: both S and τ already within reach of spawn.
-            if (abs(cand_S - self.current_salinity) <= 2 * self.epsilon_salinity
-                    and abs(cand_T - self.current_turbidity) <= 2 * self.epsilon_turbidity):
+            if (abs(cand_S - spawn_S) <= 2 * self.epsilon_salinity
+                    and abs(cand_T - spawn_T) <= 2 * self.epsilon_turbidity):
                 continue
             # Reject flat-band targets with no local directional signal.
             if self.min_band_grad > 0.0:
@@ -342,37 +424,54 @@ class SingleAgentEnv(gym.Env):
         self.history = np.zeros((self.k, 2), dtype=np.float32)
         self.st_history = np.zeros((self.k, 2), dtype=np.float32)
         self.t_step = 0
-        
-        obs, phi0 = self._build_state(self.sim.agents[0])
-        self._prev_potential = phi0
-        return obs, {}
-    
+
+        obs = np.zeros((self.n_agents, self.observation_space.shape[0]), dtype=np.float32)
+        for i, agent in enumerate(self.sim.agents):
+            o, phi0, S, tau = self._build_state(agent)
+            obs[i] = o
+            self._prev_potential[i] = phi0
+            if i == 0:
+                self.current_salinity = S
+                self.current_turbidity = tau
+        info = {"global_state": self._build_global_state()}
+        if self.n_agents == 1:
+            return obs[0], info
+        return obs, info
+
     def step(self, action):
         '''
-        Method that given an action from the policy updates the environment.
+        Method that given the action(s) from the policy updates the environment.
 
         Parameters:
-            - action (scalar)
-        
-        Output:
-            - s' (next state)
-            - reward (scalar)
-            - terminated (Bool)
-            - truncated (Bool)
+            - action: scalar (n_agents == 1) or array-like (n_agents,) of
+              discrete action indices
+
+        Output (n_agents == 1):
+            - s' (9,), reward float, terminated bool, truncated bool, info
+        Output (n_agents > 1):
+            - s' (N, 9), rewards (N,), terminateds (N,), truncateds (N,), info
+        In both modes info["global_state"] carries the centralized (11·N,) state.
         '''
-        # Translate action into movement. The action triple is a BODY-frame
-        # direction (surge, sway, heave): config/agent.xml uses
-        # heading_control='yawrate' and no yaw is ever commanded, so psi stays
-        # FIXED at its random initial value for the whole episode and SwarmSwIM
-        # maps (surge, sway) to world coordinates via Rot(psi). The observation
-        # rotates currents/gradient into the same body frame (see _measure), so
-        # sensing and actuation share one coherent frame. (A previous version
-        # also set cmd_heading here expecting the heading to auto-track the
-        # motion direction — silently ignored in yawrate mode.)
-        mov = self._action_to_direction[action]
-        agent = self.sim.agents[0]
-        agent.cmd_local_vel = np.array([mov[0]*self.v, mov[1]*self.v])  # surge (x) and sway (y)
-        agent.cmd_heave = mov[2]*self.v                                 # heave (z)
+        actions = np.atleast_1d(np.asarray(action)).astype(np.int64)
+
+        # Translate actions into movement; a succeeded (frozen) agent no-ops.
+        # The action triple is a BODY-frame direction (surge, sway, heave):
+        # config/agent.xml uses heading_control='yawrate' and no yaw is ever
+        # commanded, so psi stays FIXED at its random initial value for the whole
+        # episode and SwarmSwIM maps (surge, sway) to world coordinates via
+        # Rot(psi). The observation rotates currents/gradient into the same body
+        # frame (see _measure), so sensing and actuation share one coherent
+        # frame. (A previous version also set cmd_heading here expecting the
+        # heading to auto-track the motion direction — silently ignored in
+        # yawrate mode.)
+        for i, agent in enumerate(self.sim.agents):
+            if self._success[i]:
+                agent.cmd_local_vel = np.array([0.0, 0.0])
+                agent.cmd_heave = 0.0
+                continue
+            mov = self._action_to_direction[actions[i]]
+            agent.cmd_local_vel = np.array([mov[0]*self.v, mov[1]*self.v])  # surge (x) and sway (y)
+            agent.cmd_heave = mov[2]*self.v                                 # heave (z)
 
         # Doing the step in the sim
         # NOTE: reward is sampled only at the final sub-step (only-last), not summed across
@@ -381,55 +480,75 @@ class SingleAgentEnv(gym.Env):
         # signal of any high-reward region the agent passed through mid-skip. Worth
         # revisiting later — compare against summed-reward aggregation (paper convention,
         # Andrychowicz et al. 2021 §3.6) once a frame_skip ablation has been run.
-        clamped_ticks = 0
+        clamped_ticks = np.zeros(self.n_agents, dtype=np.int64)
         for _ in range(self.frame_skip):
             self.sim.tick()
-            # Keep the agent inside the domain box: motion commands and currents
-            # would otherwise push it above the surface (z < 0), below the seabed
+            # Keep the agents inside the domain box: motion commands and currents
+            # would otherwise push them above the surface (z < 0), below the seabed
             # (z > domain depth) or out of the horizontal extent. Clamped every
             # tick so field queries never run from out-of-bounds positions. A tick
             # that actually needed clamping means the agent was driving into a wall
             # (wasted motion) — counted so step() can penalize wall-pinning.
-            clipped = np.clip(agent.pos, [0.0, 0.0, 0.0], self.domain)
-            if not np.array_equal(clipped, agent.pos):
-                clamped_ticks += 1
-            agent.pos[:] = clipped
+            for i, agent in enumerate(self.sim.agents):
+                clipped = np.clip(agent.pos, [0.0, 0.0, 0.0], self.domain)
+                if not np.array_equal(clipped, agent.pos):
+                    clamped_ticks[i] += 1
+                agent.pos[:] = clipped
         self.t_step += 1
-        # Fraction of the frame_skip spent pinned against a wall (0..1).
+        # Fraction of the frame_skip each agent spent pinned against a wall (0..1).
         wall_frac = clamped_ticks / self.frame_skip
 
-        # Next state (s'); phi_next = Φ(s') is the proximity potential.
-        next_obs, phi_next = self._build_state(agent, action)
+        # Build next obs, reward and success flags per agent. Success requires an
+        # agent to STAY in the zone for `_success_steps_required` consecutive
+        # steps, not just clip through it once: on a turbulent field a single
+        # in-zone step is achievable by stochastic luck (inflates train success,
+        # evaporates as entropy drops, and never reproduces under a greedy
+        # rollout). Holding is what we actually want.
+        obs = np.zeros((self.n_agents, self.observation_space.shape[0]), dtype=np.float32)
+        rewards = np.zeros(self.n_agents, dtype=np.float32)
+        for i, agent in enumerate(self.sim.agents):
+            next_obs_i, phi_next, S, tau = self._build_state(agent, actions[i])
+            obs[i] = next_obs_i
+            if i == 0:
+                self.current_salinity = S
+                self.current_turbidity = tau
+            if self._success[i]:
+                # Frozen: re-emit obs, zero reward, no state updates.
+                continue
 
-        # Truncation and termination checks. Success requires the agent to STAY in
-        # the zone for `_success_steps_required` consecutive steps, not just clip
-        # through it once: on a turbulent field a single in-zone step is achievable by
-        # stochastic luck (inflates train success, evaporates as entropy drops, and
-        # never reproduces under a greedy rollout). Holding is what we actually want.
-        truncated = (self.t_step >= self.max_steps)
-        if self._is_in_zone():
-            self._in_zone_steps += 1
-        else:
-            self._in_zone_steps = 0
-        terminated = self._in_zone_steps >= self._success_steps_required
+            if self._is_in_zone(S, tau):
+                self._in_zone_steps[i] += 1
+            else:
+                self._in_zone_steps[i] = 0
+            terminated_i = self._in_zone_steps[i] >= self._success_steps_required
 
-        # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
-        # Φ at a true terminal (success) state is 0; truncation is NOT terminal (the
-        # agent bootstraps), so it keeps the real Φ(s') — using 0 there would break
-        # policy invariance. The dense shaping telescopes to a policy-independent
-        # constant, so it guides without creating an incentive to loiter and avoid
-        # finishing the way a raw positive dense reward did.
-        phi_next_eff = 0.0 if terminated else phi_next
-        reward = self.gamma * phi_next_eff - self._prev_potential
-        if terminated:
-            reward += self.success_bonus
-        # Wall-pinning penalty (breaks strict shaping invariance by design): a small
-        # cost proportional to the fraction of the step spent clamped against a
-        # domain boundary, to discourage the degenerate "drive into a wall and stall"
-        # local optimum. 0 by default (opt-in via the wall_penalty constructor arg).
-        if self.wall_penalty > 0.0:
-            reward -= self.wall_penalty * wall_frac
-        self._prev_potential = phi_next
+            # Potential-based reward shaping (Ng et al. 1999): r = r_sparse + γΦ(s') − Φ(s).
+            # Φ at a true terminal (success) state is 0; truncation is NOT terminal (the
+            # agent bootstraps), so it keeps the real Φ(s') — using 0 there would break
+            # policy invariance. The dense shaping telescopes to a policy-independent
+            # constant, so it guides without creating an incentive to loiter and avoid
+            # finishing the way a raw positive dense reward did.
+            phi_next_eff = 0.0 if terminated_i else phi_next
+            r = self.gamma * phi_next_eff - self._prev_potential[i]
+            if terminated_i:
+                r += self.success_bonus
+                self._success[i] = True
+            # Wall-pinning penalty (breaks strict shaping invariance by design): a small
+            # cost proportional to the fraction of the step spent clamped against a
+            # domain boundary, to discourage the degenerate "drive into a wall and stall"
+            # local optimum. 0 by default (opt-in via the wall_penalty constructor arg).
+            if self.wall_penalty > 0.0:
+                r -= self.wall_penalty * wall_frac[i]
+            rewards[i] = r
+            self._prev_potential[i] = phi_next
 
-        return next_obs, reward, terminated, truncated, {}
+        terminateds = self._success.copy()
+        out_of_time = self.t_step >= self.max_steps
+        episode_over = out_of_time or (self.end_on_any_success and bool(terminateds.any()))
+        truncateds = np.full(self.n_agents, episode_over) & (~self._success)
 
+        info = {"global_state": self._build_global_state()}
+        if self.n_agents == 1:
+            return (obs[0], float(rewards[0]), bool(terminateds[0]),
+                    bool(truncateds[0]), info)
+        return obs, rewards, terminateds, truncateds, info
