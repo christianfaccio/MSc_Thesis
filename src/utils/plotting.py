@@ -16,6 +16,20 @@ def _coord(da: xr.DataArray, axis: str) -> tuple[str, np.ndarray]:
             return d, da.coords[d].values
     raise KeyError(f"no '{axis}' coord on {da.name} (dims={da.dims})")
 
+def _domain_edges(c) -> tuple[float, float]:
+    """True domain extent [edge_lo, edge_hi] from cell-CENTER coords `c`.
+
+    Oceananigans cell centers sit half a cell in from the boundary, so the center
+    range (e.g. 3.9 … 996.1) understates the real domain (0 … 1000). Sources are
+    anchored on the boundary (x=0 / y=0), so filtering or ranging against the
+    center min/max wrongly drops them — use the half-cell-padded edges instead.
+    """
+    c = np.asarray(c, dtype=float)
+    if c.size < 2:
+        return float(c.min()), float(c.max())
+    d = (float(c.max()) - float(c.min())) / (c.size - 1)
+    return float(c.min()) - d / 2, float(c.max()) + d / 2
+
 def _fmt_time(t) -> str:
     """Human-readable label for an Oceananigans time coord value.
 
@@ -89,18 +103,37 @@ def plot_currents_netcdf(ds: xr.Dataset, time_idx: int, xc, yc, zc,
     # matplotlib will naturally place larger (less negative) values toward the top.
     ax.quiver(X, Y, Z, U, V, W, normalize=False, colors=colors, linewidth=0.6)
 
+    # Only draw markers inside this file's domain (edges, not cell centers, so
+    # boundary sources at x=0 / y=0 are kept). A mismatched catalog (e.g. 5 km
+    # coords on a 1 km file) would otherwise blow the 3D axes out to its extent.
+    x_lo, x_hi = _domain_edges(xc)
+    y_lo, y_hi = _domain_edges(yc)
+    z_lo, _ = _domain_edges(zc)
+    n_drawn = 0
     if sources:
         for src in sources:
+            if not (x_lo <= src["x"] <= x_hi and y_lo <= src["y"] <= y_hi):
+                continue
             ax.scatter(src["x"], src["y"], -float(src["depth"]),
                        c="red", s=80, marker="X",
                        edgecolors="black", linewidths=1.0, label=src["name"])
-        ax.legend(loc="upper right", fontsize=8)
+            n_drawn += 1
+        if n_drawn:
+            ax.legend(loc="upper right", fontsize=8)
+        if n_drawn < len(sources):
+            print(f"  (skipped {len(sources) - n_drawn} source marker(s) outside "
+                  f"the file domain — pass the matching sidecar via --sources-file)")
+
+    # Pin the axes to the domain edges so nothing can stretch them past the domain.
+    ax.set_xlim(x_lo, x_hi)
+    ax.set_ylim(y_lo, y_hi)
+    ax.set_zlim(z_lo, 0.0)
 
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_zlabel("z [m]  (surface at 0)")
-    t_value = ds.time.values[time_idx]
-    ax.set_title(f"Currents — Oceananigans  (t = {t_value})")
+    elapsed = ds.time.values[time_idx] - ds.time.values[0]
+    ax.set_title(f"Currents — Oceananigans  (t = {_fmt_time(elapsed)})")
 
     sm = plt.cm.ScalarMappable(cmap="viridis", norm=norm)
     sm.set_array([])
@@ -154,8 +187,16 @@ def plot_surface_currents_netcdf(ds: xr.Dataset, time_idx: int, xc, yc, zc,
 def plot_volume_netcdf(field_zyx: np.ndarray, xc, yc, zc,
                 vol_grid: int, colorscale: str,
                 title: str, value_label: str, z_aspect: float,
-                sources: list[dict] | None, out_path: Path) -> None:
-    """3D Plotly volume rendering. Downsamples field + coords to ~vol_grid per axis."""
+                sources: list[dict] | None, out_path: Path,
+                target_pts: np.ndarray | None = None,
+                target_marker: dict | None = None) -> None:
+    """3D Plotly volume rendering. Downsamples field + coords to ~vol_grid per axis.
+
+    Optional target overlay:
+      - target_pts: (N, 3) array of (x, y, z) points in the domain whose (S, τ)
+        match a sampled target within tolerance — drawn as a small marker cloud.
+      - target_marker: dict {x, y, z, text} for the sampled target point itself.
+    """
     sx = max(len(xc) // vol_grid, 1)
     sy = max(len(yc) // vol_grid, 1)
     sz = max(len(zc) // vol_grid, 1)
@@ -183,17 +224,47 @@ def plot_volume_netcdf(field_zyx: np.ndarray, xc, yc, zc,
         name=value_label,
     ))
 
-    if sources:
+    # Target overlay: matching-point cloud + the sampled target marker.
+    if target_pts is not None and len(target_pts):
+        target_pts = np.asarray(target_pts)
         fig.add_trace(go.Scatter3d(
-            x=[s["x"] for s in sources],
-            y=[s["y"] for s in sources],
-            z=[-float(s["depth"]) for s in sources],
-            mode="markers+text",
-            text=[s["name"] for s in sources],
-            textposition="top center",
-            marker=dict(size=6, color="red", symbol="x"),
-            name="sources",
+            x=target_pts[:, 0], y=target_pts[:, 1], z=target_pts[:, 2],
+            mode="markers",
+            marker=dict(size=2, color="crimson", opacity=0.45),
+            name="target zone (S*±ε, τ*±ε)",
         ))
+    if target_marker is not None:
+        fig.add_trace(go.Scatter3d(
+            x=[target_marker["x"]], y=[target_marker["y"]], z=[target_marker["z"]],
+            mode="markers+text", text=[target_marker.get("text", "target")],
+            textposition="top center",
+            marker=dict(size=8, color="gold", symbol="diamond",
+                        line=dict(color="black", width=1)),
+            name="target",
+        ))
+
+    # Drop markers outside this file's domain (edges, not cell centers, so
+    # boundary sources at x=0 / y=0 are kept; also filters a stale 5 km catalog).
+    x_lo, x_hi = _domain_edges(xc)
+    y_lo, y_hi = _domain_edges(yc)
+    z_lo, _ = _domain_edges(zc)
+    if sources:
+        in_dom = [s for s in sources
+                  if x_lo <= s["x"] <= x_hi and y_lo <= s["y"] <= y_hi]
+        if len(in_dom) < len(sources):
+            print(f"  (skipped {len(sources) - len(in_dom)} source marker(s) outside "
+                  f"the file domain — pass the matching sidecar via --sources-file)")
+        if in_dom:
+            fig.add_trace(go.Scatter3d(
+                x=[s["x"] for s in in_dom],
+                y=[s["y"] for s in in_dom],
+                z=[-float(s["depth"]) for s in in_dom],
+                mode="markers+text",
+                text=[s["name"] for s in in_dom],
+                textposition="top center",
+                marker=dict(size=6, color="red", symbol="x"),
+                name="sources",
+            ))
 
     x_range = float(xc.max() - xc.min()) or 1.0
     y_range = float(yc.max() - yc.min()) or 1.0
@@ -201,7 +272,11 @@ def plot_volume_netcdf(field_zyx: np.ndarray, xc, yc, zc,
     fig.update_layout(
         title=title,
         scene=dict(
-            xaxis_title="x [m]", yaxis_title="y [m]", zaxis_title="z [m]",
+            # Pin ranges to the file's domain edges so the axes can never auto-range
+            # past it (a stale catalog, or a boundary target/source marker).
+            xaxis=dict(title="x [m]", range=[x_lo, x_hi]),
+            yaxis=dict(title="y [m]", range=[y_lo, y_hi]),
+            zaxis=dict(title="z [m]", range=[z_lo, 0.0]),
             # Match the matplotlib quiver: z-box at a fixed fraction of the
             # horizontal extent, not the default cube that distorts a shallow domain.
             aspectmode="manual",
@@ -210,6 +285,173 @@ def plot_volume_netcdf(field_zyx: np.ndarray, xc, yc, zc,
         margin=dict(l=0, r=0, t=40, b=0),
     )
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(out_path))
+    print(f"saved {out_path}")
+
+def animate_volume_netcdf(ds: xr.Dataset, field_name: str, xc, yc, zc,
+                vol_grid: int, colorscale: str, title: str, value_label: str,
+                z_aspect: float, sources: list[dict] | None, out_path: Path,
+                *, frame_stride: int = 1, frame_ms: int = 250) -> None:
+    """Animated 3D Plotly volume of a tracer's time-evolution → interactive HTML.
+
+    Same look as `plot_volume_netcdf`, but one frame per (subsampled) time snapshot
+    with a Play/Pause button and a time slider; the volume stays fully rotatable.
+    The color scale AND the iso-range are fixed across all frames (global min/max)
+    so the evolution is directly comparable frame to frame. Depth-static fields
+    (e.g. turbidity) are pointless to animate — use it for S / T.
+
+    `frame_stride` temporally subsamples snapshots; `frame_ms` is the per-frame
+    hold time in the Play loop (smaller = faster playback).
+    """
+    sx = max(len(xc) // vol_grid, 1)
+    sy = max(len(yc) // vol_grid, 1)
+    sz = max(len(zc) // vol_grid, 1)
+    xd, yd, zd = xc[::sx], yc[::sy], zc[::sz]
+    Z, Y, X = np.meshgrid(zd, yd, xd, indexing="ij")
+
+    t_indices = list(range(ds.sizes["time"]))[::frame_stride]
+    times = ds.time.values
+
+    # Downsample every snapshot once; keep a global min/max for a fixed color scale.
+    vols = []
+    for ti in t_indices:
+        F = _to_center_zyx(ds[field_name].isel(time=ti), xc, yc, zc)[::sz, ::sy, ::sx]
+        vols.append(F)
+    fmin = float(min(v.min() for v in vols))
+    fmax = float(max(v.max() for v in vols))
+    if fmax <= fmin:
+        fmax = fmin + 1e-9
+
+    def _volume(F):
+        return go.Volume(
+            x=X.flatten(), y=Y.flatten(), z=Z.flatten(), value=F.flatten(),
+            isomin=fmin + 0.05 * (fmax - fmin), isomax=fmax,
+            cmin=fmin, cmax=fmax,               # fixed color scale across frames
+            opacity=0.1,
+            opacityscale=[[0.0, 0.0], [0.2, 0.05], [0.5, 0.2], [1.0, 0.8]],
+            surface_count=20, colorscale=colorscale,
+            colorbar=dict(title=value_label),
+            caps=dict(x_show=False, y_show=False, z_show=False),
+            name=value_label,
+        )
+
+    fig = go.Figure(data=[_volume(vols[0])])
+    frames = [go.Frame(data=[_volume(vols[i])], name=str(i),
+                       traces=[0])                       # only the volume animates
+              for i in range(len(vols))]
+    fig.frames = frames
+
+    # Static source markers (drawn once, outside the animated trace).
+    x_lo, x_hi = _domain_edges(xc)
+    y_lo, y_hi = _domain_edges(yc)
+    z_lo, _ = _domain_edges(zc)
+    if sources:
+        in_dom = [s for s in sources
+                  if x_lo <= s["x"] <= x_hi and y_lo <= s["y"] <= y_hi]
+        if len(in_dom) < len(sources):
+            print(f"  (skipped {len(sources) - len(in_dom)} source marker(s) outside "
+                  f"the file domain — pass the matching sidecar via --sources-file)")
+        if in_dom:
+            fig.add_trace(go.Scatter3d(
+                x=[s["x"] for s in in_dom], y=[s["y"] for s in in_dom],
+                z=[-float(s["depth"]) for s in in_dom],
+                mode="markers+text", text=[s["name"] for s in in_dom],
+                textposition="top center",
+                marker=dict(size=6, color="red", symbol="x"), name="sources",
+            ))
+
+    def _t_label(i):
+        return _fmt_time(times[t_indices[i]] - times[0])
+
+    steps = [dict(method="animate", label=_t_label(i),
+                  args=[[str(i)], dict(mode="immediate",
+                                       frame=dict(duration=frame_ms, redraw=True),
+                                       transition=dict(duration=0))])
+             for i in range(len(vols))]
+
+    x_range = float(xc.max() - xc.min()) or 1.0
+    y_range = float(yc.max() - yc.min()) or 1.0
+    max_h = max(x_range, y_range)
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis=dict(title="x [m]", range=[x_lo, x_hi]),
+            yaxis=dict(title="y [m]", range=[y_lo, y_hi]),
+            zaxis=dict(title="z [m]", range=[z_lo, 0.0]),
+            aspectmode="manual",
+            aspectratio=dict(x=x_range / max_h, y=y_range / max_h, z=z_aspect),
+        ),
+        margin=dict(l=0, r=0, t=40, b=0),
+        updatemenus=[dict(
+            type="buttons", direction="left", x=0.0, y=0.0,
+            xanchor="left", yanchor="top", pad=dict(t=60, r=10),
+            buttons=[
+                dict(label="▶ Play", method="animate",
+                     args=[None, dict(mode="immediate", fromcurrent=True,
+                                      frame=dict(duration=frame_ms, redraw=True),
+                                      transition=dict(duration=0))]),
+                dict(label="⏸ Pause", method="animate",
+                     args=[[None], dict(mode="immediate",
+                                        frame=dict(duration=0, redraw=False),
+                                        transition=dict(duration=0))]),
+            ],
+        )],
+        sliders=[dict(active=0, x=0.1, y=0.0, len=0.9,
+                      currentvalue=dict(prefix="t = "), pad=dict(t=60),
+                      steps=steps)],
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(out_path))
+    print(f"saved {out_path}  ({len(vols)} frames)")
+
+def plot_target_zone_netcdf(target_pts: np.ndarray, target_marker: dict | None,
+                xc, yc, zc, z_aspect: float, title: str, out_path: Path) -> None:
+    """Standalone 3D Plotly view of a target SUCCESS ZONE — every domain point whose
+    (S, τ) matches the sampled target within (ε_S, ε_τ), i.e. where an agent counts
+    as having reached the target. τ is depth-only, so the zone reads as a layer (or
+    a few) at the target depth band. Points are colored by depth; the gold ◆ is the
+    sampled target itself. No field volume — just the reachable region.
+    """
+    x_lo, x_hi = _domain_edges(xc)
+    y_lo, y_hi = _domain_edges(yc)
+    z_lo, _ = _domain_edges(zc)
+
+    fig = go.Figure()
+    if target_pts is not None and len(target_pts):
+        pts = np.asarray(target_pts)
+        fig.add_trace(go.Scatter3d(
+            x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
+            mode="markers",
+            marker=dict(size=2.5, color=pts[:, 2], colorscale="Viridis",
+                        colorbar=dict(title="z [m]"), opacity=0.55),
+            name="success zone",
+        ))
+    if target_marker is not None:
+        fig.add_trace(go.Scatter3d(
+            x=[target_marker["x"]], y=[target_marker["y"]], z=[target_marker["z"]],
+            mode="markers+text", text=[target_marker.get("text", "target")],
+            textposition="top center",
+            marker=dict(size=8, color="gold", symbol="diamond",
+                        line=dict(color="black", width=1)),
+            name="target",
+        ))
+
+    x_range = (x_hi - x_lo) or 1.0
+    y_range = (y_hi - y_lo) or 1.0
+    max_h = max(x_range, y_range)
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis=dict(title="x [m]", range=[x_lo, x_hi]),
+            yaxis=dict(title="y [m]", range=[y_lo, y_hi]),
+            zaxis=dict(title="z [m]", range=[z_lo, 0.0]),
+            aspectmode="manual",
+            aspectratio=dict(x=x_range / max_h, y=y_range / max_h, z=z_aspect),
+        ),
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(str(out_path))
     print(f"saved {out_path}")

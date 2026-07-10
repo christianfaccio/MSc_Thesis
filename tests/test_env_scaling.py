@@ -1,7 +1,7 @@
 """Tests that SingleAgentEnv is domain-aware at km scale.
 
 After the 5 km scaling, sources, the agent spawn, and the sampled target must
-all live inside the configured domain, the observation must keep its 2k+11
+all live inside the configured domain, the observation must keep its 5k+8
 layout, and a few steps must run with finite currents.
 """
 
@@ -48,7 +48,7 @@ def test_agent_spawn_inside_domain(env):
 
 def test_observation_shape_and_finiteness(env):
     obs, _ = env.reset(seed=2)
-    assert obs.shape == (2 * env.k + 11,)
+    assert obs.shape == (4 * env.k + 6,)
     assert np.all(np.isfinite(obs))
 
 

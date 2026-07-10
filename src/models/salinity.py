@@ -1,43 +1,66 @@
-"""
-Lagrangian diffusion model for the salinity particles.
-The idea is to let the particles flow with the currents in the
-3D environment with the addition of a Gaussian noise.
-
-Note: `parcels` is imported lazily inside `compute_salinity` so the
-analytical training path (which only needs NumPy) can run without it.
-"""
-
 import numpy as np
 
 SECONDS_PER_DAY = 86400.0
 
-def compute_salinity_analytical(x: float | np.ndarray, y: float | np.ndarray, z: float | np.ndarray,
-                                sources: list,
-                                sigma_h: float = 15.0, sigma_v: float = 10.0) -> float:
-    """
-    S_i(x, y, z) = Q_i · exp(-[(x-x_i)² + (y-y_i)²] / (2 σ_h²) - (z-z_i)² / (2 σ_v²))
-    """
-    S = 0.0
-    for source in sources:
-        x_source = source["x"]
-        y_source = source["y"]
-        depth_source = source["depth"]
-        
-        S += source["Q"] * np.exp(-((x - x_source)**2 + (y - y_source)**2) / (2 * sigma_h**2) - (z - depth_source)**2 / (2 * sigma_v**2))
-
+def _gaussian_raw(x, y, z, centers, weights, sigma_h, sigma_v):
+    '''Un-normalized sum of 3D Gaussians. Vectorized: scalars in -> scalar out,
+    arrays in -> array out (the exp terms broadcast against x, y, z).'''
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    z = np.asarray(z, dtype=float)
+    S = np.zeros(np.broadcast(x, y, z).shape)
+    for (cx, cy, cz), w in zip(centers, weights):
+        S = S + w * np.exp(
+            -((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma_h ** 2)
+            - (z - cz) ** 2 / (2 * sigma_v ** 2)
+        )
     return S
 
-def compute_salinity_gradient_analytical(x, y, z, sources, sigma_h=15.0, sigma_v=10.0):
-      dSdx = dSdy = dSdz = 0.0
-      for s in sources:
-          dx = x - s["x"]
-          dy = y - s["y"]
-          dz = z - s["depth"]
-          S_i = s["Q"] * np.exp(-(dx*dx + dy*dy)/(2*sigma_h**2) - dz*dz/(2*sigma_v**2))
-          dSdx += -(dx / sigma_h**2) * S_i
-          dSdy += -(dy / sigma_h**2) * S_i
-          dSdz += -(dz / sigma_v**2) * S_i
-      return dSdx, dSdy, dSdz
+
+def gaussian_field_norm(centers, weights, sigma_h, sigma_v, domain, n: int = 32):
+    '''Return (raw_min, raw_max) of the un-normalized field over the domain.
+
+    Compute this ONCE per field (e.g. per episode, when the blobs are drawn) and
+    pass it to compute_salinity_gaussian, so per-point queries stay cheap instead
+    of rebuilding the normalization grid on every call.'''
+    xs = np.linspace(0.0, domain[0], n)
+    ys = np.linspace(0.0, domain[1], n)
+    zs = np.linspace(0.0, domain[2], max(8, n // 4))
+    X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
+    raw = _gaussian_raw(X, Y, Z, centers, weights, sigma_h, sigma_v)
+    return float(raw.min()), float(raw.max())
+
+
+def compute_salinity_gaussian(x, y, z, centers, weights, sigma_h, sigma_v, span,
+                              raw_min, raw_max):
+    '''
+    Synthetic salinity [PSU] at (x, y, z): a sum of 3D Gaussians affine-scaled to
+    `span` using precomputed (raw_min, raw_max) from `gaussian_field_norm`.
+
+    Scalar in -> float out; array in -> ndarray out (vectorized), so it serves
+    both per-agent queries and grid sampling (target selection, plotting).
+    '''
+    raw = _gaussian_raw(x, y, z, centers, weights, sigma_h, sigma_v)
+    S = span * (raw - raw_min) / (raw_max - raw_min)
+    return float(S) if S.ndim == 0 else S
+
+def compute_salinity_gradient_gaussian(x, y, z, centers, weights, sigma_h, sigma_v,
+                                       span, raw_min, raw_max):
+    '''
+    Analytic gradient (dS/dx, dS/dy, dS/dz) [PSU/m] of compute_salinity_gaussian.
+    The affine span-normalization is a constant scale, so the gradient is just
+    the raw-field gradient times span / (raw_max - raw_min).
+    '''
+    dSdx = dSdy = dSdz = 0.0
+    for (cx, cy, cz), w in zip(centers, weights):
+        dx, dy, dz = x - cx, y - cy, z - cz
+        S_i = w * np.exp(-(dx * dx + dy * dy) / (2 * sigma_h ** 2)
+                         - dz * dz / (2 * sigma_v ** 2))
+        dSdx += -(dx / sigma_h ** 2) * S_i
+        dSdy += -(dy / sigma_h ** 2) * S_i
+        dSdz += -(dz / sigma_v ** 2) * S_i
+    scale = span / (raw_max - raw_min)
+    return scale * dSdx, scale * dSdy, scale * dSdz
 
 def _cell_edges(centers: np.ndarray) -> np.ndarray:
     """Convert cell-center coordinates to cell-edge boundaries."""

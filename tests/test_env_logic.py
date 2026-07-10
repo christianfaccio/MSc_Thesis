@@ -57,16 +57,16 @@ def test_just_outside_epsilon_is_out(env):
 def test_observation_dim_formula():
     for k in (1, 4, 8):
         e = SingleAgentEnv(xml_file="unused.xml", n_sources=2, k=k)
-        assert e.observation_space.shape == (2 * k + 7,)
+        assert e.observation_space.shape == (4 * k + 6,)
 
 
 def test_epsilon_defaults(env):
-    assert env.epsilon_salinity == pytest.approx(0.1)
+    assert env.epsilon_salinity == pytest.approx(0.05)
     assert env.epsilon_turbidity == pytest.approx(0.01)
 
 
 def test_max_steps_default(env):
-    assert env.max_steps == 1024
+    assert env.max_steps == 128
 
 
 def test_action_space_is_discrete_27(env):

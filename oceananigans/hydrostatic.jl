@@ -121,10 +121,18 @@ const BETA_S  = 7.8e-4     # haline contraction [1/PSU]
 # to baseline (timescale S_DECAY_TIME); the two balance at a steady core excess
 # of S_SOURCE_ANOMALY PSU at the strongest source. Bounded brine ⇒ gentle
 # sinking ⇒ no vertical-CFL blow-up.
+#
+# The 6h/10-PSU/200-m⁴/s combo realised only ~1.3 PSU of span (the weak
+# relaxation never approached its target and the biharmonic κ smeared the
+# plumes), leaving a near-flat field the RL policy could not home on. Retuned to
+# widen the realised span toward ~10 PSU: relaxation strengthened 6h→1h (the
+# field now tracks its target), core anomaly raised 10→20, and the tracer
+# biharmonic κ dropped 200→50 (below) to stop diluting the plumes. Stronger
+# brine sinks a little faster, but the CFL-adaptive TimeStepWizard absorbs it.
 const SIGMA_H          = 400.0    # plume horizontal std [m]
 const SIGMA_V          = 12.0     # plume vertical std [m]
-const S_SOURCE_ANOMALY = 10.0     # steady-state core salinity excess [PSU]
-const S_DECAY_TIME     = 6hours   # relaxation timescale back to baseline
+const S_SOURCE_ANOMALY = 20.0     # steady-state core salinity excess [PSU]
+const S_DECAY_TIME     = 1hour    # relaxation timescale back to baseline
 const γ_S              = 1 / S_DECAY_TIME
 
 # Durations: warmup should stay ~1 day — the baroclinic eddies grow on an
@@ -302,8 +310,10 @@ function build_and_run(arch, params::RunParams, output_path::AbstractString; war
     # Model: hydrostatic free-surface with buoyancy-active T and S.
     # closure: (1) vertical eddy diffusivity with VerticallyImplicitTimeDiscretization
     #   to remove the hidden explicit-diffusion step limit (Δt < dz²/2ν ≈ 35 s);
-    #   (2) horizontal biharmonic diffusivity ν₄ = 200 m⁴/s to scrub the 2Δx grid
-    #   noise the front/eddies generate (explicit, stable while Δt·ν₄ ≲ 4e4).
+    #   (2) horizontal biharmonic diffusivity — momentum ν₄ = 200 m⁴/s scrubs the
+    #   2Δx grid noise the front/eddies generate (explicit, stable while Δt·ν₄ ≲
+    #   4e4), while the tracer κ₄ is kept lower (50 m⁴/s) so it damps grid noise
+    #   without smearing the salinity plumes flat (see S_SOURCE_ANOMALY note).
     # free_surface: ImplicitFreeSurface avoids the split-explicit barotropic
     #   instability (InexactError: Int64(NaN) from the substep-count calc).
     model = HydrostaticFreeSurfaceModel(grid;
@@ -317,7 +327,7 @@ function build_and_run(arch, params::RunParams, output_path::AbstractString; war
         closure             = (VerticalScalarDiffusivity(VerticallyImplicitTimeDiscretization();
                                                          ν = 1e-2, κ = 1e-3),
                                ScalarBiharmonicDiffusivity(HorizontalFormulation();
-                                                           ν = 200.0, κ = 200.0)),
+                                                           ν = 200.0, κ = 50.0)),
         free_surface        = ImplicitFreeSurface(),
         boundary_conditions = (u = u_bcs, v = v_bcs),
         forcing             = (S = Relaxation(rate = γ_S, target = S_target),),

@@ -1,6 +1,6 @@
-import gymnasium as gym 
+import gymnasium as gym
 from gymnasium import spaces
-from abc import abstractmethod 
+from abc import abstractmethod
 from SwarmSwIM import Simulator, Agent, sim_functions
 import numpy as np
 import itertools
@@ -11,13 +11,9 @@ from src.models.salinity import (
 )
 from src.models.turbidity import compute_turbidity
 from src.models.reward import reward_func
+from src.utils.sources import random_sources
 
-"""
-Env baseline with a (5000,5000,40) domain, synthetic currents and fields
-and no salinity sources.
-"""
-
-class BaseEnv(gym.Env):
+class PlumesEnv(gym.Env):
     def __init__(self,
                  xml_file: str,
                  k: int = 12,
@@ -26,16 +22,16 @@ class BaseEnv(gym.Env):
                  dt: float = 0.1,
                  frame_skip: int = 10,
                  domain = (1000.0, 1000.0, 100.0),
-                 gamma: float = 0.999,              # set in accordance with the domain
+                 gamma: float = 0.999,
                  success_bonus: float = 10.0,
                  eddy_length_scale: float = 300.0,  # vortex eddy radius [m] (used by randomize_currents)
                  salinity_sigma_h: float = 300.0,   # field horizontal std [m] (domain-scale -> navigable gradient)
                  salinity_sigma_v: float = 40.0,    # field vertical std [m] (< the 40 m column -> vertical gradient)
                  salinity_span: float = 10.0,       # field span [PSU] across the domain (max - min)
-                 n_blobs: int = 3,                  # per episode a random 2..n_blobs Gaussian blobs
+                 n_sources: int = 10,               # per episode a random min_sources..n_sources land-anchored sources
+                 min_sources: int = 6,              # lower bound on the per-episode source count (fills the flat far-field)
                  field_grid_n: int = 32,            # grid resolution used to normalize the field to span
-                 epsilon_salinity = 0.3,
-                 epsilon_turbidity = 0.05,
+                 min_band_grad: float = 0.004,      # reject targets whose success band is ~flat (PSU/m); <=0 disables     
                  ):
         self.xml_file = xml_file
         self.k = k
@@ -50,25 +46,27 @@ class BaseEnv(gym.Env):
         self.salinity_sigma_h = salinity_sigma_h
         self.salinity_sigma_v = salinity_sigma_v
         self.salinity_span = salinity_span
-        self.n_blobs = n_blobs
+        self.n_sources = n_sources
+        self.min_sources = min_sources
         self.field_grid_n = field_grid_n
+        self.min_band_grad = min_band_grad
 
-        # Per-episode salinity field (blob centers/weights + span normalization);
-        # set in randomize_salinity_field().
+        # Per-episode salinity field (source list + blob centers/weights + span
+        # normalization); set in randomize_salinity_field().
+        self._sources = None
         self._salinity_centers = None
         self._salinity_weights = None
         self._salinity_raw_min = None
         self._salinity_raw_max = None
 
         # Success zone: |ΔS| and |Δτ| below these of the target couple.
-        self.epsilon_salinity = epsilon_salinity
-        self.epsilon_turbidity = epsilon_turbidity
+        self.epsilon_salinity = 0.3
+        self.epsilon_turbidity = 0.05
 
-        self.t_step = 0
         self._prev_potential = 0.0
 
         self.action_space = gym.spaces.Discrete(27)
-        obs_dim = 9 
+        obs_dim = 9
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         self._action_to_direction = self._build_action_table()
 
@@ -146,11 +144,24 @@ class BaseEnv(gym.Env):
             self.sim.environment['current_3d_model'] = 'ekman'
 
     def randomize_salinity_field(self):
-        n = int(self.np_random.integers(2, self.n_blobs + 1))
-        dom = np.array(self.domain, dtype=float)
-
-        self._salinity_centers = self.np_random.uniform(0.15 * dom, 0.85 * dom, size=(n, 3))
-        self._salinity_weights = self.np_random.uniform(0.6, 1.0, size=n)
+        '''Draw 2..n_sources pollution sources anchored to the west/south land
+        borders (random_sources) and use them as the Gaussian blob centers, each
+        weighted by its emission rate Q. The summed field is then span-normalized
+        exactly like BaseEnv — only the center placement (coastline vs anywhere)
+        differs.'''
+        low = min(self.min_sources, self.n_sources)
+        n = int(self.np_random.integers(low, self.n_sources + 1))
+        self._sources = random_sources(
+            rng=self.np_random, n_sources=n,
+            min_x=0.0, max_x=self.domain[0],
+            min_y=0.0, max_y=self.domain[1],
+            min_depth=0.0, max_depth=self.domain[2],
+            min_q=0.6, max_q=1.0,   # relative blob strengths (span-normalized away)
+        )
+        self._salinity_centers = np.array(
+            [(s["x"], s["y"], s["depth"]) for s in self._sources], dtype=float)
+        self._salinity_weights = np.array(
+            [s["Q"] for s in self._sources], dtype=float)
 
         self._salinity_raw_min, self._salinity_raw_max = gaussian_field_norm(
             self._salinity_centers, self._salinity_weights,
@@ -200,8 +211,8 @@ class BaseEnv(gym.Env):
         table = list(itertools.product([-1, 0, 1], repeat=3))
         norms = np.linalg.norm(table, axis=1, keepdims=True)
         norms[norms==0] = 1.0
-        return table / norms 
-    
+        return table / norms
+
     def _build_state(self, agent, action=None) -> tuple[np.ndarray, float]:
         '''
         Returns the observation and the proximity potential Φ(s) = reward_func(...).
@@ -232,16 +243,6 @@ class BaseEnv(gym.Env):
             agent_depth,
         ], dtype=np.float32), potential
 
-        #if action is not None:
-        #    self.history = np.roll(self.history, -1, axis=0)
-        #    self.history[-1] = [action, potential]
-
-        # (S, τ) history rolls on every build (incl. reset): the measurement is
-        # available at every observation, so the last row is always the current
-        # (S, τ) and earlier rows are the previous k-1 steps.
-        #self.st_history = np.roll(self.st_history, -1, axis=0)
-        #self.st_history[-1] = [new_salinity, new_turbidity]
-    
     def _zone_reachable(self, n_xy: int = 64, n_z_band: int = 5) -> bool:
         '''True if some domain point satisfies both |S - S*| < eps_S and
         |tau - tau*| < eps_tau, i.e. the episode has a target zone at all.
@@ -260,16 +261,43 @@ class BaseEnv(gym.Env):
         S = self._salinity_at(X, Y, Z)
         return bool(np.any(np.abs(S - self.target_salinity) < self.epsilon_salinity))
 
+    def _band_grad_ok(self, n_xy: int = 64, n_z_band: int = 5) -> bool:
+        '''True if the success band carries a usable horizontal salinity gradient:
+        the median |∇_xy S| over band points is >= self.min_band_grad.
+
+        Because the sources are anchored to the west/south borders, the field ramps
+        off the SW corner and the whole NE far-field is nearly flat. A target that
+        lands there has a valid zone (_zone_reachable) yet no local directional
+        signal, so a local-sensing agent can only random-walk to it -> wander /
+        timeout. This guard rejects those ill-posed targets at reset. Mirrors the
+        band-finding in _zone_reachable. min_band_grad <= 0 disables the check.'''
+        if self.min_band_grad <= 0.0:
+            return True
+        zs = np.linspace(0.0, self.domain[2], 512)
+        band = zs[np.abs(compute_turbidity(zs) - self.target_turbidity) < self.epsilon_turbidity]
+        if band.size == 0:
+            return False
+        z_levels = band[np.linspace(0, band.size - 1, min(n_z_band, band.size)).astype(int)]
+        xs = np.linspace(0.0, self.domain[0], n_xy)
+        ys = np.linspace(0.0, self.domain[1], n_xy)
+        X, Y, Z = np.meshgrid(xs, ys, z_levels, indexing="ij")
+        S = self._salinity_at(X, Y, Z)
+        mask = np.abs(S - self.target_salinity) < self.epsilon_salinity
+        if not np.any(mask):
+            return False
+        gx, gy, _ = self._salinity_grad_at(X[mask], Y[mask], Z[mask])
+        return bool(np.median(np.sqrt(gx ** 2 + gy ** 2)) >= self.min_band_grad)
+
     def _is_in_zone(self) -> bool:
         '''True when measured (S, tau) lie within epsilon of the target couple.'''
         return (
             abs(self.current_salinity - self.target_salinity) < self.epsilon_salinity
             and abs(self.current_turbidity - self.target_turbidity) < self.epsilon_turbidity
         )
-    
-    @abstractmethod 
+
+    @abstractmethod
     def reset(self, seed=None, options=None):
-        """ 
+        """
         Env is initialized random at each reset:
             - agent position
             - salinity field
@@ -280,13 +308,13 @@ class BaseEnv(gym.Env):
         self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.xml_file)
         self.sim.remove(*self.sim.agents)   # drop ALL xml-defined agents so the
                                             # randomly initialized one is agents[0]
-        
+
         # Add agent randomly initialized
         agent = Agent(
                 name="A",
                 Dt=self.dt,
-                initialPosition=np.array([self.np_random.uniform(0.0, self.domain[0]), 
-                                          self.np_random.uniform(0.0, self.domain[1]), 
+                initialPosition=np.array([self.np_random.uniform(0.0, self.domain[0]),
+                                          self.np_random.uniform(0.0, self.domain[1]),
                                           self.np_random.uniform(0.0, self.domain[2])]),
                 initialHeading=self.np_random.uniform(-180.0, 180.0),
                 agent_xml="config/agent.xml",
@@ -297,12 +325,13 @@ class BaseEnv(gym.Env):
         # Randomize current field
         self.randomize_currents()
 
-        # Randomize the synthetic salinity field and target, resampling both until
-        # the episode actually has a target zone (_zone_reachable). The target is
-        # a point far enough from the spawn that the agent must navigate the field
-        # gradient to reach it (target == spawn would be trivial); (S*, tau*) are
-        # sampled at that point, so the zone exists at it by construction — the
-        # grid check guards against degenerate (vanishingly small) zones.
+        # Randomize the source-based salinity field and target, resampling both
+        # until the episode actually has a target zone (_zone_reachable). The
+        # target is a point far enough from the spawn that the agent must navigate
+        # the field gradient to reach it (target == spawn would be trivial);
+        # (S*, tau*) are sampled at that point, so the zone exists at it by
+        # construction — the grid check guards against degenerate (vanishingly
+        # small) zones.
         spawn = self.sim.agents[0].pos
         min_dist = 0.3 * float(np.linalg.norm(self.domain))
         dom = np.array(self.domain, dtype=float)
@@ -315,23 +344,23 @@ class BaseEnv(gym.Env):
                 tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
             self.target_salinity = self._salinity_at(tgt[0], tgt[1], tgt[2])
             self.target_turbidity = compute_turbidity(tgt[2])
-            if self._zone_reachable():
+            if self._zone_reachable() and self._band_grad_ok():
                 break
-        else:
-            raise RuntimeError(
-                "reset(): no reachable target zone after 20 field/target resamples"
-            )
+            else:
+                raise RuntimeError(
+                    "reset(): no reachable target zone after 20 field/target resamples"
+                )
 
         # Init RL vars
         self.history = np.zeros((self.k, 2), dtype=np.float32)
         self.st_history = np.zeros((self.k, 2), dtype=np.float32)
         self.t_step = 0
-        
+
         obs, phi0 = self._build_state(self.sim.agents[0])
         self._prev_potential = phi0
         return obs, {}
-    
-    @abstractmethod 
+
+    @abstractmethod
     def step(self, action):
         # execute action
         mov = self._action_to_direction[action]
@@ -347,7 +376,7 @@ class BaseEnv(gym.Env):
              agent.pos[0] = np.clip(agent.pos[0], 0.0, self.domain[0])
              agent.pos[1] = np.clip(agent.pos[1], 0.0, self.domain[1])
              agent.pos[2] = np.clip(agent.pos[2], 0.0, self.domain[2])
-        
+
         self.t_step += 1
 
         # next state and potential (reward shaped)
@@ -366,12 +395,12 @@ class BaseEnv(gym.Env):
         return next_obs, reward, terminated, truncated, {}
 
 
-class MultiAgentBaseEnv(BaseEnv):
+class MultiAgentPlumesEnv(PlumesEnv):
     '''
-    Multi-agent version of BaseEnv: N homogeneous agents share ONE synthetic
-    Gaussian-field domain (same randomized currents + salinity field + target).
+    Multi-agent version of PlumesEnv: N homogeneous agents share ONE synthetic
+    domain (same randomized currents + source-based salinity field + target).
 
-    It reuses all of BaseEnv's synthetic-field machinery (randomize_currents,
+    It reuses all of PlumesEnv's field machinery (randomize_currents,
     randomize_salinity_field, _salinity_at, _salinity_grad_at, _zone_reachable,
     _measure, _build_action_table) and only re-implements reset/step/state for a
     swarm, exposing the PettingZoo-parallel-flattened API that
@@ -381,7 +410,7 @@ class MultiAgentBaseEnv(BaseEnv):
         step(actions (N,)) -> obs (N, 9), rewards (N,),
                               terminateds (N,), truncateds (N,), info
 
-    The per-agent LOCAL observation is exactly BaseEnv's 9-dim gradient obs
+    The per-agent LOCAL observation is exactly PlumesEnv's 9-dim gradient obs
     (no history buffer):
         [ u v w (body-frame currents) | gu gv gw (body-frame salinity gradient)
           | S - S* | tau - tau* | depth ]
@@ -410,7 +439,7 @@ class MultiAgentBaseEnv(BaseEnv):
         self.end_on_any_success = end_on_any_success
         self._success_steps_required = 1
 
-        # Per-agent LOCAL obs = BaseEnv's 9-dim gradient observation.
+        # Per-agent LOCAL obs = PlumesEnv's 9-dim gradient observation.
         local_obs_dim = self.observation_space.shape[0]
         self.local_observation_space = spaces.Box(
             -np.inf, np.inf, shape=(local_obs_dim,), dtype=np.float32)
@@ -426,7 +455,7 @@ class MultiAgentBaseEnv(BaseEnv):
 
     # ------------------------------------------------------------------ reset
     def reset(self, seed=None, options=None):
-        # Go straight to gym.Env.reset (seeds self.np_random); BaseEnv.reset is
+        # Go straight to gym.Env.reset (seeds self.np_random); PlumesEnv.reset is
         # single-agent, so we re-implement the body here reusing its field helpers.
         gym.Env.reset(self, seed=seed)
 
@@ -457,7 +486,7 @@ class MultiAgentBaseEnv(BaseEnv):
         # Randomize the salinity field and target, resampling until the episode
         # actually has a target zone (_zone_reachable). Target is far enough from
         # agent 0's spawn that the swarm must navigate the field (same rule as
-        # BaseEnv's single-agent reset).
+        # PlumesEnv's single-agent reset).
         spawn = self.sim.agents[0].pos
         min_dist = 0.3 * float(np.linalg.norm(self.domain))
         dom = np.array(self.domain, dtype=float)
@@ -470,7 +499,7 @@ class MultiAgentBaseEnv(BaseEnv):
                 tgt = self.np_random.uniform(0.0, 1.0, size=3) * dom
             self.target_salinity = self._salinity_at(tgt[0], tgt[1], tgt[2])
             self.target_turbidity = compute_turbidity(tgt[2])
-            if self._zone_reachable():
+            if self._zone_reachable() and self._band_grad_ok():
                 break
         else:
             raise RuntimeError(
@@ -565,14 +594,14 @@ class MultiAgentBaseEnv(BaseEnv):
     # ----------------------------------------------------------------- helpers
     def _is_in_zone(self, salinity, turbidity) -> bool:
         '''True when (S, tau) lie within epsilon of the target couple. Overrides
-        BaseEnv's zero-arg version (which reads single-agent shared state).'''
+        PlumesEnv's zero-arg version (which reads single-agent shared state).'''
         return (
             abs(salinity - self.target_salinity) < self.epsilon_salinity
             and abs(turbidity - self.target_turbidity) < self.epsilon_turbidity
         )
 
     def _build_local_state(self, i, action=None):
-        '''Per-agent version of BaseEnv._build_state (no shared state, no history).
+        '''Per-agent version of PlumesEnv._build_state (no shared state, no history).
         Returns (obs (9,), potential, S, tau) for agent i; `action` is accepted for
         signature parity with MultiAgentEnv but unused (the base obs has no history).'''
         agent = self.sim.agents[i]
