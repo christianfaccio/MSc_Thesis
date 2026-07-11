@@ -6,16 +6,27 @@ branch's async stepping is what makes the cores count: one run keeps
 `num_envs` worker processes busy (plus `eval_workers` during the periodic
 greedy eval).
 
+## Storage layout
+
+- `$HOME` (private, 50 GB quota): repo, venv, `runs/` — everything you can't
+  afford to lose.
+- `$CINECA_SCRATCH` (private, no quota, **purged after ~40 days of no access**):
+  the NetCDF datasets, symlinked into the repo as `data/oceananigans` by the
+  setup script. Regenerable/re-rsyncable, so purge is an inconvenience, not a
+  loss — but never point `runs/` there.
+- `$WORK` is per-project and group-readable by project collaborators; not used
+  here.
+
 ## One-time setup (login node — compute nodes have no internet)
 
 ```bash
 ssh <user>@login.leonardo.cineca.it
-git clone --recursive git@github.com:christianfaccio/MSc_Thesis.git $WORK/MSc_Thesis
-cd $WORK/MSc_Thesis
-bash hpc/leonardo_setup.sh          # uv + python 3.10 venv + CPU torch + deps + SwarmSwIM
+git clone --recursive git@github.com:christianfaccio/MSc_Thesis.git ~/MSc_Thesis
+cd ~/MSc_Thesis
+bash hpc/leonardo_setup.sh          # uv + python 3.10 venv + CPU torch + deps + SwarmSwIM + scratch symlink
 # datasets (~20 GB each), one-time:
-#   from the Mac:  rsync -avP data/oceananigans/ <user>@login.leonardo.cineca.it:$WORK/MSc_Thesis/data/oceananigans/
-#   or symlink the files already generated on Leonardo into data/oceananigans/
+#   from the Mac:  rsync -avP data/oceananigans/ <user>@login.leonardo.cineca.it:'$CINECA_SCRATCH'/oceananigans/
+#   or move the files already generated on Leonardo into $CINECA_SCRATCH/oceananigans/
 ```
 
 Then set `#SBATCH --account=...` in `hpc/train.sbatch` (budgets: `saldo -b`).
@@ -23,7 +34,7 @@ Then set `#SBATCH --account=...` in `hpc/train.sbatch` (budgets: `saldo -b`).
 ## Submitting
 
 ```bash
-cd $WORK/MSc_Thesis && mkdir -p hpc/logs
+cd ~/MSc_Thesis && mkdir -p hpc/logs
 sbatch hpc/train.sbatch src.multi_agent.ippo_oceananigans --target-mode tail --seed 1
 sbatch hpc/train.sbatch src.single_agent.ppo_oceananigans --target-mode tail --seed 1
 # smoke test first (30-min debug QoS, fast queue):
@@ -55,8 +66,8 @@ Rules of thumb: cores ≈ `num_envs + max(eval_workers, 1) − eval overlap ≈ 
 
 ```bash
 # from the Mac — TensorBoard runs + checkpoints:
-rsync -avP <user>@login.leonardo.cineca.it:$WORK/MSc_Thesis/runs/ runs/
+rsync -avP <user>@login.leonardo.cineca.it:MSc_Thesis/runs/ runs/
 # or live TensorBoard through a tunnel:
 ssh -L 6006:localhost:6006 <user>@login.leonardo.cineca.it \
-    'cd $WORK/MSc_Thesis && source .venv/bin/activate && tensorboard --logdir runs --port 6006'
+    'cd ~/MSc_Thesis && source .venv/bin/activate && tensorboard --logdir runs --port 6006'
 ```

@@ -4,15 +4,21 @@
 #
 # Usage:
 #   ssh <user>@login.leonardo.cineca.it
-#   git clone --recursive git@github.com:christianfaccio/MSc_Thesis.git $WORK/MSc_Thesis
-#   cd $WORK/MSc_Thesis && bash hpc/leonardo_setup.sh
+#   git clone --recursive git@github.com:christianfaccio/MSc_Thesis.git ~/MSc_Thesis
+#   cd ~/MSc_Thesis && bash hpc/leonardo_setup.sh
 #
-# $WORK (project space, big quota, not purged) is the right home for the repo,
-# the venv and the datasets. $SCRATCH is purged after ~40 days — fine for runs/,
-# risky for anything you can't regenerate.
+# Layout: repo + venv + runs/ live in $HOME (private, 50 GB quota — plenty for
+# code, the ~2 GB venv and checkpoints). The big NetCDF datasets live in
+# $CINECA_SCRATCH (private, no quota) and are symlinked into data/oceananigans.
+# CAVEAT: scratch files untouched for ~40 days are PURGED — datasets are
+# regenerable / re-rsyncable, but never keep runs/ there.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# Datasets on scratch, symlinked into the repo
+mkdir -p "$CINECA_SCRATCH/oceananigans" data
+ln -sfn "$CINECA_SCRATCH/oceananigans" data/oceananigans
 
 # uv (installs to ~/.local/bin)
 if ! command -v uv >/dev/null 2>&1; then
@@ -34,8 +40,10 @@ uv pip install -r requirements.txt
 
 echo
 echo "Setup done. Next:"
-echo "  1. Put the datasets under data/oceananigans/ (rsync from your Mac:"
-echo "     rsync -avP data/oceananigans/ <user>@login.leonardo.cineca.it:$PWD/data/oceananigans/"
-echo "     — or symlink the copies already generated on Leonardo)."
+echo "  1. Put the datasets in \$CINECA_SCRATCH/oceananigans (already symlinked as"
+echo "     data/oceananigans). From your Mac:"
+echo "     rsync -avP data/oceananigans/ <user>@login.leonardo.cineca.it:$CINECA_SCRATCH/oceananigans/"
+echo "     — or move the copies already generated on Leonardo there."
+echo "     NB: scratch is purged after ~40 days of no access; re-rsync if needed."
 echo "  2. Edit hpc/train.sbatch: set #SBATCH --account (see: saldo -b)."
 echo "  3. Submit:  sbatch hpc/train.sbatch src.multi_agent.ippo_oceananigans [flags...]"
