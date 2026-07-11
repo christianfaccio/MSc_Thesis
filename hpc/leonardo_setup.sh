@@ -16,6 +16,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# SwarmSwIM submodule (empty if the clone wasn't --recursive)
+git submodule update --init
+
 # Datasets on scratch, symlinked into the repo
 mkdir -p "$CINECA_SCRATCH/oceananigans" data
 ln -sfn "$CINECA_SCRATCH/oceananigans" data/oceananigans
