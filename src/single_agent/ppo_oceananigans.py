@@ -121,16 +121,52 @@ class Args:
     """the id of the environment"""
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML"""
-    netcdf_file: str = "data/oceananigans/no_buoyancy"
+    netcdf_file: str = "data/oceananigans/buoyancy_active"
     """Oceananigans NetCDF source: a directory (all *.nc), a glob, or a single file.
     Each reset draws a random file and (static mode) a random snapshot within it, so
-    every episode sees a different frozen field sampled from the whole set."""
+    every episode sees a different frozen field sampled from the whole set. Default is
+    the buoyancy-active dataset (salinity filaments -> real local minima); the passive
+    baseline lives at data/oceananigans/no_buoyancy. NOTE: epsilon_salinity / sigma_s
+    below are sized to the field's per-snapshot span — switch them together with the
+    dataset (buoyancy_active ~5 PSU: 0.15 / 1.5; no_buoyancy ~10 PSU: 0.3 / 3.0)."""
+    epsilon_salinity: float = 0.15
+    """success tolerance on |S - S*| (PSU), ~3% of the per-snapshot span so the relative
+    difficulty of the success test matches the validated no_buoyancy runs (0.3 on the
+    ~10 PSU passive span -> 0.15 on the ~4.9 PSU median buoyancy-active span, measured
+    2026-07-10 across the dataset). Also sizes the narrow shaping kernels (1.5x/5x eps)
+    and the trivial-target rejection (2x eps) in the env."""
+    epsilon_turbidity: float = 0.05
+    """success tolerance on |τ - τ*| — unchanged: τ depends only on depth and the
+    domain/turbidity model are identical across the two datasets."""
+    sigma_s: float = 1.5
+    """wide shaping-kernel width in S (PSU), ~0.3x the field span (validated rule from
+    the no_buoyancy runs: 3.0 on ~10 PSU). On the ~5 PSU buoyancy-active span 3.0 would
+    cover most of the field and flatten the far-field guidance."""
+    sigma_tau: float = 0.3
+    """wide shaping-kernel width in τ — unchanged (depth parity, see reward_func)."""
     max_cached_loaders: int = 8
     """per-env LRU cap on cached FieldLoaders (~90 MB each). Memory ≈
     num_envs · max_cached_loaders · 90 MB (12·8 ≈ 8.6 GB). Raise on big-RAM machines
     to cut file re-opens; lower if memory-constrained."""
     k: int = 12
-    """history buffer length for (action, potential) pairs"""
+    """observation history depth: last k (action direction, ΔS, Δτ) tuples appended to
+    the 9-dim sensor frame (obs = 9 + 5k values). On the buoyancy-active filament
+    fields the gradient's basin of attraction covers only ~40% of the plane
+    (2026-07-11 analysis), so a memoryless gradient-follower is insufficient — the
+    history is what enables dead-reckoned escape from filament local optima."""
+    target_mode: str = "random"
+    """'random' = target (S*, τ*) read at a uniform random field point (typical S* ->
+    the |ΔS|<ε zone covers ~10-20% of the plane at z*, large luck floor: a depth-only
+    drifting baseline scores ~0.5); 'tail' = S* from a rare tail of the salinity
+    distribution over the target's own depth plane — LOW or HIGH side drawn 50/50
+    per episode (3D rarity does NOT work: the fields are depth-stratified, so a
+    3D-rare S* can still cover much of its plane), shrinking the zone to a rare
+    filament so success requires actual navigation (2026-06-29 meeting scenario).
+    Spawn stays uniform."""
+    target_percentile: float = 5.0
+    """tail mode only: tail width in percent — S* below this percentile (low side)
+    or above 100 minus it (high side) of the salinity values on its depth plane
+    (Monte Carlo estimate, 256 plane points per reset)"""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
     max_steps: int = 1440
@@ -254,9 +290,10 @@ class Args:
     """run a deterministic (argmax) evaluation every N iterations; 0 disables.
     Cost: eval_episodes × up to max_steps env steps on one env (~worst case a couple
     of minutes per eval at 1440 steps), amortized over ~11 min of training."""
-    eval_episodes: int = 4
+    eval_episodes: int = 20
     """greedy episodes per evaluation. Fixed seeds (reused every eval) so the
-    logged charts/greedy_success_rate is comparable across the run."""
+    logged charts/greedy_success_rate is comparable across the run. 20 keeps the
+    binomial noise at ~±0.11 (4 episodes gave ±0.25 — unreadable trends)."""
 
     # Checkpointing
     save_model: bool = True
@@ -293,6 +330,12 @@ def make_raw_env(args):
         wall_penalty=args.wall_penalty,
         success_steps_required=args.success_steps_required,
         max_cached_loaders=args.max_cached_loaders,
+        epsilon_salinity=args.epsilon_salinity,
+        epsilon_turbidity=args.epsilon_turbidity,
+        sigma_s=args.sigma_s,
+        sigma_tau=args.sigma_tau,
+        target_mode=args.target_mode,
+        target_percentile=args.target_percentile,
     )
 
 

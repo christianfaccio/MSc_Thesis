@@ -39,23 +39,27 @@ class OceananigansEnv(gym.Env):
     '''
     This class represents the wrapped environment of the simulation. It builds from
     SwarmSwIM and is enclosed with Gymnasium for standardization. Training runs on
-    Oceananigans NetCDF fields, following the explicit-gradient observation design
-    of BaseEnv/PlumesEnv (no (S, τ) history buffer): the salinity gradient is
-    queried directly from the field and handed to the agent.
+    Oceananigans NetCDF fields with the explicit-gradient sensors of
+    BaseEnv/PlumesEnv PLUS a k-deep (action, ΔS, Δτ) history: on the
+    buoyancy-active filament fields the |S-S*| landscape is multimodal (the
+    gradient's basin of attraction covers only ~40% of the plane, measured
+    2026-07-11), so a memoryless gradient-follower is structurally insufficient —
+    the history is what lets the policy dead-reckon, detect a dead-end filament
+    and commit to an escape direction.
 
     ONE class serves both the single- and the multi-agent scenario; the switch is
     `n_agents` (default 1). N homogeneous agents share the same frozen/dynamic
     NetCDF field and ONE (S*, τ*) target.
 
     API — single-agent (n_agents == 1), plain Gymnasium, wrapper-compatible:
-        reset() -> obs (9,), info
-        step(action scalar) -> obs (9,), reward float, terminated bool,
+        reset() -> obs (9+5k,), info
+        step(action scalar) -> obs (9+5k,), reward float, terminated bool,
                                truncated bool, info
 
     API — multi-agent (n_agents > 1), PettingZoo-parallel flattened, as consumed
     by src/multi_agent/ippo.py and mappo.py:
-        reset() -> obs (N, 9), info
-        step(actions (N,)) -> obs (N, 9), rewards (N,),
+        reset() -> obs (N, 9+5k), info
+        step(actions (N,)) -> obs (N, 9+5k), rewards (N,),
                               terminateds (N,), truncateds (N,), info
 
     In BOTH modes info["global_state"] carries the centralized state (11·N,) for
@@ -63,12 +67,19 @@ class OceananigansEnv(gym.Env):
     ignore it. `local_observation_space` / `global_observation_space` expose the
     per-agent and centralized shapes to the trainers.
 
-    Per-agent observation (9,) — pure local-sensor + mission info, no global
+    Per-agent observation (9 + 5k,) — pure local-sensor + mission info, no global
     coordinates:
-        (3) u v w      -> body-frame current vector (m/s)
-        (3) gu gv gw   -> body-frame salinity gradient (PSU/m), gw down-positive
-        (2) S-S* τ-τ*  -> target errors in salinity and turbidity
-        (1) depth      -> agent depth (m, positive down)
+        (3)  u v w      -> body-frame current vector (m/s)
+        (3)  gu gv gw   -> body-frame salinity gradient (PSU/m), gw down-positive
+        (2)  S-S* τ-τ*  -> target errors in salinity and turbidity
+        (1)  depth      -> agent depth (m, positive down)
+        (5k) history    -> last k (dx, dy, dz, S-S*, τ-τ*) tuples, oldest first,
+                           newest last (== the current errors). The action is
+                           stored as its body-frame unit direction, and heading
+                           is fixed per episode, so the action history is a
+                           dead-reckoned displacement log — currents and depth
+                           are NOT stacked (static field: their history adds
+                           nothing over the current frame).
 
     The salinity gradient (gu, gv, gw) is the field's spatial gradient rotated into
     the agent's body frame (same rotation as the currents), so the agent is told
@@ -96,8 +107,7 @@ class OceananigansEnv(gym.Env):
           window with fields linearly interpolated across snapshots). Each touched
           file keeps a cached FieldLoader (~90 MB of interpolators, two snapshots),
           so keep the set small (~10 files is fine).
-        - k -> history buffer length (vestigial; retained for API parity, unused by
-          the gradient-based observation)
+        - k -> length of the (action, ΔS, Δτ) observation history (5k obs values)
         - n_agents -> number of agents (1 = single-agent Gym API, >1 = flattened
           PettingZoo-parallel API)
         - v_agent -> agent commanded speed (m/s)
@@ -111,6 +121,18 @@ class OceananigansEnv(gym.Env):
         - min_band_grad -> reject targets whose success band is ~flat (PSU/m)
         - end_on_any_success -> multi-agent only: end the episode on the first
           agent success (2026-06-29 meeting decision); no effect for n_agents=1
+        - target_mode -> "random" (default): (S*, τ*) read at a uniform random
+          field point — note that a typical S* makes the |ΔS|<ε zone cover
+          ~10-20% of the plane at z*, so success rates carry a large luck floor;
+          "tail": S* constrained to a tail of the salinity distribution over the
+          target's own depth plane — LOW (bottom target_percentile % of
+          S(·,·,z*)) or HIGH (top target_percentile %), drawn 50/50 per episode —
+          which shrinks the zone to a rare filament and makes the task require
+          actual navigation (2026-06-29 meeting scenario). Spawn stays uniform
+          in both modes.
+        - target_percentile -> tail mode only: tail width in percent — S* below
+          this percentile (low side) or above 100 minus it (high side) of the
+          salinity values on its depth plane (Monte Carlo estimate)
     '''
     def __init__(self,
                  xml_file: str,
@@ -131,6 +153,12 @@ class OceananigansEnv(gym.Env):
                  success_steps_required: int = 1,   # consecutive in-zone steps needed to terminate as success; >1 forces the agent to arrive AND hold (kills single-step luck crossings on turbulent fields)
                  max_cached_loaders: int = 8,       # LRU cap on cached FieldLoaders (~90 MB each) per env instance
                  end_on_any_success: bool = True,   # multi-agent: end the episode on the first success
+                 epsilon_salinity: float = 0.3,     # success tolerance on |S - S*| (PSU); size to ~3% of the field's per-snapshot span
+                 epsilon_turbidity: float = 0.05,   # success tolerance on |τ - τ*|   TODO: try with epsilon turbidity bound to meters
+                 sigma_s: float = 3.0,              # wide shaping-kernel width in S (PSU); size to ~0.3× the field span (3.0 for the ~10 PSU no_buoyancy fields, 1.5 for the ~5 PSU buoyancy_active ones)
+                 sigma_tau: float = 0.3,            # wide shaping-kernel width in τ
+                 target_mode: str = "random",       # "random" = S* at a uniform random point; "tail" = S* from the low tail of the snapshot's S distribution
+                 target_percentile: float = 5.0,    # tail mode: S* below this percentile of the field's salinity values
                  ):
         super().__init__()
 
@@ -153,6 +181,10 @@ class OceananigansEnv(gym.Env):
         self.wall_penalty = wall_penalty
         self._success_steps_required = int(success_steps_required)
         self.end_on_any_success = end_on_any_success
+        if target_mode not in ("random", "tail"):
+            raise ValueError(f"target_mode must be 'random' or 'tail', got {target_mode!r}")
+        self.target_mode = target_mode
+        self.target_percentile = float(target_percentile)
 
         self.target_salinity = 0.0
         self.target_turbidity = 0.0
@@ -161,8 +193,10 @@ class OceananigansEnv(gym.Env):
         self.current_salinity = 0.0
         self.current_turbidity = 0.0
 
-        self.epsilon_salinity = 0.3
-        self.epsilon_turbidity = 0.05   # TODO: try with epsilon turbidity bound to meters
+        self.epsilon_salinity = epsilon_salinity
+        self.epsilon_turbidity = epsilon_turbidity
+        self.sigma_s = sigma_s
+        self.sigma_tau = sigma_tau
 
         # Per-agent episode state (re-allocated in reset()).
         # Potential of the previous state, Φ(s); reward is the sparse success bonus
@@ -173,7 +207,7 @@ class OceananigansEnv(gym.Env):
         self._success = np.zeros(self.n_agents, dtype=bool)
 
         self.action_space = gym.spaces.Discrete(27)
-        obs_dim = 9
+        obs_dim = 9 + 5 * self.k
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         # Per-agent local obs (== observation_space) and centralized MAPPO state,
         # 11 per agent (see _build_global_state) — named to match the interface
@@ -232,30 +266,41 @@ class OceananigansEnv(gym.Env):
 
         return S, tau, u, v, w, gu, gv, gw
 
-    def _build_state(self, agent, action=None) -> tuple[np.ndarray, float, float, float]:
+    def _build_state(self, i, agent, action=None) -> tuple[np.ndarray, float, float, float]:
         '''
-        Returns (obs (9,), Φ(s), S, τ) for ONE agent; the caller turns the
-        proximity potential Φ = reward_func(...) into the shaped reward and uses
-        (S, τ) for the in-zone check. Does not mutate per-agent episode state.
+        Returns (obs (9+5k,), Φ(s), S, τ) for agent index `i`; the caller turns
+        the proximity potential Φ = reward_func(...) into the shaped reward and
+        uses (S, τ) for the in-zone check. When an `action` index is given (a
+        step, not a reset, and the agent is not frozen) the agent's history is
+        advanced first: the newest row becomes (action direction, S - S*, τ - τ*)
+        measured AFTER that action, so the last history row always mirrors the
+        current errors in the frame part.
 
-        Observation layout (9,):
+        Observation layout (9 + 5k,):
             (3)     -> body-frame currents (u, v, w)
             (3)     -> body-frame salinity gradient (gu, gv, gw)
             (2)     -> target errors (S - S*, τ - τ*)
             (1)     -> depth
+            (5k)    -> history, oldest->newest rows of (dx, dy, dz, S-S*, τ-τ*)
         '''
         S, tau, u, v, w, gu, gv, gw = self._measure(agent)
 
         potential = reward_func(S, tau, self.target_salinity, self.target_turbidity,
+                                sigma_s=self.sigma_s, sigma_tau=self.sigma_tau,
                                 eps_s=self.epsilon_salinity, eps_tau=self.epsilon_turbidity)
 
-        obs = np.array([
-                u, v, w,
-                gu, gv, gw,
-                S - self.target_salinity,
-                tau - self.target_turbidity,
-                agent.pos[2],
-        ], dtype=np.float32)
+        dS = S - self.target_salinity
+        dT = tau - self.target_turbidity
+        if action is not None:
+            self._hist[i] = np.roll(self._hist[i], -1, axis=0)
+            self._hist[i, -1, :3] = self._action_to_direction[action]
+            self._hist[i, -1, 3] = dS
+            self._hist[i, -1, 4] = dT
+
+        obs = np.concatenate([
+                np.array([u, v, w, gu, gv, gw, dS, dT, agent.pos[2]], dtype=np.float32),
+                self._hist[i].reshape(-1),
+        ])
         return obs, potential, S, tau
 
     def _build_global_state(self):
@@ -311,7 +356,7 @@ class OceananigansEnv(gym.Env):
             - options (dict | None) — Gymnasium passes this through wrappers; unused here.
 
         Output:
-            - obs: (9,) for n_agents == 1, (N, 9) otherwise
+            - obs: (9+5k,) for n_agents == 1, (N, 9+5k) otherwise
             - info (dict) with "global_state" (11·N,)
         '''
         super().reset(seed=seed)
@@ -388,6 +433,16 @@ class OceananigansEnv(gym.Env):
         # are read AT that point, so the success zone exists there by construction.
         # The target is ALWAYS assigned to the accepted candidate — the previous logic
         # broke out without assigning, leaving S*≈0 (unreachable).
+        # In tail mode a candidate must additionally sit in the LOW tail of the
+        # salinity distribution OVER ITS OWN DEPTH PLANE (below the
+        # target_percentile-th percentile of S(·, ·, z_sel), Monte Carlo): the τ*
+        # constraint pins the success zone to the plane at z*, so plane-rarity is
+        # what shrinks it. Rarity in the full 3D distribution does NOT work here —
+        # the fields are depth-stratified, so the 3D low tail is just "the
+        # freshest layer", within which |ΔS|<ε can cover MORE of the plane
+        # (measured 2026-07-11: 3D-tail targets gave ~14% zone vs ~8% random).
+        # A typical (random-mode) S* makes |ΔS|<ε hold on ~10-20% of the plane —
+        # a luck floor that dominates success rates.
         grad_at = loader.salinity_gradient_at
         spawn = self.sim.agents[0].pos
         spawn_S = salinity_at(spawn[0], spawn[1], spawn[2])
@@ -395,39 +450,90 @@ class OceananigansEnv(gym.Env):
         self.current_salinity = spawn_S
         self.current_turbidity = spawn_T
         min_dist = self.target_min_dist_frac * float(np.linalg.norm(self.domain))
-        # Fallback: if no candidate qualifies (extremely unlikely on these fields),
-        # keep spawn (S, τ) so the couple is at least valid and reachable.
-        self.target_salinity = spawn_S
-        self.target_turbidity = spawn_T
-        for _ in range(50):
-            x_sel = self.np_random.uniform(0.0, self.domain[0])
-            y_sel = self.np_random.uniform(0.0, self.domain[1])
-            z_sel = self.np_random.uniform(0.0, self.domain[2])
+
+        def _accept(x_sel, y_sel, z_sel, cand_S, cand_T):
+            '''Shared target checks: far enough from spawn, non-trivial, non-flat.'''
             if np.linalg.norm(np.array([x_sel, y_sel, z_sel]) - spawn) < min_dist:
-                continue
-            cand_S = salinity_at(x_sel, y_sel, z_sel)
-            cand_T = compute_turbidity(z_sel)
+                return False
             # Reject trivial targets: both S and τ already within reach of spawn.
             if (abs(cand_S - spawn_S) <= 2 * self.epsilon_salinity
                     and abs(cand_T - spawn_T) <= 2 * self.epsilon_turbidity):
-                continue
+                return False
             # Reject flat-band targets with no local directional signal.
             if self.min_band_grad > 0.0:
                 gx, gy, _ = grad_at(x_sel, y_sel, z_sel)
                 if np.hypot(gx, gy) < self.min_band_grad:
-                    continue
-            self.target_salinity = cand_S
-            self.target_turbidity = cand_T
-            break
+                    return False
+            return True
 
-        # Initialize history buffers: (action, potential) pairs and (S, τ) measurements
-        self.history = np.zeros((self.k, 2), dtype=np.float32)
-        self.st_history = np.zeros((self.k, 2), dtype=np.float32)
+        # Fallback: if no candidate qualifies (extremely unlikely on these
+        # fields), keep spawn (S, τ) so the couple is at least valid and reachable.
+        self.target_salinity = spawn_S
+        self.target_turbidity = spawn_T
+        if self.target_mode == "tail":
+            # A tail S* alone is not enough: at strongly stratified depths the
+            # plane's whole S spread is comparable to ε, so |ΔS|<ε can cover much
+            # of the plane even around a 5th-percentile S*. The plane sample gives
+            # the achieved zone fraction for free, so keep drawing depths until a
+            # tail candidate's zone is ≤ ~target_percentile% of the plane,
+            # remembering the smallest-zone candidate as the fallback.
+            # The tail SIDE is drawn 50/50 per episode: LOW (below
+            # target_percentile) or HIGH (above 100 - target_percentile), so the
+            # policy can't specialize on "rare always means fresher".
+            zone_cap = self.target_percentile / 100.0
+            low_tail = bool(self.np_random.random() < 0.5)
+            pct = self.target_percentile if low_tail else 100.0 - self.target_percentile
+            best = None  # (zone_frac_estimate, S*, τ*)
+            for _ in range(12):  # depth attempts
+                z_sel = self.np_random.uniform(0.0, self.domain[2])
+                cand_T = compute_turbidity(z_sel)
+                xy = self.np_random.uniform([0.0, 0.0], self.domain[:2], size=(256, 2))
+                svals = np.array([salinity_at(px, py, z_sel) for px, py in xy])
+                thr = float(np.percentile(svals, pct))
+                for _ in range(100):
+                    x_sel = self.np_random.uniform(0.0, self.domain[0])
+                    y_sel = self.np_random.uniform(0.0, self.domain[1])
+                    cand_S = salinity_at(x_sel, y_sel, z_sel)
+                    if (cand_S > thr) if low_tail else (cand_S < thr):
+                        continue
+                    if _accept(x_sel, y_sel, z_sel, cand_S, cand_T):
+                        zone_est = float(np.mean(np.abs(svals - cand_S)
+                                                 < self.epsilon_salinity))
+                        if best is None or zone_est < best[0]:
+                            best = (zone_est, cand_S, cand_T)
+                        break
+                if best is not None and best[0] <= zone_cap:
+                    break
+            if best is not None:
+                self.target_salinity = best[1]
+                self.target_turbidity = best[2]
+        else:
+            for _ in range(50):
+                x_sel = self.np_random.uniform(0.0, self.domain[0])
+                y_sel = self.np_random.uniform(0.0, self.domain[1])
+                z_sel = self.np_random.uniform(0.0, self.domain[2])
+                cand_S = salinity_at(x_sel, y_sel, z_sel)
+                cand_T = compute_turbidity(z_sel)
+                if _accept(x_sel, y_sel, z_sel, cand_S, cand_T):
+                    self.target_salinity = cand_S
+                    self.target_turbidity = cand_T
+                    break
+
         self.t_step = 0
+
+        # Observation history, per agent: k rows of (dx, dy, dz, S-S*, τ-τ*).
+        # Pre-filled as if the agent had been sitting still at its spawn (zero
+        # action, spawn errors) — zeros in the ΔS/Δτ columns would fake a
+        # "was at the target" signal.
+        self._hist = np.zeros((self.n_agents, self.k, 5), dtype=np.float32)
+        for i, agent in enumerate(self.sim.agents):
+            self._hist[i, :, 3] = (salinity_at(agent.pos[0], agent.pos[1], agent.pos[2])
+                                   - self.target_salinity)
+            self._hist[i, :, 4] = compute_turbidity(agent.pos[2]) - self.target_turbidity
 
         obs = np.zeros((self.n_agents, self.observation_space.shape[0]), dtype=np.float32)
         for i, agent in enumerate(self.sim.agents):
-            o, phi0, S, tau = self._build_state(agent)
+            o, phi0, S, tau = self._build_state(i, agent)
             obs[i] = o
             self._prev_potential[i] = phi0
             if i == 0:
@@ -447,9 +553,9 @@ class OceananigansEnv(gym.Env):
               discrete action indices
 
         Output (n_agents == 1):
-            - s' (9,), reward float, terminated bool, truncated bool, info
+            - s' (9+5k,), reward float, terminated bool, truncated bool, info
         Output (n_agents > 1):
-            - s' (N, 9), rewards (N,), terminateds (N,), truncateds (N,), info
+            - s' (N, 9+5k), rewards (N,), terminateds (N,), truncateds (N,), info
         In both modes info["global_state"] carries the centralized (11·N,) state.
         '''
         actions = np.atleast_1d(np.asarray(action)).astype(np.int64)
@@ -507,7 +613,10 @@ class OceananigansEnv(gym.Env):
         obs = np.zeros((self.n_agents, self.observation_space.shape[0]), dtype=np.float32)
         rewards = np.zeros(self.n_agents, dtype=np.float32)
         for i, agent in enumerate(self.sim.agents):
-            next_obs_i, phi_next, S, tau = self._build_state(agent, actions[i])
+            # Frozen agents pass action=None: their forced no-op must not keep
+            # writing history rows.
+            next_obs_i, phi_next, S, tau = self._build_state(
+                i, agent, None if self._success[i] else actions[i])
             obs[i] = next_obs_i
             if i == 0:
                 self.current_salinity = S

@@ -114,17 +114,49 @@ class Args:
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML (environment physics only; agents are created
     programmatically, any <agents> block in the XML is ignored)"""
-    netcdf_file: str = "data/oceananigans/no_buoyancy"
+    netcdf_file: str = "data/oceananigans/buoyancy_active"
     """Oceananigans NetCDF source: a directory (all *.nc), a glob, or a single file.
     Each reset draws a random file and (static mode) a random snapshot within it, so
-    every episode sees a different frozen field sampled from the whole set."""
+    every episode sees a different frozen field sampled from the whole set. Default is
+    the buoyancy-active dataset, matching ppo_oceananigans so single- vs multi-agent
+    runs are directly comparable (run 1783718789 accidentally trained buoyancy_active
+    with the no_buoyancy ε/σ sizing — double-relative-width success zone — making its
+    success rate incomparable to PPO's). NOTE: epsilon_salinity / sigma_s below are
+    sized to the field's per-snapshot span — switch them together with the dataset
+    (buoyancy_active ~5 PSU: 0.15 / 1.5; no_buoyancy ~10 PSU: 0.3 / 3.0)."""
+    epsilon_salinity: float = 0.15
+    """success tolerance on |S - S*| (PSU), ~3% of the per-snapshot field span
+    (buoyancy_active median span ~4.9 PSU, measured 2026-07-10)"""
+    epsilon_turbidity: float = 0.05
+    """success tolerance on |τ - τ*| (τ depends only on depth)"""
+    sigma_s: float = 1.5
+    """wide shaping-kernel width in S (PSU), ~0.3x the field span"""
+    sigma_tau: float = 0.3
+    """wide shaping-kernel width in τ (depth parity, see reward_func)"""
     max_cached_loaders: int = 8
     """per-env LRU cap on cached FieldLoaders (~90 MB each). Memory ≈
     (num_envs + 1 eval env) · max_cached_loaders · 90 MB (7·8 ≈ 5 GB)."""
     n_agents: int = 2
     """number of agents in the swarm (parameter-shared policy, one shared target)"""
     k: int = 12
-    """history buffer length (kept for parity; the 9-dim obs carries no history)"""
+    """observation history depth: last k (action direction, ΔS, Δτ) tuples appended to
+    the 9-dim sensor frame (obs = 9 + 5k values per agent). On the buoyancy-active
+    filament fields the gradient's basin of attraction covers only ~40% of the plane
+    (2026-07-11 analysis), so a memoryless gradient-follower is insufficient — the
+    history is what enables dead-reckoned escape from filament local optima."""
+    target_mode: str = "random"
+    """'random' = target (S*, τ*) read at a uniform random field point (typical S* ->
+    the |ΔS|<ε zone covers ~10-20% of the plane at z*, large luck floor: a depth-only
+    drifting baseline scores ~0.5 per agent); 'tail' = S* from a rare tail of the salinity
+    distribution over the target's own depth plane — LOW or HIGH side drawn 50/50
+    per episode (3D rarity does NOT work: the fields are depth-stratified, so a
+    3D-rare S* can still cover much of its plane), shrinking the zone to a rare
+    filament so success requires actual navigation (2026-06-29 meeting scenario).
+    Spawn stays uniform."""
+    target_percentile: float = 5.0
+    """tail mode only: tail width in percent — S* below this percentile (low side)
+    or above 100 minus it (high side) of the salinity values on its depth plane
+    (Monte Carlo estimate, 256 plane points per reset)"""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
     max_steps: int = 1440
@@ -211,10 +243,11 @@ class Args:
     # STOCHASTIC policy; deployment/plot_trajectories.py uses greedy argmax)
     eval_every_iterations: int = 50
     """run a deterministic (argmax) evaluation every N iterations; 0 disables"""
-    eval_episodes: int = 4
+    eval_episodes: int = 20
     """greedy episodes per evaluation. Fixed seeds (reused every eval) so the
     logged charts/greedy_success_rate is comparable across the run. Success =
-    ANY agent terminated (same success_any bar as training)."""
+    ANY agent terminated (same success_any bar as training). 20 keeps the
+    binomial noise at ~±0.11 (4 episodes gave ±0.25 — unreadable trends)."""
 
     # Checkpointing
     save_model: bool = True
@@ -256,6 +289,12 @@ def make_raw_env(args):
         success_steps_required=args.success_steps_required,
         max_cached_loaders=args.max_cached_loaders,
         end_on_any_success=args.end_on_any_success,
+        epsilon_salinity=args.epsilon_salinity,
+        epsilon_turbidity=args.epsilon_turbidity,
+        sigma_s=args.sigma_s,
+        sigma_tau=args.sigma_tau,
+        target_mode=args.target_mode,
+        target_percentile=args.target_percentile,
     )
 
 
