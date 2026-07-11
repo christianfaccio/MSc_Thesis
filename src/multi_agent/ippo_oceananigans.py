@@ -27,6 +27,7 @@ import random
 import time
 from collections import deque
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -47,7 +48,8 @@ from rich.progress import (
 from torch.utils.tensorboard import SummaryWriter
 
 from src.multi_agent.policy import IppoPolicy
-from src.envs.oceananigans import OceananigansEnv
+from src.envs.env_pool import AsyncEnvPool, SyncEnvPool
+from src.envs.oceananigans_factory import make_raw_env_from_cfg
 
 DEBUG = True
 console = Console()
@@ -201,6 +203,15 @@ class Args:
     num_envs: int = 6
     """the number of parallel environments (6 envs · 2 agents = 12 agent-streams,
     the same rollout width as ppo_oceananigans's 12 envs)"""
+    async_envs: bool = True
+    """step the parallel envs in worker processes (src/envs/env_pool.py, spawn
+    context) instead of a single-core loop. The env step is the wall-clock
+    bottleneck (~n_agents·3 ms of SwarmSwIM+scipy per env-step vs a negligible
+    policy forward), so this is a ~num_envs× rollout speedup up to the core count,
+    with IDENTICAL training semantics (same batch, same manual reset points,
+    per-env RNG unchanged). Workers build envs from the torch-free factory
+    (src/envs/oceananigans_factory.py), so each costs ~an env's memory, not a
+    torch import. --no-async-envs restores the in-process loop for debugging."""
     num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = False
@@ -248,6 +259,13 @@ class Args:
     logged charts/greedy_success_rate is comparable across the run. Success =
     ANY agent terminated (same success_any bar as training). 20 keeps the
     binomial noise at ~±0.11 (4 episodes gave ±0.25 — unreadable trends)."""
+    eval_workers: int = 4
+    """parallel worker envs for the greedy evaluation (episodes fanned out in
+    waves; greedy + fixed seeds, so the metric is identical to a sequential eval).
+    Otherwise 20 sequential episodes × up to 1440 steps serialize a large slice of
+    the wall-clock once rollouts are parallel. Each worker holds its own
+    FieldLoader cache (~90 MB per cached file). 1 = sequential (previous
+    behavior)."""
 
     # Checkpointing
     save_model: bool = True
@@ -268,65 +286,76 @@ class Args:
     """the number of iterations (computed in runtime)"""
 
 
+# Args fields forwarded to the OceananigansEnv constructor, extracted to a plain
+# dict so worker processes can unpickle the env factory without importing this
+# (torch-heavy) module — see src/envs/oceananigans_factory.py.
+ENV_CFG_KEYS = (
+    "xml_file", "netcdf_file", "k", "n_agents", "v_agent", "max_steps", "dt",
+    "domain", "frame_skip", "gamma", "success_bonus", "static_frame",
+    "min_band_grad", "target_min_dist_frac", "wall_penalty",
+    "success_steps_required", "max_cached_loaders", "end_on_any_success",
+    "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
+    "target_mode", "target_percentile",
+)
+
+
+def env_cfg(args) -> dict:
+    '''Plain-dict env configuration (picklable without this module).'''
+    return {key: getattr(args, key) for key in ENV_CFG_KEYS}
+
+
 def make_raw_env(args):
     '''One bare OceananigansEnv (n_agents=N) with the training configuration.'''
-    return OceananigansEnv(
-        xml_file=args.xml_file,
-        netcdf_file=args.netcdf_file,
-        k=args.k,
-        n_agents=args.n_agents,
-        v_agent=args.v_agent,
-        max_steps=args.max_steps,
-        dt=args.dt,
-        domain=args.domain,
-        frame_skip=args.frame_skip,
-        gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
-        success_bonus=args.success_bonus,
-        static_frame=args.static_frame,
-        min_band_grad=args.min_band_grad,
-        target_min_dist_frac=args.target_min_dist_frac,
-        wall_penalty=args.wall_penalty,
-        success_steps_required=args.success_steps_required,
-        max_cached_loaders=args.max_cached_loaders,
-        end_on_any_success=args.end_on_any_success,
-        epsilon_salinity=args.epsilon_salinity,
-        epsilon_turbidity=args.epsilon_turbidity,
-        sigma_s=args.sigma_s,
-        sigma_tau=args.sigma_tau,
-        target_mode=args.target_mode,
-        target_percentile=args.target_percentile,
-    )
+    return make_raw_env_from_cfg(env_cfg(args))
 
 
-def make_envs(args):
-    '''Build a list of `num_envs` raw multi-agent envs (no gym wrappers).'''
-    return [make_raw_env(args) for _ in range(args.num_envs)]
+def make_env_pool(args):
+    '''Pool of `num_envs` raw multi-agent envs — worker processes when
+    async_envs (the env step is the wall-clock bottleneck; the gym vector
+    wrappers can't carry the per-agent axis, hence the custom pool), else the
+    previous in-process loop behind the same API.'''
+    fns = [partial(make_raw_env_from_cfg, env_cfg(args)) for _ in range(args.num_envs)]
+    return (AsyncEnvPool if args.async_envs else SyncEnvPool)(fns)
 
 
-def greedy_eval(agent, eval_env, obs_rms, device, n_episodes, max_steps,
+def greedy_eval(agent, eval_pool, obs_rms, device, n_episodes, max_steps,
                 base_seed=1_000_000):
-    '''Deterministic (argmax) rollouts on a raw env with the current training
+    '''Deterministic (argmax) rollouts on raw envs with the current training
     obs normalization applied — the same conditions as plot_trajectories.py.
-    Fixed seeds so the metric is comparable across evaluations. Success = ANY
-    agent terminated under the TRAINING bar (env's success_steps_required).'''
+    Episodes are fanned out in waves across the eval pool's workers; greedy
+    actions + fixed per-episode seeds make the result identical to a sequential
+    eval, only parallel. Success = ANY agent terminated under the TRAINING bar
+    (env's success_steps_required).'''
     mean = obs_rms.mean
     std = np.sqrt(obs_rms.var + 1e-8)
     successes = 0
     was_training = agent.training
     agent.eval()
     with torch.no_grad():
-        for ep in range(n_episodes):
-            obs, _ = eval_env.reset(seed=base_seed + ep)
+        for wave_start in range(0, n_episodes, eval_pool.num_envs):
+            episodes = range(wave_start, min(wave_start + eval_pool.num_envs, n_episodes))
+            workers = list(range(len(episodes)))
+            results = eval_pool.reset_where(
+                workers, seeds=[base_seed + ep for ep in episodes])
+            obs = {w: res[0] for w, res in zip(workers, results)}  # each (N, local_dim)
+            active = workers
             for _ in range(max_steps):
-                norm = np.clip((np.asarray(obs) - mean) / std, -10.0, 10.0).astype(np.float32)
+                if not active:
+                    break
+                stack = np.concatenate([np.asarray(obs[w]) for w in active])  # (n_active·N, D)
+                norm = np.clip((stack - mean) / std, -10.0, 10.0).astype(np.float32)
                 logits = agent.actor(torch.tensor(norm, device=device))
                 acts = logits.argmax(dim=-1).cpu().numpy().astype(np.int64)
-                obs, _, term, trunc, _ = eval_env.step(acts)
-                if term.any():
-                    successes += 1
-                    break
-                if np.logical_or(term, trunc).all():
-                    break
+                acts = acts.reshape(len(active), -1)  # (n_active, N)
+                results = eval_pool.step_where(active, list(acts))
+                still_active = []
+                for w, (o, _, term, trunc, _) in zip(active, results):
+                    obs[w] = o
+                    if term.any():
+                        successes += 1
+                    elif not np.logical_or(term, trunc).all():
+                        still_active.append(w)
+                active = still_active
     if was_training:
         agent.train()
     return successes / n_episodes
@@ -374,14 +403,25 @@ def train(args):
     # env setup
     if DEBUG:
         print("--- Setting up the environments...")
-    envs = make_envs(args)
+    envs = make_env_pool(args)
     n_agents = args.n_agents
-    local_dim = int(np.array(envs[0].local_observation_space.shape).prod())
-    n_actions = envs[0].action_space.n
+    local_dim = int(np.array(envs.attr(0, "local_observation_space").shape).prod())
+    n_actions = envs.attr(0, "action_space").n
 
-    # Dedicated raw env for the periodic greedy evaluation; created once so its
-    # FieldLoader LRU cache persists across evals.
-    eval_env = make_raw_env(args) if args.eval_every_iterations > 0 else None
+    # Dedicated raw-env pool for the periodic greedy evaluation; created once so
+    # each worker's FieldLoader LRU cache persists across evals. The eval seeds
+    # are fixed, so each worker only ever touches its own episodes' files — cap
+    # its loader cache accordingly instead of args.max_cached_loaders.
+    eval_pool = None
+    if args.eval_every_iterations > 0:
+        n_workers = max(1, min(args.eval_workers, args.eval_episodes))
+        eval_cfg = env_cfg(args)
+        episodes_per_worker = -(-args.eval_episodes // n_workers)  # ceil
+        eval_cfg["max_cached_loaders"] = min(args.max_cached_loaders,
+                                             max(2, episodes_per_worker))
+        eval_fns = [partial(make_raw_env_from_cfg, eval_cfg) for _ in range(n_workers)]
+        pool_cls = AsyncEnvPool if (args.async_envs and n_workers > 1) else SyncEnvPool
+        eval_pool = pool_cls(eval_fns)
 
     # Parameter-shared actor-critic; critic uses the LOCAL obs (IPPO is decentralized).
     agent = IppoPolicy(local_dim, n_actions).to(device)
@@ -443,10 +483,9 @@ def train(args):
         print("--- GAME START ---")
     start_time = time.time()
 
-    # Reset every env; stack to (num_envs, n_agents, local_dim).
+    # Reset every env (in parallel); stack to (num_envs, n_agents, local_dim).
     raw_obs = np.zeros((args.num_envs, n_agents, local_dim), dtype=np.float32)
-    for e, env in enumerate(envs):
-        o, _ = env.reset(seed=args.seed + e)
+    for e, (o, _) in enumerate(envs.reset(seeds=[args.seed + e for e in range(args.num_envs)])):
         raw_obs[e] = o
     next_obs = torch.tensor(normalize_obs(raw_obs)).to(device)
     next_done = torch.zeros((args.num_envs, n_agents)).to(device)
@@ -532,8 +571,10 @@ def train(args):
             # truncated) and fold γ·V(final_obs) into their normalized reward below.
             trunc_flags = np.zeros((args.num_envs, n_agents), dtype=bool)
             final_obs = np.zeros((args.num_envs, n_agents, local_dim), dtype=np.float32)
-            for e, env in enumerate(envs):
-                o, r, term, trunc, _ = env.step(act_np[e])
+            # All envs step concurrently in their workers; the loop below only
+            # unpacks results (and issues the occasional per-env reset).
+            step_results = envs.step(list(act_np))
+            for e, (o, r, term, trunc, _) in enumerate(step_results):
                 d = np.logical_or(term, trunc)
                 raw_next_obs[e] = o
                 raw_reward[e] = r
@@ -556,7 +597,7 @@ def train(args):
                     writer.add_scalar("charts/episode_success", succeeded, global_step)
                     env_ep_return[e] = 0.0
                     env_ep_len[e] = 0
-                    o, _ = env.reset()
+                    o, _ = envs.reset_at(e)
                     raw_next_obs[e] = o
 
             norm_reward = normalize_reward(raw_reward, done_after)
@@ -694,9 +735,9 @@ def train(args):
         # Periodic deterministic evaluation — charts/success_rate above tracks the
         # STOCHASTIC policy; greedy argmax is what plot_trajectories.py and
         # deployment use (2026-07-09 diagnosis).
-        if eval_env is not None and (iteration % args.eval_every_iterations == 0
+        if eval_pool is not None and (iteration % args.eval_every_iterations == 0
                                      or iteration == args.num_iterations):
-            greedy_sr = greedy_eval(agent, eval_env, obs_rms, device,
+            greedy_sr = greedy_eval(agent, eval_pool, obs_rms, device,
                                     args.eval_episodes, args.max_steps)
             writer.add_scalar("charts/greedy_success_rate", greedy_sr, global_step)
             console.log(f"iter {iteration}: greedy eval success "
@@ -737,10 +778,9 @@ def train(args):
             console.log(f"Saved checkpoint: {ckpt_path}")
 
     progress.stop()
-    for env in envs:
-        env.close()
-    if eval_env is not None:
-        eval_env.close()
+    envs.close()
+    if eval_pool is not None:
+        eval_pool.close()
     writer.close()
 
 
