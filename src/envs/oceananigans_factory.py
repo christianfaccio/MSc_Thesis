@@ -45,6 +45,7 @@ def make_raw_env_from_cfg(cfg: dict) -> OceananigansEnv:
         sigma_tau=cfg["sigma_tau"],
         target_mode=cfg["target_mode"],
         target_percentile=cfg["target_percentile"],
+        reward_potential=cfg.get("reward_potential", "error"),
     )
 
 

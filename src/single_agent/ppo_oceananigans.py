@@ -144,6 +144,13 @@ class Args:
     """tail mode only: tail width in percent — S* below this percentile (low side)
     or above 100 minus it (high side) of the salinity values on its depth plane
     (Monte Carlo estimate, 256 plane points per reset)"""
+    reward_potential: str = "error"
+    """shaping potential Φ: 'error' = Gaussian over the (ΔS, Δτ) measurement error
+    (agent-sensible, but every filament with S ≈ S* is a reward local optimum);
+    'distance' = 1 − d/diag with d the distance to the nearest success-zone cell
+    of the episode's snapshot — monotone toward the zone, NO local optima.
+    Training-time privileged info: feeds only the reward, never the observation;
+    potential-based shaping keeps the optimal policy identical (Ng et al. 1999)."""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
     max_steps: int = 1440
@@ -313,6 +320,7 @@ ENV_CFG_KEYS = (
     "target_min_dist_frac", "wall_penalty", "success_steps_required",
     "max_cached_loaders", "epsilon_salinity", "epsilon_turbidity",
     "sigma_s", "sigma_tau", "target_mode", "target_percentile",
+    "reward_potential",
 )
 
 

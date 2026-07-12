@@ -152,6 +152,14 @@ class Args:
     over the target's own depth plane — see ippo_oceananigans.py"""
     target_percentile: float = 5.0
     """tail mode only: tail width in percent"""
+    reward_potential: str = "error"
+    """shaping potential Φ: 'error' = Gaussian over the (ΔS, Δτ) measurement error
+    (agent-sensible, but every filament with S ≈ S* is a reward local optimum —
+    the ~0.27-0.35 tail-mode plateau); 'distance' = 1 − d/diag with d the distance
+    to the nearest success-zone cell of the episode's snapshot — monotone toward
+    the zone, NO local optima. Training-time privileged info (same CTDE pattern as
+    the centralized critic): feeds only the reward, never the observation, and
+    potential-based shaping keeps the optimal policy identical (Ng et al. 1999)."""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
     max_steps: int = 1440
@@ -262,7 +270,7 @@ ENV_CFG_KEYS = (
     "min_band_grad", "target_min_dist_frac", "wall_penalty",
     "success_steps_required", "max_cached_loaders", "end_on_any_success",
     "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
-    "target_mode", "target_percentile",
+    "target_mode", "target_percentile", "reward_potential",
 )
 
 

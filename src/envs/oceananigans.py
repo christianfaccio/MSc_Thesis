@@ -6,6 +6,7 @@ from pathlib import Path
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+from scipy.spatial import cKDTree
 from SwarmSwIM import Simulator, Agent
 from src.models.reward import reward_func
 import itertools
@@ -133,6 +134,18 @@ class OceananigansEnv(gym.Env):
         - target_percentile -> tail mode only: tail width in percent — S* below
           this percentile (low side) or above 100 minus it (high side) of the
           salinity values on its depth plane (Monte Carlo estimate)
+        - reward_potential -> shaping potential Φ. "error" (default): Gaussian
+          over the (ΔS, Δτ) measurement error — agent-sensible, but on the
+          turbulent fields every filament whose S locally approaches S* is a Φ
+          ridge, i.e. a reward local optimum (measured 2026-07-11: gradient
+          basin ~42% of the plane on buoyancy_active). "distance": Φ = 1 −
+          d/diag with d the distance to the nearest success-zone grid cell of
+          the episode's snapshot — monotone toward the zone, so the shaped
+          reward has NO local optima. Training-time privileged information
+          (like the MAPPO critic's global state): it enters only the reward,
+          never the observation; success test and execution are unchanged, and
+          potential-based shaping keeps the optimal policy identical (Ng et
+          al. 1999).
     '''
     def __init__(self,
                  xml_file: str,
@@ -159,6 +172,7 @@ class OceananigansEnv(gym.Env):
                  sigma_tau: float = 0.3,            # wide shaping-kernel width in τ
                  target_mode: str = "random",       # "random" = S* at a uniform random point; "tail" = S* from the low tail of the snapshot's S distribution
                  target_percentile: float = 5.0,    # tail mode: S* below this percentile of the field's salinity values
+                 reward_potential: str = "error",   # "error" = Φ over measurement error (has filament local optima); "distance" = Φ over physical distance to the success zone (monotone, training-time privileged)
                  ):
         super().__init__()
 
@@ -185,6 +199,14 @@ class OceananigansEnv(gym.Env):
             raise ValueError(f"target_mode must be 'random' or 'tail', got {target_mode!r}")
         self.target_mode = target_mode
         self.target_percentile = float(target_percentile)
+        if reward_potential not in ("error", "distance"):
+            raise ValueError(
+                f"reward_potential must be 'error' or 'distance', got {reward_potential!r}")
+        self.reward_potential = reward_potential
+        # Distance-mode zone index, rebuilt each reset: cKDTree over the grid
+        # cells satisfying both success tests (agent-frame coords, z positive down).
+        self._zone_tree = None
+        self._domain_diag = float(np.linalg.norm(self.domain))
 
         self.target_salinity = 0.0
         self.target_turbidity = 0.0
@@ -285,9 +307,7 @@ class OceananigansEnv(gym.Env):
         '''
         S, tau, u, v, w, gu, gv, gw = self._measure(agent)
 
-        potential = reward_func(S, tau, self.target_salinity, self.target_turbidity,
-                                sigma_s=self.sigma_s, sigma_tau=self.sigma_tau,
-                                eps_s=self.epsilon_salinity, eps_tau=self.epsilon_turbidity)
+        potential = self._potential_at(agent, S, tau)
 
         dS = S - self.target_salinity
         dT = tau - self.target_turbidity
@@ -333,6 +353,66 @@ class OceananigansEnv(gym.Env):
                           o[3], o[4], o[5],              # gu gv gw
                           agent.pos[0], agent.pos[1], agent.pos[2]])
         return np.array(parts, dtype=np.float32)
+
+    def _build_zone_index(self, loader):
+        '''Distance-potential support: KD-tree over every grid cell of the
+        episode's snapshot that satisfies BOTH success tests (|S-S*|<ε_S and
+        |τ-τ*|<ε_τ). Reads the raw NetCDF snapshot (vectorized, ~6 MB) instead
+        of thousands of interpolator calls. Points are stored in agent-frame
+        coordinates (z positive down). In dynamic mode the zone is built from
+        the window-START snapshot and NOT rebuilt as the field evolves — an
+        accepted approximation while training is static-first.
+
+        This is TRAINING-TIME privileged information (the simulator knows the
+        whole field); it feeds only the reward, never the observation, so
+        policy invariance (Ng et al. 1999) and decentralized execution hold.
+        '''
+        tidx = loader.time_index if loader.time_index is not None else loader.window_start
+        S3d = loader.ds["S"].isel(time=int(tidx)).values.astype(float)  # (z, y, x)
+        z_down = -loader.z  # loader grid z is negative-up; agents use positive-down
+        tau_levels = compute_turbidity(z_down)
+        z_ok = np.abs(tau_levels - self.target_turbidity) < self.epsilon_turbidity
+        mask = (np.abs(S3d - self.target_salinity) < self.epsilon_salinity) \
+            & z_ok[:, None, None]
+        iz, iy, ix = np.nonzero(mask)
+        if iz.size == 0:
+            # (S*, τ*) were read AT a field point, so this only happens through
+            # interpolation-vs-cell mismatch at very tight ε: fall back to the
+            # single grid cell closest to the target couple (τ band first).
+            err = np.abs(S3d - self.target_salinity) \
+                + np.where(z_ok, 0.0, np.inf)[:, None, None]
+            if not np.isfinite(err).any():
+                err = np.abs(S3d - self.target_salinity)
+            iz, iy, ix = (idx.reshape(1) for idx in
+                          np.unravel_index(np.argmin(err), S3d.shape))
+        elif iz.size > 200_000:
+            # Grid-spacing-level distance error from subsampling is negligible;
+            # keeps tree build/query costs bounded on huge (random-mode) zones.
+            keep = self.np_random.choice(iz.size, size=200_000, replace=False)
+            iz, iy, ix = iz[keep], iy[keep], ix[keep]
+        pts = np.column_stack((loader.x[ix], loader.y[iy], z_down[iz]))
+        self._zone_tree = cKDTree(pts)
+
+    def _potential_at(self, agent, S, tau) -> float:
+        '''Shaping potential Φ(s) for one agent — the reward_potential switch.
+        "error":    Gaussian over the measurement error (agent-sensible, but the
+                    turbulent field folds it into filament local optima).
+        "distance": 10·(1 − d/diag), d = distance to the nearest success-zone
+                    cell — monotone toward the zone, no local optima by
+                    construction (linear, not exponential: an exp(−d/σ)
+                    potential saturates far from the zone and would recreate a
+                    flat far field). The ×10 keeps the per-step shaping term
+                    from vanishing next to the +10 success bonus once the
+                    reward normalizer rescales by the return std.
+        Both are functions of the true state only, so the γΦ(s')−Φ(s) shaping
+        telescopes identically and the optimal policy is unchanged.'''
+        if self.reward_potential == "distance":
+            d, _ = self._zone_tree.query(
+                (agent.pos[0], agent.pos[1], agent.pos[2]))
+            return 10.0 * (1.0 - float(d) / self._domain_diag)
+        return reward_func(S, tau, self.target_salinity, self.target_turbidity,
+                           sigma_s=self.sigma_s, sigma_tau=self.sigma_tau,
+                           eps_s=self.epsilon_salinity, eps_tau=self.epsilon_turbidity)
 
     def _is_in_zone(self, salinity, turbidity) -> bool:
         '''True when the given (S, τ) lie within epsilon of the target couple.'''
@@ -518,6 +598,11 @@ class OceananigansEnv(gym.Env):
                     self.target_salinity = cand_S
                     self.target_turbidity = cand_T
                     break
+
+        # Distance potential: index the success zone of THIS episode's field
+        # (after the target is final, before the first Φ evaluation below).
+        if self.reward_potential == "distance":
+            self._build_zone_index(loader)
 
         self.t_step = 0
 
