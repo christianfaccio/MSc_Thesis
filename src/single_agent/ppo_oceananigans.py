@@ -7,6 +7,7 @@ import random
 import time
 from collections import deque
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import gymnasium as gym
@@ -23,7 +24,11 @@ from rich.progress import (
 from torch.utils.tensorboard import SummaryWriter
 
 from src.single_agent.policy import PpoPolicy
-from src.envs.oceananigans import OceananigansEnv
+from src.envs.env_pool import AsyncEnvPool, SyncEnvPool
+from src.envs.oceananigans_factory import (
+    make_raw_env_from_cfg,
+    make_wrapped_single_env_from_cfg,
+)
 
 DEBUG = True
 console = Console()
@@ -31,70 +36,42 @@ STATS_WINDOW = 100
 
 
 # --- Normalization-state checkpoint helpers -------------------------------------
-# Inlined (rather than imported from src.single_agent.ppo) so this trainer doesn't
-# pull in SingleAgentEnv, which is unrelated to the synthetic plume scenario.
-def _find_norm_obs(env):
-    while hasattr(env, "env"):
-        if isinstance(env, gym.wrappers.NormalizeObservation):
-            return env
-        env = env.env
-    return None
-
-
-def _find_norm_reward(env):
-    while hasattr(env, "env"):
-        if isinstance(env, gym.wrappers.NormalizeReward):
-            return env
-        env = env.env
-    return None
-
-
+# Implemented through the vector-env get_attr/set_attr API (which resolves the
+# attribute through each env's wrapper stack), NOT by walking envs.envs: with
+# AsyncVectorEnv the per-env wrappers live in worker processes and envs.envs
+# does not exist. get_attr/set_attr work identically on SyncVectorEnv.
 def get_obs_rms_state(envs):
-    states = []
-    for env in envs.envs:
-        norm = _find_norm_obs(env)
-        if norm is None:
-            continue
-        states.append({
-            "mean": norm.obs_rms.mean.copy(),
-            "var": norm.obs_rms.var.copy(),
-            "count": float(norm.obs_rms.count),
-        })
-    return states
+    return [{
+        "mean": np.asarray(rms.mean).copy(),
+        "var": np.asarray(rms.var).copy(),
+        "count": float(rms.count),
+    } for rms in envs.get_attr("obs_rms")]
 
 
 def set_obs_rms_state(envs, states):
-    for env, state in zip(envs.envs, states):
-        norm = _find_norm_obs(env)
-        if norm is None:
-            continue
-        norm.obs_rms.mean = state["mean"].copy()
-        norm.obs_rms.var = state["var"].copy()
-        norm.obs_rms.count = state["count"]
+    rms_objs = list(envs.get_attr("obs_rms"))
+    for rms, state in zip(rms_objs, states):
+        rms.mean = np.asarray(state["mean"]).copy()
+        rms.var = np.asarray(state["var"]).copy()
+        rms.count = state["count"]
+    envs.set_attr("obs_rms", rms_objs)
 
 
 def get_return_rms_state(envs):
-    states = []
-    for env in envs.envs:
-        norm = _find_norm_reward(env)
-        if norm is None:
-            continue
-        states.append({
-            "mean": float(norm.return_rms.mean),
-            "var": float(norm.return_rms.var),
-            "count": float(norm.return_rms.count),
-        })
-    return states
+    return [{
+        "mean": float(rms.mean),
+        "var": float(rms.var),
+        "count": float(rms.count),
+    } for rms in envs.get_attr("return_rms")]
 
 
 def set_return_rms_state(envs, states):
-    for env, state in zip(envs.envs, states):
-        norm = _find_norm_reward(env)
-        if norm is None:
-            continue
-        norm.return_rms.mean = np.array(state["mean"])
-        norm.return_rms.var = np.array(state["var"])
-        norm.return_rms.count = state["count"]
+    rms_objs = list(envs.get_attr("return_rms"))
+    for rms, state in zip(rms_objs, states):
+        rms.mean = np.array(state["mean"])
+        rms.var = np.array(state["var"])
+        rms.count = state["count"]
+    envs.set_attr("return_rms", rms_objs)
 
 
 @dataclass
@@ -167,6 +144,13 @@ class Args:
     """tail mode only: tail width in percent — S* below this percentile (low side)
     or above 100 minus it (high side) of the salinity values on its depth plane
     (Monte Carlo estimate, 256 plane points per reset)"""
+    reward_potential: str = "error"
+    """shaping potential Φ: 'error' = Gaussian over the (ΔS, Δτ) measurement error
+    (agent-sensible, but every filament with S ≈ S* is a reward local optimum);
+    'distance' = 1 − d/diag with d the distance to the nearest success-zone cell
+    of the episode's snapshot — monotone toward the zone, NO local optima.
+    Training-time privileged info: feeds only the reward, never the observation;
+    potential-based shaping keeps the optimal policy identical (Ng et al. 1999)."""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
     max_steps: int = 1440
@@ -221,6 +205,15 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 12
     """the number of parallel environments"""
+    async_envs: bool = True
+    """step the parallel envs in worker processes (AsyncVectorEnv, spawn context)
+    instead of a single-core loop. The env step is the wall-clock bottleneck
+    (~3 ms of SwarmSwIM+scipy per env-step vs a negligible policy forward), so this
+    is a ~num_envs× rollout speedup up to the core count, with IDENTICAL training
+    semantics (same batch, same autoreset mode, per-env RNG unchanged). Workers
+    build envs from the torch-free factory (src/envs/oceananigans_factory.py), so
+    each costs ~an env's memory, not a torch import. --no-async-envs restores the
+    single-process SyncVectorEnv for debugging."""
     num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = False
@@ -294,6 +287,13 @@ class Args:
     """greedy episodes per evaluation. Fixed seeds (reused every eval) so the
     logged charts/greedy_success_rate is comparable across the run. 20 keeps the
     binomial noise at ~±0.11 (4 episodes gave ±0.25 — unreadable trends)."""
+    eval_workers: int = 4
+    """parallel worker envs for the greedy evaluation (episodes fanned out in
+    waves; greedy + fixed seeds, so the metric is identical to a sequential eval).
+    20 sequential episodes × up to 1440 steps would otherwise serialize ~half the
+    wall-clock of the 50 (parallel) training iterations between evals. Each worker
+    holds its own FieldLoader cache (~90 MB per cached file), so keep this modest
+    on small-RAM machines. 1 = sequential (previous behavior)."""
 
     # Checkpointing
     save_model: bool = True
@@ -311,47 +311,27 @@ class Args:
     num_iterations: int = 0
 
 
+# Args fields forwarded to the OceananigansEnv constructor, extracted to a plain
+# dict so worker processes can unpickle the env factory without importing this
+# (torch-heavy) module — see src/envs/oceananigans_factory.py.
+ENV_CFG_KEYS = (
+    "xml_file", "netcdf_file", "k", "v_agent", "max_steps", "dt", "domain",
+    "frame_skip", "gamma", "success_bonus", "static_frame", "min_band_grad",
+    "target_min_dist_frac", "wall_penalty", "success_steps_required",
+    "max_cached_loaders", "epsilon_salinity", "epsilon_turbidity",
+    "sigma_s", "sigma_tau", "target_mode", "target_percentile",
+    "reward_potential",
+)
+
+
+def env_cfg(args) -> dict:
+    """Plain-dict env configuration (picklable without this module)."""
+    return {key: getattr(args, key) for key in ENV_CFG_KEYS}
+
+
 def make_raw_env(args):
     """Bare OceananigansEnv (n_agents=1) with the training configuration (no gym wrappers)."""
-    return OceananigansEnv(
-        xml_file=args.xml_file,
-        netcdf_file=args.netcdf_file,
-        k=args.k,
-        v_agent=args.v_agent,
-        max_steps=args.max_steps,
-        dt=args.dt,
-        domain=args.domain,
-        frame_skip=args.frame_skip,
-        gamma=args.gamma,  # MUST match the trainer's γ for shaping invariance
-        success_bonus=args.success_bonus,
-        static_frame=args.static_frame,
-        min_band_grad=args.min_band_grad,
-        target_min_dist_frac=args.target_min_dist_frac,
-        wall_penalty=args.wall_penalty,
-        success_steps_required=args.success_steps_required,
-        max_cached_loaders=args.max_cached_loaders,
-        epsilon_salinity=args.epsilon_salinity,
-        epsilon_turbidity=args.epsilon_turbidity,
-        sigma_s=args.sigma_s,
-        sigma_tau=args.sigma_tau,
-        target_mode=args.target_mode,
-        target_percentile=args.target_percentile,
-    )
-
-
-def make_env(args):
-    def thunk():
-        env = make_raw_env(args)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = gym.wrappers.NormalizeObservation(env)
-        env = gym.wrappers.TransformObservation(
-            env, lambda obs: np.clip(obs, -10.0, 10.0), env.observation_space
-        )
-        env = gym.wrappers.NormalizeReward(env, gamma=args.gamma)
-        env = gym.wrappers.TransformReward(env, lambda r: float(np.clip(r, -10.0, 10.0)))
-        return env
-
-    return thunk
+    return make_raw_env_from_cfg(env_cfg(args))
 
 
 def combine_obs_rms(states):
@@ -364,29 +344,42 @@ def combine_obs_rms(states):
     return mean, var
 
 
-def greedy_eval(agent, eval_env, obs_rms_states, device, n_episodes, max_steps,
+def greedy_eval(agent, eval_pool, obs_rms_states, device, n_episodes, max_steps,
                 base_seed=1_000_000):
-    """Deterministic (argmax) rollouts on a raw env with the current training
+    """Deterministic (argmax) rollouts on raw envs with the current training
     obs normalization applied — the same conditions as plot_trajectories.py.
-    Fixed seeds so the metric is comparable across evaluations. Returns the
-    success rate under the TRAINING bar (env's success_steps_required)."""
+    Episodes are fanned out in waves across the eval pool's workers; greedy
+    actions + fixed per-episode seeds make the result identical to a sequential
+    eval, only parallel. Returns the success rate under the TRAINING bar
+    (env's success_steps_required)."""
     mean, var = combine_obs_rms(obs_rms_states)
     successes = 0
     was_training = agent.training
     agent.eval()
     with torch.no_grad():
-        for ep in range(n_episodes):
-            obs, _ = eval_env.reset(seed=base_seed + ep)
+        for wave_start in range(0, n_episodes, eval_pool.num_envs):
+            episodes = range(wave_start, min(wave_start + eval_pool.num_envs, n_episodes))
+            workers = list(range(len(episodes)))
+            results = eval_pool.reset_where(
+                workers, seeds=[base_seed + ep for ep in episodes])
+            obs = {w: res[0] for w, res in zip(workers, results)}
+            active = workers
             for _ in range(max_steps):
-                norm = np.clip((np.asarray(obs) - mean) / np.sqrt(var + 1e-8),
+                if not active:
+                    break
+                stack = np.stack([np.asarray(obs[w]) for w in active])
+                norm = np.clip((stack - mean) / np.sqrt(var + 1e-8),
                                -10.0, 10.0).astype(np.float32)
-                logits = agent.actor(torch.tensor(norm, device=device).unsqueeze(0))
-                obs, _, term, trunc, _ = eval_env.step(int(logits.argmax(dim=-1)[0]))
-                if term:
-                    successes += 1
-                    break
-                if trunc:
-                    break
+                acts = agent.actor(torch.tensor(norm, device=device)).argmax(dim=-1).cpu().numpy()
+                results = eval_pool.step_where(active, [int(a) for a in acts])
+                still_active = []
+                for w, (o, _, term, trunc, _) in zip(active, results):
+                    obs[w] = o
+                    if term:
+                        successes += 1
+                    elif not trunc:
+                        still_active.append(w)
+                active = still_active
     if was_training:
         agent.train()
     return successes / n_episodes
@@ -430,16 +423,41 @@ def train(args):
     # NEXT_STEP mode would instead hand back the old episode's final obs, pair it
     # with an ignored action and a 0 reward on the following step, polluting the
     # on-policy batch with one bogus transition per episode.
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args) for _ in range(args.num_envs)],
-        autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
-    )
+    # Async vs sync only changes WHERE envs step (worker processes vs this one):
+    # same wrapper stack, same autoreset mode, same per-env seeding. The factory
+    # partials pickle by reference to the torch-free factory module, so spawn
+    # workers never import this module (or torch).
+    cfg = env_cfg(args)
+    env_fns = [partial(make_wrapped_single_env_from_cfg, cfg)
+               for _ in range(args.num_envs)]
+    if args.async_envs:
+        envs = gym.vector.AsyncVectorEnv(
+            env_fns,
+            autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
+            context="spawn",  # fork is unsafe on macOS and with threaded parents
+        )
+    else:
+        envs = gym.vector.SyncVectorEnv(
+            env_fns,
+            autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
+        )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), \
         "only discrete action space is supported"
 
-    # Dedicated raw env (no wrappers) for the periodic greedy evaluation; created
-    # once so its FieldLoader LRU cache persists across evals.
-    eval_env = make_raw_env(args) if args.eval_every_iterations > 0 else None
+    # Dedicated raw-env pool (no wrappers) for the periodic greedy evaluation;
+    # created once so each worker's FieldLoader LRU cache persists across evals.
+    # The eval seeds are fixed, so each worker only ever touches its own episodes'
+    # files — cap its loader cache accordingly instead of args.max_cached_loaders.
+    eval_pool = None
+    if args.eval_every_iterations > 0:
+        n_workers = max(1, min(args.eval_workers, args.eval_episodes))
+        eval_cfg = dict(cfg)
+        episodes_per_worker = -(-args.eval_episodes // n_workers)  # ceil
+        eval_cfg["max_cached_loaders"] = min(args.max_cached_loaders,
+                                             max(2, episodes_per_worker))
+        eval_fns = [partial(make_raw_env_from_cfg, eval_cfg) for _ in range(n_workers)]
+        pool_cls = AsyncEnvPool if (args.async_envs and n_workers > 1) else SyncEnvPool
+        eval_pool = pool_cls(eval_fns)
 
     agent = PpoPolicy(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -642,9 +660,9 @@ def train(args):
         # Periodic deterministic evaluation — charts/success_rate above tracks the
         # STOCHASTIC policy, which can score ~0.5 by diffusion alone (2026-07-09
         # diagnosis); greedy argmax is what plot_trajectories.py and deployment use.
-        if eval_env is not None and (iteration % args.eval_every_iterations == 0
-                                     or iteration == args.num_iterations):
-            greedy_sr = greedy_eval(agent, eval_env, get_obs_rms_state(envs), device,
+        if eval_pool is not None and (iteration % args.eval_every_iterations == 0
+                                      or iteration == args.num_iterations):
+            greedy_sr = greedy_eval(agent, eval_pool, get_obs_rms_state(envs), device,
                                     args.eval_episodes, args.max_steps)
             writer.add_scalar("charts/greedy_success_rate", greedy_sr, global_step)
             console.log(f"iter {iteration}: greedy eval success "
@@ -682,8 +700,8 @@ def train(args):
 
     progress.stop()
     envs.close()
-    if eval_env is not None:
-        eval_env.close()
+    if eval_pool is not None:
+        eval_pool.close()
     writer.close()
 
 
