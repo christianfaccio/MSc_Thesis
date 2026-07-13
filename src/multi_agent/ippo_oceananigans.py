@@ -142,7 +142,7 @@ class Args:
     """number of agents in the swarm (parameter-shared policy, one shared target)"""
     k: int = 12
     """observation history depth: last k (action direction, ΔS, Δτ) tuples appended to
-    the 9-dim sensor frame (obs = 9 + 5k values per agent). On the buoyancy-active
+    the 12-dim sensor frame (obs = 12 + 5k values per agent; incl. dead-reckoned displacement from spawn). On the buoyancy-active
     filament fields the gradient's basin of attraction covers only ~40% of the plane
     (2026-07-11 analysis), so a memoryless gradient-follower is insufficient — the
     history is what enables dead-reckoned escape from filament local optima."""

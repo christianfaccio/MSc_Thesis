@@ -145,7 +145,7 @@ class Args:
     """number of agents in the swarm (parameter-shared policy, one shared target)"""
     k: int = 12
     """observation history depth: last k (action direction, ΔS, Δτ) tuples appended to
-    the 9-dim sensor frame (obs = 9 + 5k values per agent)"""
+    the 12-dim sensor frame (obs = 12 + 5k values per agent; incl. dead-reckoned displacement from spawn)"""
     target_mode: str = "random"
     """'random' = target (S*, τ*) read at a uniform random field point; 'tail' = S*
     from a rare tail (LOW/HIGH side 50/50 per episode) of the salinity distribution

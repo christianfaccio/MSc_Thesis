@@ -127,7 +127,7 @@ class Args:
     to cut file re-opens; lower if memory-constrained."""
     k: int = 12
     """observation history depth: last k (action direction, ΔS, Δτ) tuples appended to
-    the 9-dim sensor frame (obs = 9 + 5k values). On the buoyancy-active filament
+    the 12-dim sensor frame (obs = 12 + 5k values; incl. dead-reckoned displacement from spawn). On the buoyancy-active filament
     fields the gradient's basin of attraction covers only ~40% of the plane
     (2026-07-11 analysis), so a memoryless gradient-follower is insufficient — the
     history is what enables dead-reckoned escape from filament local optima."""

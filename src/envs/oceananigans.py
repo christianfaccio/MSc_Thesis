@@ -53,14 +53,14 @@ class OceananigansEnv(gym.Env):
     NetCDF field and ONE (S*, τ*) target.
 
     API — single-agent (n_agents == 1), plain Gymnasium, wrapper-compatible:
-        reset() -> obs (9+5k,), info
-        step(action scalar) -> obs (9+5k,), reward float, terminated bool,
+        reset() -> obs (12+5k,), info
+        step(action scalar) -> obs (12+5k,), reward float, terminated bool,
                                truncated bool, info
 
     API — multi-agent (n_agents > 1), PettingZoo-parallel flattened, as consumed
     by src/multi_agent/ippo.py and mappo.py:
-        reset() -> obs (N, 9+5k), info
-        step(actions (N,)) -> obs (N, 9+5k), rewards (N,),
+        reset() -> obs (N, 12+5k), info
+        step(actions (N,)) -> obs (N, 12+5k), rewards (N,),
                               terminateds (N,), truncateds (N,), info
 
     In BOTH modes info["global_state"] carries the centralized state (11·N,) for
@@ -68,12 +68,21 @@ class OceananigansEnv(gym.Env):
     ignore it. `local_observation_space` / `global_observation_space` expose the
     per-agent and centralized shapes to the trainers.
 
-    Per-agent observation (9 + 5k,) — pure local-sensor + mission info, no global
-    coordinates:
+    Per-agent observation (12 + 5k,) — pure local-sensor + mission info, no
+    global coordinates:
         (3)  u v w      -> body-frame current vector (m/s)
         (3)  gu gv gw   -> body-frame salinity gradient (PSU/m), gw down-positive
         (2)  S-S* τ-τ*  -> target errors in salinity and turbidity
         (1)  depth      -> agent depth (m, positive down)
+        (3)  ddx ddy ddz-> dead-reckoned displacement from the spawn point (m),
+                           body-frame. What a DVL/INS integrates in reality; here
+                           exact. Gives the policy a private map anchor so it can
+                           learn coverage/search patterns — without it the closed
+                           loop (greedy policy × static field × k-step history)
+                           is a deterministic map on position and converges to a
+                           limit cycle that usually misses the tiny target zone
+                           (measured 2026-07-13: privileged oracle 20/20 eval
+                           seeds vs greedy policy 12/20, all cycling failures).
         (5k) history    -> last k (dx, dy, dz, S-S*, τ-τ*) tuples, oldest first,
                            newest last (== the current errors). The action is
                            stored as its body-frame unit direction, and heading
@@ -86,8 +95,11 @@ class OceananigansEnv(gym.Env):
     the agent's body frame (same rotation as the currents), so the agent is told
     which way salinity increases without ever seeing its absolute position.
 
-    Position and heading are deliberately excluded: per the project's design rule
-    the agent does not know where it is and acts in its local frame. Heading ψ is
+    ABSOLUTE position and heading are deliberately excluded: per the project's
+    design rule the agent does not know where it is in the world and acts in its
+    local frame. The displacement-from-spawn is compatible with that rule — it is
+    purely relative, self-contained sensing (dead reckoning needs no external
+    positioning), and it is expressed in the body frame. Heading ψ is
     fixed per episode at a random value (agent.xml heading_control='yawrate', no
     yaw commanded) and used internally to rotate currents and the salinity
     gradient into the body frame — actions are body-frame (surge, sway, heave)
@@ -229,7 +241,7 @@ class OceananigansEnv(gym.Env):
         self._success = np.zeros(self.n_agents, dtype=bool)
 
         self.action_space = gym.spaces.Discrete(27)
-        obs_dim = 9 + 5 * self.k
+        obs_dim = 12 + 5 * self.k
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         # Per-agent local obs (== observation_space) and centralized MAPPO state,
         # 11 per agent (see _build_global_state) — named to match the interface
@@ -290,7 +302,7 @@ class OceananigansEnv(gym.Env):
 
     def _build_state(self, i, agent, action=None) -> tuple[np.ndarray, float, float, float]:
         '''
-        Returns (obs (9+5k,), Φ(s), S, τ) for agent index `i`; the caller turns
+        Returns (obs (12+5k,), Φ(s), S, τ) for agent index `i`; the caller turns
         the proximity potential Φ = reward_func(...) into the shaped reward and
         uses (S, τ) for the in-zone check. When an `action` index is given (a
         step, not a reset, and the agent is not frozen) the agent's history is
@@ -298,14 +310,23 @@ class OceananigansEnv(gym.Env):
         measured AFTER that action, so the last history row always mirrors the
         current errors in the frame part.
 
-        Observation layout (9 + 5k,):
+        Observation layout (12 + 5k,):
             (3)     -> body-frame currents (u, v, w)
             (3)     -> body-frame salinity gradient (gu, gv, gw)
             (2)     -> target errors (S - S*, τ - τ*)
             (1)     -> depth
+            (3)     -> body-frame displacement from spawn (ddx, ddy, ddz)
             (5k)    -> history, oldest->newest rows of (dx, dy, dz, S-S*, τ-τ*)
         '''
         S, tau, u, v, w, gu, gv, gw = self._measure(agent)
+
+        # Dead-reckoned displacement from the spawn point, world -> body via
+        # Rot(psi)^T (the same rotation as currents/gradient in _measure).
+        dwx, dwy, dwz = agent.pos - self._spawn_pos[i]
+        psi = np.deg2rad(agent.psi)
+        cos_psi, sin_psi = np.cos(psi), np.sin(psi)
+        ddx = dwx * cos_psi + dwy * sin_psi
+        ddy = -dwx * sin_psi + dwy * cos_psi
 
         potential = self._potential_at(agent, S, tau)
 
@@ -318,7 +339,8 @@ class OceananigansEnv(gym.Env):
             self._hist[i, -1, 4] = dT
 
         obs = np.concatenate([
-                np.array([u, v, w, gu, gv, gw, dS, dT, agent.pos[2]], dtype=np.float32),
+                np.array([u, v, w, gu, gv, gw, dS, dT, agent.pos[2],
+                          ddx, ddy, dwz], dtype=np.float32),
                 self._hist[i].reshape(-1),
         ])
         return obs, potential, S, tau
@@ -343,7 +365,8 @@ class OceananigansEnv(gym.Env):
 
     def _global_state_from_obs(self, obs) -> np.ndarray:
         '''Same layout as _build_global_state, assembled from the per-agent obs
-        rows already built this step (obs = [u v w gu gv gw S-S* τ-τ* depth]) —
+        rows already built this step (obs frame = [u v w gu gv gw S-S* τ-τ*
+        depth ddx ddy ddz]; only the first 8 slots are consumed here) —
         avoids re-querying the field interpolators a second time per step.'''
         parts = []
         for i, agent in enumerate(self.sim.agents):
@@ -436,7 +459,7 @@ class OceananigansEnv(gym.Env):
             - options (dict | None) — Gymnasium passes this through wrappers; unused here.
 
         Output:
-            - obs: (9+5k,) for n_agents == 1, (N, 9+5k) otherwise
+            - obs: (12+5k,) for n_agents == 1, (N, 12+5k) otherwise
             - info (dict) with "global_state" (11·N,)
         '''
         super().reset(seed=seed)
@@ -481,6 +504,8 @@ class OceananigansEnv(gym.Env):
                     rng=int(self.np_random.integers(2**31))
                 )
             self.sim.add(agent)
+        # Dead-reckoning anchor: displacement in the obs is measured from here.
+        self._spawn_pos = np.array([a.pos.copy() for a in self.sim.agents])
 
         if self.static_frame:
             # Static-frame mode: freeze the fields at one randomly chosen
@@ -638,9 +663,9 @@ class OceananigansEnv(gym.Env):
               discrete action indices
 
         Output (n_agents == 1):
-            - s' (9+5k,), reward float, terminated bool, truncated bool, info
+            - s' (12+5k,), reward float, terminated bool, truncated bool, info
         Output (n_agents > 1):
-            - s' (N, 9+5k), rewards (N,), terminateds (N,), truncateds (N,), info
+            - s' (N, 12+5k), rewards (N,), terminateds (N,), truncateds (N,), info
         In both modes info["global_state"] carries the centralized (11·N,) state.
         '''
         actions = np.atleast_1d(np.asarray(action)).astype(np.int64)
