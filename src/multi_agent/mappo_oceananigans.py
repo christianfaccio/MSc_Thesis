@@ -1,35 +1,3 @@
-'''
-MAPPO (Multi-Agent PPO, Yu et al. 2022) with parameter sharing on the
-Oceananigans NetCDF env (src/envs/oceananigans.py: OceananigansEnv, n_agents=2).
-
-This file is ippo_oceananigans.py with EXACTLY ONE change: the critic input.
-    - IPPO  (IppoPolicy):  critic(local obs)      — fully decentralized.
-    - MAPPO (MappoPolicy): critic(global state)   — CTDE: centralized training,
-      decentralized execution. The actor still sees only the LOCAL obs, so the
-      deployed policy is identical in kind to IPPO's; only the training-time
-      value estimation is privileged.
-Every hyperparameter is kept identical to ippo_oceananigans.py on purpose, so
-an IPPO-vs-MAPPO run pair is a clean centralized-critic ablation (2026-07-11).
-
-The global state is env-level: info["global_state"] (11·n_agents — per agent:
-target errors, body-frame currents, body-frame salinity gradient, ABSOLUTE
-position; see OceananigansEnv._build_global_state). It is shared by every agent
-of an env, so V(global_state) is identical across its agents; their advantages
-still differ through the per-agent rewards. Normalized with its own
-RunningMeanStd (saved in checkpoints as "global_rms").
-
-Env configuration and the oceananigans-specific learnings follow
-ppo_oceananigans.py (2026-07-09 diagnosis): max_steps=1440, tail target mode
-behind --target-mode, success_steps_required=3, wall_penalty, entropy annealed
-0.01 -> 0 over the first half, periodic GREEDY (argmax) evaluation.
-
-Multi-agent semantics: ONE shared (S*, tau*) target per episode;
-end_on_any_success=True ends the episode as soon as any agent holds the zone.
-
-Usage (from root):
-    - train       -> `python -m src.multi_agent.mappo_oceananigans`
-    - tensorboard -> `tensorboard --logdir runs --port 6006`
-'''
 import random
 import time
 from collections import deque
@@ -143,16 +111,17 @@ class Args:
     (num_envs + 1 eval env) · max_cached_loaders · 90 MB (7·8 ≈ 5 GB)."""
     n_agents: int = 2
     """number of agents in the swarm (parameter-shared policy, one shared target)"""
-    k: int = 12
+    k: int = 0
     """observation history depth: last k (action direction, ΔS, Δτ) tuples appended to
-    the 12-dim sensor frame (obs = 12 + 5k values per agent; incl. dead-reckoned displacement from spawn)"""
+    the 9-dim sensor frame (obs = 9 + 5k values per agent). 0 = the memoryless
+    BASELINE: the actor sees only the current sensor frame."""
     target_mode: str = "random"
     """'random' = target (S*, τ*) read at a uniform random field point; 'tail' = S*
     from a rare tail (LOW/HIGH side 50/50 per episode) of the salinity distribution
     over the target's own depth plane — see ippo_oceananigans.py"""
     target_percentile: float = 5.0
     """tail mode only: tail width in percent"""
-    reward_potential: str = "error"
+    reward_potential: str = "distance"
     """shaping potential Φ: 'error' = Gaussian over the (ΔS, Δτ) measurement error
     (agent-sensible, but every filament with S ≈ S* is a reward local optimum —
     the ~0.27-0.35 tail-mode plateau); 'distance' = 1 − d/diag with d the distance
@@ -162,7 +131,7 @@ class Args:
     potential-based shaping keeps the optimal policy identical (Ng et al. 1999)."""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
-    max_steps: int = 1440
+    max_steps: int = 3600
     """maximum env steps per episode before truncation"""
     dt: float = 0.1
     """simulator timestep (s) per sim sub-step"""
@@ -170,19 +139,12 @@ class Args:
     """sim sub-steps per env step; one env step = dt·frame_skip = 1 s of sim time"""
     domain: tuple[float, float, float] = (1000.0, 1000.0, 100.0)
     """domain extent in (x, y, z) meters"""
-    success_bonus: float = 10.0
+    success_bonus: float = 20.0
     """reward bonus on reaching the target zone (shaped potential otherwise)"""
     static_frame: bool = True
     """NetCDF time handling: static (freeze one random snapshot per episode) first,
     dynamic later"""
-    min_band_grad: float = 0.004
-    """reject targets whose success band is ~flat (median |grad_xy S| < this, PSU/m) at
-    reset; <=0 disables the guard"""
-    target_min_dist_frac: float = 0.0
-    """minimum spawn→target distance as a fraction of the domain diagonal; 0 = no check"""
-    wall_penalty: float = 0.05
-    """per-step reward penalty for pinning against a domain wall"""
-    success_steps_required: int = 3
+    success_steps_required: int = 1
     """consecutive in-zone steps required to count as success (arrive AND hold)"""
     end_on_any_success: bool = True
     """end the episode as soon as ANY agent holds the target zone"""
@@ -203,7 +165,7 @@ class Args:
     anneal_lr: bool = False
     """OFF for this field (see ppo_oceananigans: lr→0 froze the policy while it was
     still improving)"""
-    gamma: float = 0.999
+    gamma: float = 0.9997
     """discount factor. MUST equal the env's γ for the potential-based shaping to
     stay policy-invariant."""
     gae_lambda: float = 0.95
@@ -267,7 +229,6 @@ class Args:
 ENV_CFG_KEYS = (
     "xml_file", "netcdf_file", "k", "n_agents", "v_agent", "max_steps", "dt",
     "domain", "frame_skip", "gamma", "success_bonus", "static_frame",
-    "min_band_grad", "target_min_dist_frac", "wall_penalty",
     "success_steps_required", "max_cached_loaders", "end_on_any_success",
     "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
     "target_mode", "target_percentile", "reward_potential",
