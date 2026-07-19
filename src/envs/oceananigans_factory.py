@@ -43,6 +43,7 @@ def make_raw_env_from_cfg(cfg: dict) -> OceananigansEnv:
         target_mode=cfg["target_mode"],
         target_percentile=cfg["target_percentile"],
         reward_potential=cfg.get("reward_potential", "error"),
+        dead_reckoning=cfg.get("dead_reckoning", False),
     )
 
 

@@ -1,0 +1,254 @@
+{
+  "checkpoint": "runs/OceananigansMultiAgent-mappo__mappo_oceananigans__1__1784389938/checkpoints/latest.pt",
+  "run_name": "OceananigansMultiAgent-mappo__mappo_oceananigans__1__1784389938",
+  "iteration": 2,
+  "policy": "checkpoint",
+  "multi_agent": true,
+  "n_agents": 2,
+  "episodes": 2,
+  "base_seed": 0,
+  "max_steps": 50,
+  "success_steps": 1,
+  "netcdf_file": "data/oceananigans/buoyancy_active/train",
+  "epsilon_salinity": 0.15,
+  "epsilon_turbidity": 0.05,
+  "generated": "2026-07-18T17:52:36",
+  "results": {
+    "greedy": {
+      "n_agent_episodes": 4,
+      "success_rate": 0.0,
+      "success_ci95": [
+        0.0,
+        0.48990002040399916
+      ],
+      "n_success": 0,
+      "spl_mean": 0.0,
+      "episode_success_any": 0.0,
+      "episode_success_all": 0.0,
+      "success_at_budget": {
+        "100": 0.0,
+        "250": 0.0,
+        "500": 0.0,
+        "700": 0.0,
+        "1000": 0.0,
+        "1500": 0.0,
+        "2000": 0.0,
+        "3600": 0.0
+      },
+      "steps_to_success": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "std": null,
+        "p25": null,
+        "p75": null
+      },
+      "time_to_success_s": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "std": null,
+        "p25": null,
+        "p75": null
+      },
+      "path_efficiency_success": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "std": null,
+        "p25": null,
+        "p75": null
+      },
+      "tortuosity": {
+        "n": 4,
+        "mean": 1.0241895577891358,
+        "median": 1.0184232340807822,
+        "std": 0.019497443467327114,
+        "p25": 1.0100694462536608,
+        "p75": 1.0325433456162574
+      },
+      "monotonic_frac": {
+        "n": 4,
+        "mean": 0.48000000000000004,
+        "median": 0.51,
+        "std": 0.27676705006196095,
+        "p25": 0.28,
+        "p75": 0.7100000000000001
+      },
+      "min_dist_failures": {
+        "n": 4,
+        "mean": 153.49971960455542,
+        "median": 137.60781844006854,
+        "std": 90.92904382701938,
+        "p25": 66.347306834947,
+        "p75": 224.76023120967696
+      },
+      "final_dS_all": {
+        "n": 4,
+        "mean": 1.0962129321158791,
+        "median": 1.0625858468223406,
+        "std": 0.5504066045108043,
+        "p25": 0.6974708378088561,
+        "p75": 1.4613279411293636
+      },
+      "final_dS_failures": {
+        "n": 4,
+        "mean": 1.0962129321158791,
+        "median": 1.0625858468223406,
+        "std": 0.5504066045108043,
+        "p25": 0.6974708378088561,
+        "p75": 1.4613279411293636
+      },
+      "final_dtau_all": {
+        "n": 4,
+        "mean": 0.3193657687526436,
+        "median": 0.30330820835004346,
+        "std": 0.07788550690883207,
+        "p25": 0.251255955794097,
+        "p75": 0.3714180213085901
+      },
+      "depth_band_frac": {
+        "n": 4,
+        "mean": 0.1,
+        "median": 0.0,
+        "std": 0.17320508075688776,
+        "p25": 0.0,
+        "p75": 0.1
+      },
+      "noop_frac": {
+        "n": 4,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0,
+        "p25": 0.0,
+        "p75": 0.0
+      },
+      "zflip_frac": {
+        "n": 4,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0,
+        "p25": 0.0,
+        "p75": 0.0
+      }
+    },
+    "stochastic": {
+      "n_agent_episodes": 4,
+      "success_rate": 0.0,
+      "success_ci95": [
+        0.0,
+        0.48990002040399916
+      ],
+      "n_success": 0,
+      "spl_mean": 0.0,
+      "episode_success_any": 0.0,
+      "episode_success_all": 0.0,
+      "success_at_budget": {
+        "100": 0.0,
+        "250": 0.0,
+        "500": 0.0,
+        "700": 0.0,
+        "1000": 0.0,
+        "1500": 0.0,
+        "2000": 0.0,
+        "3600": 0.0
+      },
+      "steps_to_success": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "std": null,
+        "p25": null,
+        "p75": null
+      },
+      "time_to_success_s": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "std": null,
+        "p25": null,
+        "p75": null
+      },
+      "path_efficiency_success": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "std": null,
+        "p25": null,
+        "p75": null
+      },
+      "tortuosity": {
+        "n": 4,
+        "mean": 1.9083748154076212,
+        "median": 1.7783959983098807,
+        "std": 0.5756622697533061,
+        "p25": 1.5524691264293322,
+        "p75": 2.1343016872881697
+      },
+      "monotonic_frac": {
+        "n": 4,
+        "mean": 0.33499999999999996,
+        "median": 0.31,
+        "std": 0.20118399538730708,
+        "p25": 0.17500000000000002,
+        "p75": 0.47
+      },
+      "min_dist_failures": {
+        "n": 4,
+        "mean": 155.00130154552176,
+        "median": 138.62985759118382,
+        "std": 92.36483949119095,
+        "p25": 66.42953077437511,
+        "p75": 227.2016283623305
+      },
+      "final_dS_all": {
+        "n": 4,
+        "mean": 1.1411666331992496,
+        "median": 1.4262755861111494,
+        "std": 0.5142723353497227,
+        "p25": 1.1273999831212542,
+        "p75": 1.4400422361891447
+      },
+      "final_dS_failures": {
+        "n": 4,
+        "mean": 1.1411666331992496,
+        "median": 1.4262755861111494,
+        "std": 0.5142723353497227,
+        "p25": 1.1273999831212542,
+        "p75": 1.4400422361891447
+      },
+      "final_dtau_all": {
+        "n": 4,
+        "mean": 0.24684067031701498,
+        "median": 0.22746768578716753,
+        "std": 0.18131985451124918,
+        "p25": 0.09520425728005338,
+        "p75": 0.3791040988241291
+      },
+      "depth_band_frac": {
+        "n": 4,
+        "mean": 0.175,
+        "median": 0.0,
+        "std": 0.3031088913245535,
+        "p25": 0.0,
+        "p75": 0.175
+      },
+      "noop_frac": {
+        "n": 4,
+        "mean": 0.04,
+        "median": 0.04,
+        "std": 0.0282842712474619,
+        "p25": 0.03,
+        "p75": 0.05
+      },
+      "zflip_frac": {
+        "n": 4,
+        "mean": 0.4577798861480076,
+        "median": 0.45588235294117646,
+        "std": 0.030408672695516784,
+        "p25": 0.43572106261859583,
+        "p75": 0.4779411764705882
+      }
+    }
+  }
+}
