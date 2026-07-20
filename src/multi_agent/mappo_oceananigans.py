@@ -152,8 +152,13 @@ class Args:
     dynamic later"""
     success_steps_required: int = 1
     """consecutive in-zone steps required to count as success (arrive AND hold)"""
-    end_on_any_success: bool = True
-    """end the episode as soon as ANY agent holds the target zone"""
+    end_on_any_success: bool = False
+    """TRAINING termination: False = the episode runs until ALL agents reach the
+    target (or truncation), so BOTH agents get a full learning signal instead of
+    the partner being censored the moment the first one succeeds. Each success
+    latches (the frozen agent no-ops and its steps are masked from the loss).
+    The greedy eval always scores success-on-first-reached (success_any) regardless
+    of this flag — see greedy_eval and the eval_cfg override below."""
 
     # Algorithm specific arguments (IDENTICAL to ippo_oceananigans.py)
     total_timesteps: int = 10000000
@@ -359,6 +364,11 @@ def train(args):
         eval_cfg = env_cfg(args)
         if args.eval_netcdf_file:
             eval_cfg["netcdf_file"] = args.eval_netcdf_file  # held-out split
+        # Eval keeps the deployment semantics: the episode ends on the FIRST
+        # agent reaching the target (success_any), independent of the training
+        # all-success termination. greedy_eval already stops polling an env on
+        # the first success, but set the flag so the env itself agrees.
+        eval_cfg["end_on_any_success"] = True
         episodes_per_worker = -(-args.eval_episodes // n_workers)  # ceil
         eval_cfg["max_cached_loaders"] = min(args.max_cached_loaders,
                                              max(2, episodes_per_worker))
@@ -457,10 +467,14 @@ def train(args):
     # Rolling stats over the last STATS_WINDOW finished episodes.
     ep_returns = deque(maxlen=STATS_WINDOW)   # per-agent mean return
     ep_lengths = deque(maxlen=STATS_WINDOW)
-    # With end_on_any_success the episode is a SUCCESS as soon as ANY agent holds
-    # the zone, so success_rate == success_any (still the STOCHASTIC policy —
-    # charts/greedy_success_rate is the honest deployment metric).
+    # success_any = at least one agent reached the zone this episode; success_all
+    # = every agent did. With all-success training termination the episode ends
+    # when both are done, so success_all is now a meaningful trained quantity
+    # (it was ~0 under end_on_any_success — the partner was censored mid-transit).
+    # Both are the STOCHASTIC policy; charts/greedy_success_rate is the honest
+    # deployment metric (success_any).
     ep_success = deque(maxlen=STATS_WINDOW)
+    ep_success_all = deque(maxlen=STATS_WINDOW)
 
     progress = Progress(
         TextColumn("[bold blue]iter"),
@@ -468,8 +482,8 @@ def train(args):
         BarColumn(),
         TextColumn(
             "ret={task.fields[ret]:>6.2f}  len={task.fields[len]:>5.1f}  "
-            "succ={task.fields[succ]:>3.0f}%  eps={task.fields[eps]:>4d}  "
-            "SPS={task.fields[sps]:>5d}"
+            "any={task.fields[succ]:>3.0f}%  all={task.fields[sall]:>3.0f}%  "
+            "eps={task.fields[eps]:>4d}  SPS={task.fields[sps]:>5d}"
         ),
         TextColumn("•"),
         TimeElapsedColumn(),
@@ -485,6 +499,7 @@ def train(args):
         ret=float("nan"),
         len=float("nan"),
         succ=0.0,
+        sall=0.0,
         eps=0,
         sps=0,
     )
@@ -555,13 +570,16 @@ def train(args):
                 if d.all():
                     trunc_flags[e] = np.logical_and(trunc, np.logical_not(term))
                     final_global[e] = info["global_state"]
-                    succeeded = float(term.any())   # success = ANY agent reached the target
+                    succeeded = float(term.any())   # success_any: ANY agent reached the target
+                    succeeded_all = float(term.all())  # success_all: EVERY agent reached it
                     ep_returns.append(env_ep_return[e] / n_agents)
                     ep_lengths.append(float(env_ep_len[e]))
                     ep_success.append(succeeded)
+                    ep_success_all.append(succeeded_all)
                     writer.add_scalar("charts/episodic_return", env_ep_return[e] / n_agents, global_step)
                     writer.add_scalar("charts/episodic_length", float(env_ep_len[e]), global_step)
                     writer.add_scalar("charts/episode_success", succeeded, global_step)
+                    writer.add_scalar("charts/episode_success_all", succeeded_all, global_step)
                     env_ep_return[e] = 0.0
                     env_ep_len[e] = 0
                     o, reset_info = envs.reset_at(e)
@@ -708,8 +726,10 @@ def train(args):
         sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/SPS", sps, global_step)
         if ep_success:
-            # Rolling success_any over the last STATS_WINDOW episodes (matches the console bar).
+            # Rolling success_any / success_all over the last STATS_WINDOW episodes
+            # (success_rate matches the console bar).
             writer.add_scalar("charts/success_rate", float(np.mean(ep_success)), global_step)
+            writer.add_scalar("charts/success_all_rate", float(np.mean(ep_success_all)), global_step)
 
         # Periodic deterministic evaluation — charts/success_rate above tracks the
         # STOCHASTIC policy; greedy argmax is what plot_trajectories.py and
@@ -729,6 +749,7 @@ def train(args):
             ret=(float(np.mean(ep_returns)) if ep_returns else float("nan")),
             len=(float(np.mean(ep_lengths)) if ep_lengths else float("nan")),
             succ=(100.0 * float(np.mean(ep_success)) if ep_success else 0.0),
+            sall=(100.0 * float(np.mean(ep_success_all)) if ep_success_all else 0.0),
             eps=len(ep_returns),
             sps=sps,
         )
