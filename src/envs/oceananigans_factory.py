@@ -33,9 +33,6 @@ def make_raw_env_from_cfg(cfg: dict) -> OceananigansEnv:
         gamma=cfg["gamma"],  # MUST match the trainer's γ for shaping invariance
         success_bonus=cfg["success_bonus"],
         static_frame=cfg["static_frame"],
-        min_band_grad=cfg["min_band_grad"],
-        target_min_dist_frac=cfg["target_min_dist_frac"],
-        wall_penalty=cfg["wall_penalty"],
         success_steps_required=cfg["success_steps_required"],
         max_cached_loaders=cfg["max_cached_loaders"],
         end_on_any_success=cfg.get("end_on_any_success", True),
@@ -46,6 +43,7 @@ def make_raw_env_from_cfg(cfg: dict) -> OceananigansEnv:
         target_mode=cfg["target_mode"],
         target_percentile=cfg["target_percentile"],
         reward_potential=cfg.get("reward_potential", "error"),
+        dead_reckoning=cfg.get("dead_reckoning", False),
     )
 
 

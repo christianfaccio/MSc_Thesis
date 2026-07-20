@@ -16,7 +16,7 @@
 #SBATCH --account=uTS26_Tornator       # your project budget: `saldo -b`
 #SBATCH --partition=boost_usr_prod     # DCGP alternative: dcgp_usr_prod
 #SBATCH --qos=normal                   # boost_qos_dbg = 30 min, fast queue, for smoke tests
-#SBATCH --time=4:00:00                 # 10M steps ≈ a few hours at 12 parallel envs; 24h is the partition max
+#SBATCH --time=2:00:00                 # 10M steps ≈ a few hours at 12 parallel envs; 24h is the partition max
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
