@@ -16,3 +16,4 @@ debug/
 scripts/
 oceananigans_test/
 oceananigans_full/
+logs/
