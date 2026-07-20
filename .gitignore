@@ -16,4 +16,8 @@ debug/
 scripts/
 oceananigans_test/
 oceananigans_full/
+<<<<<<< HEAD
 logs/
+=======
+stats/out/
+>>>>>>> 8e74492e9e7f983bc2e7d5181eac021191be696f

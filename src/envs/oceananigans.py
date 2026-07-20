@@ -60,6 +60,7 @@ class OceananigansEnv(gym.Env):
                  target_mode: str = "random",       # "random" = S* at a uniform random point; "tail" = S* from the low tail of the snapshot's S distribution
                  target_percentile: float = 5.0,    # tail mode: S* below this percentile of the field's salinity values
                  reward_potential: str = "distance",   # "error" = Φ over measurement error (has filament local optima); "distance" = Φ over physical distance to the success zone (monotone, training-time privileged)
+                 dead_reckoning: bool = False,      # append the body-frame dead-reckoned displacement from spawn (3) to the obs — the odometry ablation over the 9-dim baseline
                  ):
         super().__init__()
 
@@ -122,8 +123,9 @@ class OceananigansEnv(gym.Env):
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
 
+        self.dead_reckoning = bool(dead_reckoning)
         self.action_space = gym.spaces.Discrete(27)
-        obs_dim = 9 + 5 * self.k
+        obs_dim = 9 + (3 if self.dead_reckoning else 0) + 5 * self.k
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         # Per-agent local obs (== observation_space) and centralized MAPPO state,
         # 11 per agent (see _build_global_state) — named to match the interface
@@ -192,13 +194,15 @@ class OceananigansEnv(gym.Env):
         action, so the last history row always mirrors the current errors in the
         frame part.
 
-        Observation layout (9 + 5k,) — the BASELINE sensor frame; the
-        dead-reckoned displacement from spawn is deliberately NOT included (add
-        it back as a separate, measurable ablation):
+        Observation layout (9 [+3] + 5k,) — the BASELINE sensor frame plus the
+        optional dead-reckoning ablation block:
             (3)     -> body-frame currents (u, v, w)
             (3)     -> body-frame salinity gradient (gu, gv, gw)
             (2)     -> target errors (S - S*, τ - τ*)
             (1)     -> depth
+            (3)     -> ONLY if dead_reckoning: body-frame displacement from the
+                       spawn point (ddx, ddy, dwz) — purely relative odometry,
+                       no absolute position leaks into the actor
             (5k)    -> history, oldest->newest rows of (dx, dy, dz, S-S*, τ-τ*)
                        (empty at the k=0 baseline default)
         '''
@@ -214,12 +218,21 @@ class OceananigansEnv(gym.Env):
             self._hist[i, -1, 3] = dS
             self._hist[i, -1, 4] = dT
 
+        frame = [u, v, w,
+                 gu, gv, gw,
+                 dS, dT,
+                 agent.pos[2]]
+        if self.dead_reckoning:
+            # Displacement from spawn, world -> body with the same Rot(psi)^T as
+            # _measure (z shared between frames, no rotation needed).
+            dwx, dwy, dwz = agent.pos - self._spawn_pos[i]
+            psi = np.deg2rad(agent.psi)
+            cos_psi, sin_psi = np.cos(psi), np.sin(psi)
+            frame += [dwx * cos_psi + dwy * sin_psi,
+                      -dwx * sin_psi + dwy * cos_psi,
+                      dwz]
         obs = np.concatenate([
-                np.array([u, v, w,
-                          gu, gv, gw,
-                          dS, dT,
-                          agent.pos[2],
-                          ], dtype=np.float32),
+                np.array(frame, dtype=np.float32),
                 self._hist[i].reshape(-1),
         ])
         return obs, potential, S, tau
@@ -371,6 +384,9 @@ class OceananigansEnv(gym.Env):
         # Reward 
         if self.reward_potential == "distance":
             self._build_zone_index(loader)
+
+        # Dead-reckoning anchor: displacement in the obs is measured from here.
+        self._spawn_pos = np.array([a.pos.copy() for a in self.sim.agents])
 
         # Init time step
         self.t_step = 0

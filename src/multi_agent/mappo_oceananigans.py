@@ -93,7 +93,7 @@ class Args:
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML (environment physics only; agents are created
     programmatically, any <agents> block in the XML is ignored)"""
-    netcdf_file: str = "data/oceananigans/buoyancy_active"
+    netcdf_file: str = "data/oceananigans/buoyancy_active/train"
     """Oceananigans NetCDF source: a directory (all *.nc), a glob, or a single file.
     NOTE: epsilon_salinity / sigma_s below are sized to the field's per-snapshot
     span — switch them together with the dataset (buoyancy_active ~5 PSU:
@@ -115,6 +115,12 @@ class Args:
     """observation history depth: last k (action direction, ΔS, Δτ) tuples appended to
     the 9-dim sensor frame (obs = 9 + 5k values per agent). 0 = the memoryless
     BASELINE: the actor sees only the current sensor frame."""
+    dead_reckoning: bool = False
+    """odometry ablation: append the body-frame dead-reckoned displacement from the
+    spawn point (3 values) to the sensor frame (obs = 12 + 5k). Purely relative
+    sensing — no absolute position; gives the actor the anchor the baseline
+    triangle showed is needed for systematic search beyond the ~100-150 m local
+    gradient horizon."""
     target_mode: str = "random"
     """'random' = target (S*, τ*) read at a uniform random field point; 'tail' = S*
     from a rare tail (LOW/HIGH side 50/50 per episode) of the salinity distribution
@@ -199,6 +205,10 @@ class Args:
     # Greedy evaluation
     eval_every_iterations: int = 50
     """run a deterministic (argmax) evaluation every N iterations; 0 disables"""
+    eval_netcdf_file: str = "data/oceananigans/buoyancy_active/test"
+    """NetCDF spec for the greedy-eval envs — the HELD-OUT split, so the tracked
+    success_rate measures generalization to unseen fields, not training-field
+    recall. Empty string = evaluate on the training files."""
     eval_episodes: int = 20
     """greedy episodes per evaluation (fixed seeds, success = ANY agent terminated)"""
     eval_workers: int = 4
@@ -231,7 +241,7 @@ ENV_CFG_KEYS = (
     "domain", "frame_skip", "gamma", "success_bonus", "static_frame",
     "success_steps_required", "max_cached_loaders", "end_on_any_success",
     "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
-    "target_mode", "target_percentile", "reward_potential",
+    "target_mode", "target_percentile", "reward_potential", "dead_reckoning",
 )
 
 
@@ -347,6 +357,8 @@ def train(args):
     if args.eval_every_iterations > 0:
         n_workers = max(1, min(args.eval_workers, args.eval_episodes))
         eval_cfg = env_cfg(args)
+        if args.eval_netcdf_file:
+            eval_cfg["netcdf_file"] = args.eval_netcdf_file  # held-out split
         episodes_per_worker = -(-args.eval_episodes // n_workers)  # ceil
         eval_cfg["max_cached_loaders"] = min(args.max_cached_loaders,
                                              max(2, episodes_per_worker))
