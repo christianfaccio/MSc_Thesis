@@ -61,6 +61,8 @@ class OceananigansEnv(gym.Env):
                  target_percentile: float = 5.0,    # tail mode: S* below this percentile of the field's salinity values
                  reward_potential: str = "distance",   # "error" = Φ over measurement error (has filament local optima); "distance" = Φ over physical distance to the success zone (monotone, training-time privileged)
                  dead_reckoning: bool = False,      # append the body-frame dead-reckoned displacement from spawn (3) to the obs — the odometry ablation over the 9-dim baseline
+                 communication: bool = False,       # multi-agent: append a per-neighbor block (5 each) enabling field triangulation — [in_range, rel_x, rel_y, rel_z (body frame), S_j - S*]
+                 comms_radius: float = float("inf"),# communication range (m); neighbors farther than this are zeroed (in_range=0). inf = global sharing (default)
                  ):
         super().__init__()
 
@@ -124,8 +126,14 @@ class OceananigansEnv(gym.Env):
         self._success = np.zeros(self.n_agents, dtype=bool)
 
         self.dead_reckoning = bool(dead_reckoning)
+        self.communication = bool(communication)
+        self.comms_radius = float(comms_radius)
         self.action_space = gym.spaces.Discrete(27)
-        obs_dim = 9 + (3 if self.dead_reckoning else 0) + 5 * self.k
+        # obs = 9 baseline [+3 dead-reckoning] [+5·(N-1) neighbor-comms] + 5k history
+        obs_dim = (9
+                   + (3 if self.dead_reckoning else 0)
+                   + (5 * (self.n_agents - 1) if self.communication else 0)
+                   + 5 * self.k)
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         # Per-agent local obs (== observation_space) and centralized MAPPO state,
         # 11 per agent (see _build_global_state) — named to match the interface
@@ -203,6 +211,13 @@ class OceananigansEnv(gym.Env):
             (3)     -> ONLY if dead_reckoning: body-frame displacement from the
                        spawn point (ddx, ddy, dwz) — purely relative odometry,
                        no absolute position leaks into the actor
+            (5·(N-1))-> ONLY if communication: one block PER OTHER AGENT (in agent
+                       index order) enabling field triangulation:
+                       (in_range, rel_x, rel_y, rel_z, S_j - S*). rel_* is the
+                       neighbor's position relative to THIS agent, rotated into
+                       this agent's body frame; S_j - S* is the neighbor's
+                       salinity error. Out-of-comms-range neighbors are zeroed
+                       with in_range=0. Still purely relative — no absolute pose.
             (5k)    -> history, oldest->newest rows of (dx, dy, dz, S-S*, τ-τ*)
                        (empty at the k=0 baseline default)
         '''
@@ -222,15 +237,35 @@ class OceananigansEnv(gym.Env):
                  gu, gv, gw,
                  dS, dT,
                  agent.pos[2]]
-        if self.dead_reckoning:
-            # Displacement from spawn, world -> body with the same Rot(psi)^T as
-            # _measure (z shared between frames, no rotation needed).
-            dwx, dwy, dwz = agent.pos - self._spawn_pos[i]
+        if self.dead_reckoning or self.communication:
+            # Shared world -> body rotation Rot(psi)^T (z shared between frames).
             psi = np.deg2rad(agent.psi)
             cos_psi, sin_psi = np.cos(psi), np.sin(psi)
+        if self.dead_reckoning:
+            # Displacement from spawn, world -> body.
+            dwx, dwy, dwz = agent.pos - self._spawn_pos[i]
             frame += [dwx * cos_psi + dwy * sin_psi,
                       -dwx * sin_psi + dwy * cos_psi,
                       dwz]
+        if self.communication:
+            # One block per OTHER agent (index order → fixed slots for the
+            # parameter-shared actor). Body-frame relative position + the
+            # neighbor's salinity error: with (S_i-S*) already in the frame the
+            # actor can form the long-baseline gradient (S_j-S_i)/‖rel‖ that a
+            # single agent's local gradient cannot see past the ~100-150 m horizon.
+            for j, other in enumerate(self.sim.agents):
+                if j == i:
+                    continue
+                rel = other.pos - agent.pos
+                if float(np.linalg.norm(rel)) <= self.comms_radius:
+                    Sj = self._measure(other)[0]
+                    frame += [1.0,
+                              rel[0] * cos_psi + rel[1] * sin_psi,
+                              -rel[0] * sin_psi + rel[1] * cos_psi,
+                              rel[2],
+                              Sj - self.target_salinity]
+                else:
+                    frame += [0.0, 0.0, 0.0, 0.0, 0.0]
         obs = np.concatenate([
                 np.array(frame, dtype=np.float32),
                 self._hist[i].reshape(-1),

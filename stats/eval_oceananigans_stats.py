@@ -85,6 +85,15 @@ def parse_args():
     p.add_argument("--success-steps", type=int, default=1,
                    help="consecutive in-zone steps counted as success for THIS eval "
                         "(default 1 = 'reached the zone'; training often used 3)")
+    p.add_argument("--end-on-any-success", dest="end_on_any_success",
+                   default=None, action="store_true",
+                   help="force the episode to end on the FIRST agent's success "
+                        "(deployment / first-reach semantics). Default: inherit the "
+                        "checkpoint's flag. Use --no-end-on-any-success to force the "
+                        "all-success regime (episode runs until every agent arrives).")
+    p.add_argument("--no-end-on-any-success", dest="end_on_any_success",
+                   action="store_false",
+                   help="force the episode to run until ALL agents succeed")
     p.add_argument("--modes", nargs="+", default=["greedy", "stochastic"],
                    choices=["greedy", "stochastic"],
                    help="which policy modes to evaluate (default: both; "
@@ -139,6 +148,8 @@ def build_env(args):
         target_percentile=getattr(args, "target_percentile", 5.0),
         reward_potential=getattr(args, "reward_potential", "distance"),
         dead_reckoning=getattr(args, "dead_reckoning", False),
+        communication=getattr(args, "communication", False),
+        comms_radius=getattr(args, "comms_radius", float("inf")),
     )
 
 
@@ -563,6 +574,8 @@ def main():
         args.max_steps = cli.max_steps
     if cli.netcdf_file is not None:
         args.netcdf_file = cli.netcdf_file
+    if cli.end_on_any_success is not None:
+        args.end_on_any_success = cli.end_on_any_success
     args.eval_success_steps = cli.success_steps
 
     env = build_env(args)

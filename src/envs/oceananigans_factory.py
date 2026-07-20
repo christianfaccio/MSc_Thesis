@@ -44,6 +44,8 @@ def make_raw_env_from_cfg(cfg: dict) -> OceananigansEnv:
         target_percentile=cfg["target_percentile"],
         reward_potential=cfg.get("reward_potential", "error"),
         dead_reckoning=cfg.get("dead_reckoning", False),
+        communication=cfg.get("communication", False),
+        comms_radius=cfg.get("comms_radius", float("inf")),
     )
 
 

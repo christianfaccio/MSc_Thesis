@@ -121,6 +121,18 @@ class Args:
     sensing — no absolute position; gives the actor the anchor the baseline
     triangle showed is needed for systematic search beyond the ~100-150 m local
     gradient horizon."""
+    communication: bool = False
+    """coordination ablation: append a per-neighbor block (5 values each: in_range,
+    body-frame rel_x, rel_y, rel_z, S_j - S*) to every agent's obs, enabling FIELD
+    TRIANGULATION — two spatially-separated salinity samples give a long-baseline
+    gradient the single-agent local gradient cannot see past its ~100-150 m horizon.
+    obs = 9 [+3 dead-reckoning] + 5·(n_agents-1) + 5k. Purely relative (no absolute
+    pose leaks to the actor); the centralized critic already sees global state."""
+    comms_radius: float = float("inf")
+    """communication range in meters: neighbors farther than this are zeroed in the
+    obs (in_range flag = 0). Default inf = global sharing (establish the ceiling);
+    pass a finite value later to model the Abu Dhabi range constraint without code
+    changes."""
     target_mode: str = "random"
     """'random' = target (S*, τ*) read at a uniform random field point; 'tail' = S*
     from a rare tail (LOW/HIGH side 50/50 per episode) of the salinity distribution
@@ -247,6 +259,7 @@ ENV_CFG_KEYS = (
     "success_steps_required", "max_cached_loaders", "end_on_any_success",
     "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
     "target_mode", "target_percentile", "reward_potential", "dead_reckoning",
+    "communication", "comms_radius",
 )
 
 
