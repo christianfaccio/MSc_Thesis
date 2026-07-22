@@ -421,6 +421,13 @@ def aggregate(per_agent, episode_success):
         success_at_budget={str(T): float(np.mean(
             [e["t_any"] is not None and e["t_any"] <= T for e in episode_success]))
             for T in (100, 250, 500, 700, 1000, 1500, 2000, 3600)} if episode_success else None,
+        # success_all within a step budget T — every agent has reached the zone by
+        # step T. The high-N discriminator: unlike success_any (ceilings as N grows)
+        # this has headroom that GROWS with N, and coordinated search should push
+        # its whole curve earlier.
+        success_all_at_budget={str(T): float(np.mean(
+            [e["t_all"] is not None and e["t_all"] <= T for e in episode_success]))
+            for T in (100, 250, 500, 700, 1000, 1500, 2000, 3600)} if episode_success else None,
         # timing / geometry
         steps_to_success=_stats([m["steps_to_success"] for m in succ_only]),
         time_to_success_s=_stats([m["time_s"] for m in succ_only]),
@@ -468,6 +475,10 @@ def print_table(results, header):
     line("  success_any@700 steps", lambda a: (f"{a['success_at_budget']['700']*100:.1f}%"
          if a.get("success_at_budget") else "-"))
     line("episode success_all", lambda a: stat(a, "episode_success_all", None, pct=True))
+    line("  success_all@700 steps", lambda a: (f"{a['success_all_at_budget']['700']*100:.1f}%"
+         if a.get("success_all_at_budget") else "-"))
+    line("  success_all@1500 steps", lambda a: (f"{a['success_all_at_budget']['1500']*100:.1f}%"
+         if a.get("success_all_at_budget") else "-"))
     line("steps to success (med)", lambda a: stat(a, "steps_to_success"))
     line("time to success s (med)", lambda a: stat(a, "time_to_success_s"))
     line("path eff. success (med)", lambda a: stat(a, "path_efficiency_success"))
@@ -482,24 +493,34 @@ def print_table(results, header):
     print("=" * 74)
 
 
-def save_plots(fig_dir, curves, per_agent_by_mode, t_any_by_mode=None, max_steps=None):
+def save_plots(fig_dir, curves, per_agent_by_mode, t_any_by_mode=None, max_steps=None,
+               t_all_by_mode=None):
     os.makedirs(fig_dir, exist_ok=True)
     colors = {"greedy": "tab:blue", "stochastic": "tab:orange",
               "random": "tab:gray", "gradient": "tab:green"}
 
-    # 0) success_any within a step budget (empirical CDF of the episode's
-    #    earliest success time) — a navigator saturates early, diffusion climbs
-    #    forever, so the SHAPE separates skill from luck.
+    # 0) success within a step budget (empirical CDF of the episode's success
+    #    time) — a navigator saturates early, diffusion climbs forever, so the
+    #    SHAPE separates skill from luck. Solid = success_any (earliest agent);
+    #    dashed = success_all (latest agent, the high-N discriminator).
     if t_any_by_mode:
         plt.figure(figsize=(7, 5))
-        for mode, ts in t_any_by_mode.items():
+
+        def _cdf(ts, style, label):
             n = len(ts)
             hit = np.sort([t for t in ts if t is not None])
             if n and hit.size:
                 x = np.concatenate([[0], hit, [max_steps or hit[-1]]])
                 y = np.concatenate([[0], np.arange(1, hit.size + 1), [hit.size]]) / n
-                plt.step(x, y, where="post", lw=2, label=mode, color=colors.get(mode))
-        plt.xlabel("step budget T"); plt.ylabel("episode success_any within T")
+                plt.step(x, y, where="post", lw=2, label=label, color=colors.get(mode),
+                         linestyle=style)
+
+        for mode, ts in t_any_by_mode.items():
+            _cdf(ts, "-", f"{mode} (any)")
+        if t_all_by_mode:
+            for mode, ts in t_all_by_mode.items():
+                _cdf(ts, "--", f"{mode} (all)")
+        plt.xlabel("step budget T"); plt.ylabel("episode success within T")
         plt.title("Success vs step budget"); plt.ylim(0, 1.02)
         if max_steps:
             plt.xlim(0, max_steps)
@@ -621,7 +642,7 @@ def main():
     else:
         mode_selectors = {"gradient": make_gradient_selector(env)}
 
-    results, curves, per_agent_by_mode, t_any_by_mode = {}, {}, {}, {}
+    results, curves, per_agent_by_mode, t_any_by_mode, t_all_by_mode = {}, {}, {}, {}, {}
     for mode, select_actions in mode_selectors.items():
         per_agent, traces_all, episode_success = [], [], []
         for ep in range(cli.episodes):
@@ -636,12 +657,20 @@ def main():
                 ep_succ.append(m["success"])
                 if m["success"]:
                     ep_ts.append(m["steps_to_success"])
-            episode_success.append(dict(any=any(ep_succ), all=all(ep_succ),
-                                        t_any=(min(ep_ts) if ep_ts else None)))
+            # t_any = earliest agent success; t_all = LATEST agent success but
+            # only when EVERY agent succeeded (else all-success never happens →
+            # None, counted as a miss at every budget). t_all needs the
+            # all-success eval regime (end_on_any_success=False) to be meaningful:
+            # under first-reach the partners are censored, so all(ep_succ) is False.
+            episode_success.append(dict(
+                any=any(ep_succ), all=all(ep_succ),
+                t_any=(min(ep_ts) if ep_ts else None),
+                t_all=(max(ep_ts) if (ep_ts and all(ep_succ)) else None)))
         results[mode] = aggregate(per_agent, episode_success)
         curves[mode] = approach_curve(traces_all)
         per_agent_by_mode[mode] = per_agent
         t_any_by_mode[mode] = [e["t_any"] for e in episode_success]
+        t_all_by_mode[mode] = [e["t_all"] for e in episode_success]
         print(f"  [{mode}] done: success {results[mode]['success_rate']*100:.1f}%  "
               f"SPL {results[mode]['spl_mean']:.3f}")
 
@@ -662,7 +691,7 @@ def main():
         json.dump(summary, f, indent=2)
     write_csv(os.path.join(out_dir, "per_episode.csv"), per_agent_by_mode)
     save_plots(os.path.join(out_dir, "figures"), curves, per_agent_by_mode,
-               t_any_by_mode, args.max_steps)
+               t_any_by_mode, args.max_steps, t_all_by_mode=t_all_by_mode)
 
     print(f"\nWrote summary.json, per_episode.csv, figures/ -> {out_dir}")
     env.close()

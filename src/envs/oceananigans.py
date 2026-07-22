@@ -90,10 +90,10 @@ class OceananigansEnv(gym.Env):
         self.static_frame = static_frame
         self._success_steps_required = int(success_steps_required)
         self.end_on_any_success = end_on_any_success
-        if target_mode != "random":
+        if target_mode not in ("random", "tail"):
             raise NotImplementedError(
-                f"target_mode={target_mode!r} is not implemented in the debug baseline "
-                "env; reset() always samples (S*, τ*) at a uniform random field point.")
+                f"target_mode={target_mode!r} is not implemented in this env "
+                "(only 'random' and 'tail' are supported).")
         self.target_mode = target_mode
         self.target_percentile = float(target_percentile)
         if reward_potential not in ("error", "distance"):
@@ -410,11 +410,57 @@ class OceananigansEnv(gym.Env):
         self.current_salinity = loader.salinity_at(spawn[0], spawn[1], spawn[2])
         self.current_turbidity = compute_turbidity(spawn[2])
 
-        x_sel = self.np_random.uniform(0.0, self.domain[0])
-        y_sel = self.np_random.uniform(0.0, self.domain[1])
-        z_sel = self.np_random.uniform(0.0, self.domain[2])
-        self.target_salinity = loader.salinity_at(x_sel, y_sel, z_sel)
-        self.target_turbidity = compute_turbidity(z_sel)
+        salinity_at = loader.salinity_at
+        if self.target_mode == "tail":
+            # S* constrained to a rare tail of the salinity distribution OVER ITS
+            # OWN DEPTH PLANE — LOW (below target_percentile %) or HIGH (above
+            # 100 - target_percentile %), drawn 50/50 per episode so the policy
+            # can't specialize on "rare == fresher". Plane-rarity (not 3D rarity)
+            # is what shrinks the success zone: the τ* constraint pins the zone to
+            # the plane at z*, and the fields are depth-stratified, so the 3D tail
+            # is just "the freshest layer" (measured 2026-07-11: 3D-tail ~14% zone
+            # vs plane-tail the intended few %). A tail S* alone is still not
+            # enough — at strongly stratified depths the whole plane spread is ~ε,
+            # so keep REDRAWING the depth until the candidate's |ΔS|<ε zone is
+            # ≤ target_percentile % of the plane (Monte Carlo over 256 points),
+            # remembering the smallest-zone candidate as the fallback. Spawn stays
+            # uniform (set above).
+            zone_cap = self.target_percentile / 100.0
+            low_tail = bool(self.np_random.random() < 0.5)
+            pct = self.target_percentile if low_tail else 100.0 - self.target_percentile
+            best = None  # (zone_frac_estimate, S*, τ*)
+            for _ in range(12):  # depth attempts
+                z_sel = self.np_random.uniform(0.0, self.domain[2])
+                cand_T = compute_turbidity(z_sel)
+                xy = self.np_random.uniform([0.0, 0.0], self.domain[:2], size=(256, 2))
+                svals = np.array([salinity_at(px, py, z_sel) for px, py in xy])
+                thr = float(np.percentile(svals, pct))
+                for _ in range(100):  # plane attempts until one lands in the tail
+                    x_sel = self.np_random.uniform(0.0, self.domain[0])
+                    y_sel = self.np_random.uniform(0.0, self.domain[1])
+                    cand_S = salinity_at(x_sel, y_sel, z_sel)
+                    if (cand_S > thr) if low_tail else (cand_S < thr):
+                        continue  # not in the requested tail
+                    zone_est = float(np.mean(np.abs(svals - cand_S) < self.epsilon_salinity))
+                    if best is None or zone_est < best[0]:
+                        best = (zone_est, cand_S, cand_T)
+                    break
+                if best is not None and best[0] <= zone_cap:
+                    break
+            if best is None:  # degenerate fallback (extremely unlikely): plain uniform
+                z_sel = self.np_random.uniform(0.0, self.domain[2])
+                best = (1.0,
+                        salinity_at(self.np_random.uniform(0.0, self.domain[0]),
+                                    self.np_random.uniform(0.0, self.domain[1]), z_sel),
+                        compute_turbidity(z_sel))
+            self.target_salinity = best[1]
+            self.target_turbidity = best[2]
+        else:
+            x_sel = self.np_random.uniform(0.0, self.domain[0])
+            y_sel = self.np_random.uniform(0.0, self.domain[1])
+            z_sel = self.np_random.uniform(0.0, self.domain[2])
+            self.target_salinity = salinity_at(x_sel, y_sel, z_sel)
+            self.target_turbidity = compute_turbidity(z_sel)
 
         # Reward 
         if self.reward_potential == "distance":
