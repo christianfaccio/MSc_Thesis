@@ -1,28 +1,3 @@
-'''
-IPPO (Independent PPO, de Witt et al. 2020) with parameter sharing on the
-Oceananigans NetCDF env (src/envs/oceananigans.py: OceananigansEnv, n_agents=2).
-
-This is to src/multi_agent/ippo_base.py what ppo_oceananigans.py is to
-ppo_base.py: the SAME IPPO machinery (one actor-critic shared by every agent, a
-fully DECENTRALIZED critic on the LOCAL obs, per-(env, agent, step) samples,
-frozen-agent masking, manual RunningMeanStd normalization), pointed at the
-turbulent LES salinity field instead of the synthetic Gaussian baseline. The
-env's info["global_state"] is deliberately IGNORED here — only MAPPO uses it.
-
-Env configuration and the oceananigans-specific learnings follow
-ppo_oceananigans.py (2026-07-09 diagnosis): max_steps=1440 (diffusion can't
-masquerade as navigation), success_steps_required=3 (arrive AND hold),
-wall_penalty, entropy annealed 0.01 -> 0 over the first half, and a periodic
-GREEDY (argmax) evaluation as the honest metric.
-
-Multi-agent semantics: ONE shared (S*, tau*) target per episode;
-end_on_any_success=True (2026-06-29 meeting) ends the episode as soon as any
-agent holds the zone, so success_rate == success_any.
-
-Usage (from root):
-    - train       -> `python -m src.multi_agent.ippo_oceananigans`
-    - tensorboard -> `tensorboard --logdir runs --port 6006`
-'''
 import random
 import time
 from collections import deque
@@ -110,25 +85,22 @@ class Args:
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
 
-    # Environment arguments (mirror ppo_oceananigans.py, plus the agent axis)
+    # Environment arguments (IDENTICAL to mappo_oceananigans.py — see its Args
+    # for the full rationale of every value; kept byte-for-byte so IPPO vs MAPPO
+    # differs only in the critic input: IPPO's critic is decentralized (local obs),
+    # MAPPO's is centralized (global state).
     env_id: str = "OceananigansMultiAgent-ippo"
     """the id of the environment"""
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML (environment physics only; agents are created
     programmatically, any <agents> block in the XML is ignored)"""
-    netcdf_file: str = "data/oceananigans/buoyancy_active"
+    netcdf_file: str = "data/oceananigans/buoyancy_active/train"
     """Oceananigans NetCDF source: a directory (all *.nc), a glob, or a single file.
-    Each reset draws a random file and (static mode) a random snapshot within it, so
-    every episode sees a different frozen field sampled from the whole set. Default is
-    the buoyancy-active dataset, matching ppo_oceananigans so single- vs multi-agent
-    runs are directly comparable (run 1783718789 accidentally trained buoyancy_active
-    with the no_buoyancy ε/σ sizing — double-relative-width success zone — making its
-    success rate incomparable to PPO's). NOTE: epsilon_salinity / sigma_s below are
-    sized to the field's per-snapshot span — switch them together with the dataset
-    (buoyancy_active ~5 PSU: 0.15 / 1.5; no_buoyancy ~10 PSU: 0.3 / 3.0)."""
+    NOTE: epsilon_salinity / sigma_s below are sized to the field's per-snapshot
+    span — switch them together with the dataset (buoyancy_active ~5 PSU:
+    0.15 / 1.5; no_buoyancy ~10 PSU: 0.3 / 3.0)."""
     epsilon_salinity: float = 0.15
-    """success tolerance on |S - S*| (PSU), ~3% of the per-snapshot field span
-    (buoyancy_active median span ~4.9 PSU, measured 2026-07-10)"""
+    """success tolerance on |S - S*| (PSU), ~3% of the per-snapshot field span"""
     epsilon_turbidity: float = 0.05
     """success tolerance on |τ - τ*| (τ depends only on depth)"""
     sigma_s: float = 1.5
@@ -142,91 +114,87 @@ class Args:
     """number of agents in the swarm (parameter-shared policy, one shared target)"""
     k: int = 12
     """observation history depth: last k (action direction, ΔS, Δτ) tuples appended to
-    the 12-dim sensor frame (obs = 12 + 5k values per agent; incl. dead-reckoned displacement from spawn). On the buoyancy-active
-    filament fields the gradient's basin of attraction covers only ~40% of the plane
-    (2026-07-11 analysis), so a memoryless gradient-follower is insufficient — the
-    history is what enables dead-reckoned escape from filament local optima."""
+    the 9-dim sensor frame (obs = 9 + 5k values per agent). 0 = the memoryless
+    BASELINE: the actor sees only the current sensor frame."""
+    dead_reckoning: bool = False
+    """odometry ablation: append the body-frame dead-reckoned displacement from the
+    spawn point (3 values) to the sensor frame (obs = 12 + 5k). Purely relative
+    sensing — no absolute position; gives the actor the anchor the baseline
+    triangle showed is needed for systematic search beyond the ~100-150 m local
+    gradient horizon."""
+    communication: bool = False
+    """coordination ablation: append a per-neighbor block (5 values each: in_range,
+    body-frame rel_x, rel_y, rel_z, S_j - S*) to every agent's obs, enabling FIELD
+    TRIANGULATION — two spatially-separated salinity samples give a long-baseline
+    gradient the single-agent local gradient cannot see past its ~100-150 m horizon.
+    obs = 9 [+3 dead-reckoning] + 5·(n_agents-1) + 5k. Purely relative (no absolute
+    pose leaks to the actor). IPPO has no centralized critic, so unlike MAPPO the
+    neighbor block is the ONLY channel through which one agent sees another."""
+    comms_radius: float = float("inf")
+    """communication range in meters: neighbors farther than this are zeroed in the
+    obs (in_range flag = 0). Default inf = global sharing (establish the ceiling);
+    pass a finite value later to model the Abu Dhabi range constraint without code
+    changes."""
     target_mode: str = "random"
-    """'random' = target (S*, τ*) read at a uniform random field point (typical S* ->
-    the |ΔS|<ε zone covers ~10-20% of the plane at z*, large luck floor: a depth-only
-    drifting baseline scores ~0.5 per agent); 'tail' = S* from a rare tail of the salinity
-    distribution over the target's own depth plane — LOW or HIGH side drawn 50/50
-    per episode (3D rarity does NOT work: the fields are depth-stratified, so a
-    3D-rare S* can still cover much of its plane), shrinking the zone to a rare
-    filament so success requires actual navigation (2026-06-29 meeting scenario).
-    Spawn stays uniform."""
+    """'random' = target (S*, τ*) read at a uniform random field point; 'tail' = S*
+    from a rare tail (LOW/HIGH side 50/50 per episode) of the salinity distribution
+    over the target's own depth plane — see mappo_oceananigans.py"""
     target_percentile: float = 5.0
-    """tail mode only: tail width in percent — S* below this percentile (low side)
-    or above 100 minus it (high side) of the salinity values on its depth plane
-    (Monte Carlo estimate, 256 plane points per reset)"""
-    reward_potential: str = "error"
+    """tail mode only: tail width in percent"""
+    reward_potential: str = "distance"
     """shaping potential Φ: 'error' = Gaussian over the (ΔS, Δτ) measurement error
-    (agent-sensible, but every filament with S ≈ S* is a reward local optimum);
-    'distance' = 1 − d/diag with d the distance to the nearest success-zone cell
-    of the episode's snapshot — monotone toward the zone, NO local optima.
-    Training-time privileged info: feeds only the reward, never the observation;
-    potential-based shaping keeps the optimal policy identical (Ng et al. 1999)."""
+    (agent-sensible, but every filament with S ≈ S* is a reward local optimum —
+    the ~0.27-0.35 tail-mode plateau); 'distance' = 1 − d/diag with d the distance
+    to the nearest success-zone cell of the episode's snapshot — monotone toward
+    the zone, NO local optima. Training-time privileged info: feeds only the
+    reward, never the observation, and potential-based shaping keeps the optimal
+    policy identical (Ng et al. 1999)."""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
-    max_steps: int = 1440
-    """maximum env steps per episode before truncation. One env step ≈ 1 m of travel,
-    the domain is 1 km and targets spawn up to ~1 diagonal away, so 1440 steps is
-    generous slack for a navigator while keeping the STOCHASTIC policy from racking
-    up 'success' by pure diffusion (the run-1783528628 failure mode at 7200 steps).
-    Matches the γ=0.999 effective horizon (~1000 steps) and ppo_oceananigans."""
+    max_steps: int = 3600
+    """maximum env steps per episode before truncation"""
     dt: float = 0.1
     """simulator timestep (s) per sim sub-step"""
     frame_skip: int = 10
-    """sim sub-steps per env step; one env step = dt·frame_skip = 1 s of sim time,
-    so distance per step ≈ v_agent·dt·frame_skip = 1 m"""
+    """sim sub-steps per env step; one env step = dt·frame_skip = 1 s of sim time"""
     domain: tuple[float, float, float] = (1000.0, 1000.0, 100.0)
     """domain extent in (x, y, z) meters"""
-    success_bonus: float = 10.0
+    success_bonus: float = 20.0
     """reward bonus on reaching the target zone (shaped potential otherwise)"""
     static_frame: bool = True
     """NetCDF time handling: static (freeze one random snapshot per episode) first,
     dynamic later"""
-    min_band_grad: float = 0.004
-    """reject targets whose success band is ~flat (median |grad_xy S| < this, PSU/m) at
-    reset, so every episode has a local gradient to home on; <=0 disables the guard"""
-    target_min_dist_frac: float = 0.0
-    """minimum spawn→target distance as a fraction of the domain diagonal; 0 = no
-    check (targets may land near the spawn -> varied episode difficulty)"""
-    wall_penalty: float = 0.05
-    """per-step reward penalty for pinning against a domain wall, scaled by the
-    fraction of the step's frame_skip ticks that were clamped. 0 disables."""
-    success_steps_required: int = 3
-    """consecutive in-zone steps required to count as success (arrive AND hold —
-    kills single-step luck crossings on the turbulent field; see ppo_oceananigans)"""
-    end_on_any_success: bool = True
-    """end the episode as soon as ANY agent holds the target zone (the
-    first-agent-to-find-it / success_any criterion, 2026-06-29 meeting)"""
+    success_steps_required: int = 1
+    """consecutive in-zone steps required to count as success (arrive AND hold)"""
+    end_on_any_success: bool = False
+    """TRAINING termination: False = the episode runs until ALL agents reach the
+    target (or truncation), so BOTH agents get a full learning signal instead of
+    the partner being censored the moment the first one succeeds. Each success
+    latches (the frozen agent no-ops and its steps are masked from the loss).
+    The greedy eval always scores success-on-first-reached (success_any) regardless
+    of this flag — see greedy_eval and the eval_cfg override below."""
 
-    # Algorithm specific arguments (ppo_oceananigans values; batch adds the agent axis)
+    # Algorithm specific arguments (IDENTICAL to mappo_oceananigans.py)
     total_timesteps: int = 10000000
     """total timesteps of the experiment (counts agent-env steps)"""
     learning_rate: float = 3.0e-4
     """the learning rate of the optimizer"""
     num_envs: int = 6
-    """the number of parallel environments (6 envs · 2 agents = 12 agent-streams,
-    the same rollout width as ppo_oceananigans's 12 envs)"""
+    """the number of parallel environments (6 envs · 2 agents = 12 agent-streams)"""
     async_envs: bool = True
     """step the parallel envs in worker processes (src/envs/env_pool.py, spawn
-    context) instead of a single-core loop. The env step is the wall-clock
-    bottleneck (~n_agents·3 ms of SwarmSwIM+scipy per env-step vs a negligible
-    policy forward), so this is a ~num_envs× rollout speedup up to the core count,
-    with IDENTICAL training semantics (same batch, same manual reset points,
-    per-env RNG unchanged). Workers build envs from the torch-free factory
-    (src/envs/oceananigans_factory.py), so each costs ~an env's memory, not a
-    torch import. --no-async-envs restores the in-process loop for debugging."""
+    context) — identical training semantics, ~num_envs× rollout speedup up to the
+    core count. --no-async-envs restores the in-process loop for debugging."""
     num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = False
-    """OFF for this field (see ppo_oceananigans: lr→0 froze the policy while it was
-    still improving). Flat lr; the entropy anneal does the late-stage sharpening."""
-    gamma: float = 0.999
-    """discount factor; effective horizon 1/(1-γ) = 1000 steps ≈ 1000 m. MUST equal
-    the env's γ for the potential-based shaping to stay policy-invariant."""
+    """linearly decay the learning rate to 0 over training. OFF by default on this
+    field historically (lr→0 froze the policy while it was still improving); the
+    IPPO baseline probes whether the schedule instead HOLDS the peak (kills the
+    constant-lr peak-then-decay). Turn ON with --anneal-lr."""
+    gamma: float = 0.9997
+    """discount factor. MUST equal the env's γ for the potential-based shaping to
+    stay policy-invariant."""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 12
@@ -240,16 +208,14 @@ class Args:
     clip_vloss: bool = False
     """Toggles whether or not to use a clipped loss for the value function"""
     ent_coef: float = 0.01
-    """starting entropy coefficient — high exploration floor early on the deceptive
-    turbulent field (see ppo_oceananigans for the full rationale)"""
+    """starting entropy coefficient"""
     anneal_ent: bool = True
     """anneal ent_coef → ent_coef_final over the FIRST `ent_anneal_frac` of training,
     then HOLD the floor (explore early, commit late)"""
     ent_anneal_frac: float = 0.5
     """fraction of training over which ent_coef anneals; after that it HOLDS"""
     ent_coef_final: float = 0.0
-    """entropy coefficient floor. 0 so the back half of training must commit; watch
-    charts/greedy_success_rate for lock-in (the honest metric)"""
+    """entropy coefficient floor"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
@@ -257,22 +223,17 @@ class Args:
     target_kl: float = 0.02
     """the target KL divergence threshold"""
 
-    # Greedy evaluation (honest metric: the training success_rate measures the
-    # STOCHASTIC policy; deployment/plot_trajectories.py uses greedy argmax)
+    # Greedy evaluation
     eval_every_iterations: int = 50
     """run a deterministic (argmax) evaluation every N iterations; 0 disables"""
+    eval_netcdf_file: str = "data/oceananigans/buoyancy_active/test"
+    """NetCDF spec for the greedy-eval envs — the HELD-OUT split, so the tracked
+    success_rate measures generalization to unseen fields, not training-field
+    recall. Empty string = evaluate on the training files."""
     eval_episodes: int = 20
-    """greedy episodes per evaluation. Fixed seeds (reused every eval) so the
-    logged charts/greedy_success_rate is comparable across the run. Success =
-    ANY agent terminated (same success_any bar as training). 20 keeps the
-    binomial noise at ~±0.11 (4 episodes gave ±0.25 — unreadable trends)."""
+    """greedy episodes per evaluation (fixed seeds, success = ANY agent terminated)"""
     eval_workers: int = 4
-    """parallel worker envs for the greedy evaluation (episodes fanned out in
-    waves; greedy + fixed seeds, so the metric is identical to a sequential eval).
-    Otherwise 20 sequential episodes × up to 1440 steps serialize a large slice of
-    the wall-clock once rollouts are parallel. Each worker holds its own
-    FieldLoader cache (~90 MB per cached file). 1 = sequential (previous
-    behavior)."""
+    """parallel worker envs for the greedy evaluation; 1 = sequential"""
 
     # Checkpointing
     save_model: bool = True
@@ -299,10 +260,10 @@ class Args:
 ENV_CFG_KEYS = (
     "xml_file", "netcdf_file", "k", "n_agents", "v_agent", "max_steps", "dt",
     "domain", "frame_skip", "gamma", "success_bonus", "static_frame",
-    "min_band_grad", "target_min_dist_frac", "wall_penalty",
     "success_steps_required", "max_cached_loaders", "end_on_any_success",
     "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
-    "target_mode", "target_percentile", "reward_potential",
+    "target_mode", "target_percentile", "reward_potential", "dead_reckoning",
+    "communication", "comms_radius",
 )
 
 
@@ -318,9 +279,7 @@ def make_raw_env(args):
 
 def make_env_pool(args):
     '''Pool of `num_envs` raw multi-agent envs — worker processes when
-    async_envs (the env step is the wall-clock bottleneck; the gym vector
-    wrappers can't carry the per-agent axis, hence the custom pool), else the
-    previous in-process loop behind the same API.'''
+    async_envs, else the in-process loop behind the same API.'''
     fns = [partial(make_raw_env_from_cfg, env_cfg(args)) for _ in range(args.num_envs)]
     return (AsyncEnvPool if args.async_envs else SyncEnvPool)(fns)
 
@@ -328,11 +287,9 @@ def make_env_pool(args):
 def greedy_eval(agent, eval_pool, obs_rms, device, n_episodes, max_steps,
                 base_seed=1_000_000):
     '''Deterministic (argmax) rollouts on raw envs with the current training
-    obs normalization applied — the same conditions as plot_trajectories.py.
-    Episodes are fanned out in waves across the eval pool's workers; greedy
-    actions + fixed per-episode seeds make the result identical to a sequential
-    eval, only parallel. Success = ANY agent terminated under the TRAINING bar
-    (env's success_steps_required).'''
+    obs normalization applied. ACTOR-ONLY — the critic (local in IPPO) plays no
+    role at execution, so this is identical to mappo_oceananigans's greedy_eval.
+    Success = ANY agent terminated under the TRAINING bar.'''
     mean = obs_rms.mean
     std = np.sqrt(obs_rms.var + 1e-8)
     successes = 0
@@ -416,13 +373,18 @@ def train(args):
     n_actions = envs.attr(0, "action_space").n
 
     # Dedicated raw-env pool for the periodic greedy evaluation; created once so
-    # each worker's FieldLoader LRU cache persists across evals. The eval seeds
-    # are fixed, so each worker only ever touches its own episodes' files — cap
-    # its loader cache accordingly instead of args.max_cached_loaders.
+    # each worker's FieldLoader LRU cache persists across evals.
     eval_pool = None
     if args.eval_every_iterations > 0:
         n_workers = max(1, min(args.eval_workers, args.eval_episodes))
         eval_cfg = env_cfg(args)
+        if args.eval_netcdf_file:
+            eval_cfg["netcdf_file"] = args.eval_netcdf_file  # held-out split
+        # Eval keeps the deployment semantics: the episode ends on the FIRST
+        # agent reaching the target (success_any), independent of the training
+        # all-success termination. greedy_eval already stops polling an env on
+        # the first success, but set the flag so the env itself agrees.
+        eval_cfg["end_on_any_success"] = True
         episodes_per_worker = -(-args.eval_episodes // n_workers)  # ceil
         eval_cfg["max_cached_loaders"] = min(args.max_cached_loaders,
                                              max(2, episodes_per_worker))
@@ -430,7 +392,9 @@ def train(args):
         pool_cls = AsyncEnvPool if (args.async_envs and n_workers > 1) else SyncEnvPool
         eval_pool = pool_cls(eval_fns)
 
-    # Parameter-shared actor-critic; critic uses the LOCAL obs (IPPO is decentralized).
+    # Parameter-shared actor-critic; BOTH the actor and the critic see only the
+    # agent's LOCAL obs (decentralized) — the ONLY difference from
+    # mappo_oceananigans, whose critic takes the global state.
     agent = IppoPolicy(local_dim, n_actions).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
@@ -479,7 +443,8 @@ def train(args):
         if DEBUG:
             print(f"Resumed from {args.resume}: iteration={start_iteration}, global_step={global_step}")
 
-    # ALGO Logic: Storage setup (explicit agent axis).
+    # ALGO Logic: Storage setup (explicit agent axis; values are per-AGENT, from
+    # each agent's local obs — no global-state buffer, unlike MAPPO).
     obs = torch.zeros((args.num_steps, args.num_envs, n_agents, local_dim)).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs, n_agents)).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs, n_agents)).to(device)
@@ -490,9 +455,9 @@ def train(args):
         print("--- GAME START ---")
     start_time = time.time()
 
-    # Reset every env (in parallel); stack to (num_envs, n_agents, local_dim).
+    # Reset every env (in parallel); stack local obs to (num_envs, n_agents, local_dim).
     raw_obs = np.zeros((args.num_envs, n_agents, local_dim), dtype=np.float32)
-    for e, (o, _) in enumerate(envs.reset(seeds=[args.seed + e for e in range(args.num_envs)])):
+    for e, (o, info) in enumerate(envs.reset(seeds=[args.seed + e for e in range(args.num_envs)])):
         raw_obs[e] = o
     next_obs = torch.tensor(normalize_obs(raw_obs)).to(device)
     next_done = torch.zeros((args.num_envs, n_agents)).to(device)
@@ -504,10 +469,14 @@ def train(args):
     # Rolling stats over the last STATS_WINDOW finished episodes.
     ep_returns = deque(maxlen=STATS_WINDOW)   # per-agent mean return
     ep_lengths = deque(maxlen=STATS_WINDOW)
-    # With end_on_any_success the episode is a SUCCESS as soon as ANY agent holds
-    # the zone, so success_rate == success_any (still the STOCHASTIC policy —
-    # charts/greedy_success_rate is the honest deployment metric).
+    # success_any = at least one agent reached the zone this episode; success_all
+    # = every agent did. With all-success training termination the episode ends
+    # when both are done, so success_all is now a meaningful trained quantity
+    # (it was ~0 under end_on_any_success — the partner was censored mid-transit).
+    # Both are the STOCHASTIC policy; charts/greedy_success_rate is the honest
+    # deployment metric (success_any).
     ep_success = deque(maxlen=STATS_WINDOW)
+    ep_success_all = deque(maxlen=STATS_WINDOW)
 
     progress = Progress(
         TextColumn("[bold blue]iter"),
@@ -515,8 +484,8 @@ def train(args):
         BarColumn(),
         TextColumn(
             "ret={task.fields[ret]:>6.2f}  len={task.fields[len]:>5.1f}  "
-            "succ={task.fields[succ]:>3.0f}%  eps={task.fields[eps]:>4d}  "
-            "SPS={task.fields[sps]:>5d}"
+            "any={task.fields[succ]:>3.0f}%  all={task.fields[sall]:>3.0f}%  "
+            "eps={task.fields[eps]:>4d}  SPS={task.fields[sps]:>5d}"
         ),
         TextColumn("•"),
         TimeElapsedColumn(),
@@ -532,6 +501,7 @@ def train(args):
         ret=float("nan"),
         len=float("nan"),
         succ=0.0,
+        sall=0.0,
         eps=0,
         sps=0,
     )
@@ -557,7 +527,7 @@ def train(args):
             obs[step] = next_obs
             dones[step] = next_done
 
-            # ALGO LOGIC: sample actions for the whole swarm in one batched call.
+            # ALGO LOGIC: both actor and critic see the agent's local obs.
             with torch.no_grad():
                 flat_obs = next_obs.reshape(args.num_envs * n_agents, local_dim)
                 action, logprob, _, _ = agent.get_action_and_value(flat_obs)
@@ -573,15 +543,16 @@ def train(args):
             done_after = np.zeros((args.num_envs, n_agents), dtype=np.float32)
             # Truncation is not termination: the potential-based shaping relies on
             # bootstrapping from the truncated state's value (the env keeps the real
-            # Φ(s') there). The envs don't auto-reset, so the obs returned on the
-            # ending step IS the true final obs — record it (and which agents were
-            # truncated) and fold γ·V(final_obs) into their normalized reward below.
+            # Φ(s') there). The envs don't auto-reset, so the local obs returned on
+            # the ending step IS the true final obs — record it (per AGENT, the
+            # critic input) and fold γ·V(final_obs) into the truncated agents'
+            # normalized reward below.
             trunc_flags = np.zeros((args.num_envs, n_agents), dtype=bool)
             final_obs = np.zeros((args.num_envs, n_agents, local_dim), dtype=np.float32)
             # All envs step concurrently in their workers; the loop below only
             # unpacks results (and issues the occasional per-env reset).
             step_results = envs.step(list(act_np))
-            for e, (o, r, term, trunc, _) in enumerate(step_results):
+            for e, (o, r, term, trunc, info) in enumerate(step_results):
                 d = np.logical_or(term, trunc)
                 raw_next_obs[e] = o
                 raw_reward[e] = r
@@ -591,17 +562,20 @@ def train(args):
 
                 # The env does not auto-reset: when all its agents are done, log
                 # the episode and reset it. done_after stays 1 so GAE stops at the
-                # boundary; next_obs becomes the NEW episode's reset obs.
+                # boundary; next_obs becomes the NEW episode's reset state.
                 if d.all():
                     trunc_flags[e] = np.logical_and(trunc, np.logical_not(term))
-                    final_obs[e] = o
-                    succeeded = float(term.any())   # success = ANY agent reached the target
+                    final_obs[e] = o  # local obs at the boundary, BEFORE reset overwrites raw_next_obs
+                    succeeded = float(term.any())   # success_any: ANY agent reached the target
+                    succeeded_all = float(term.all())  # success_all: EVERY agent reached it
                     ep_returns.append(env_ep_return[e] / n_agents)
                     ep_lengths.append(float(env_ep_len[e]))
                     ep_success.append(succeeded)
+                    ep_success_all.append(succeeded_all)
                     writer.add_scalar("charts/episodic_return", env_ep_return[e] / n_agents, global_step)
                     writer.add_scalar("charts/episodic_length", float(env_ep_len[e]), global_step)
                     writer.add_scalar("charts/episode_success", succeeded, global_step)
+                    writer.add_scalar("charts/episode_success_all", succeeded_all, global_step)
                     env_ep_return[e] = 0.0
                     env_ep_len[e] = 0
                     o, _ = envs.reset_at(e)
@@ -609,6 +583,7 @@ def train(args):
 
             norm_reward = normalize_reward(raw_reward, done_after)
             if trunc_flags.any():
+                # V(final_obs) per truncated AGENT (local critic).
                 fin_norm = normalize_obs(final_obs[trunc_flags], update=False)
                 with torch.no_grad():
                     final_v = agent.get_value(
@@ -626,7 +601,8 @@ def train(args):
         # keeping each agent's true terminal step (where dones[step]==0).
         masks = 1.0 - dones
 
-        # flatten the batch over (num_steps, num_envs, n_agents)
+        # flatten the batch over (num_steps, num_envs, n_agents); every agent-step
+        # is an independent sample and the critic uses that step's local obs.
         b_obs = obs.reshape(-1, local_dim)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape(-1)
@@ -639,8 +615,8 @@ def train(args):
         for epoch in range(args.update_epochs):
             with torch.no_grad():
                 new_values = agent.get_value(b_obs).reshape(args.num_steps, args.num_envs, n_agents)
-                flat_next = next_obs.reshape(args.num_envs * n_agents, local_dim)
-                next_value = agent.get_value(flat_next).reshape(args.num_envs, n_agents)
+                flat_next_obs = next_obs.reshape(args.num_envs * n_agents, local_dim)
+                next_value = agent.get_value(flat_next_obs).reshape(args.num_envs, n_agents)
                 advantages = torch.zeros_like(rewards).to(device)
                 lastgaelam = 0
                 for t in reversed(range(args.num_steps)):
@@ -736,8 +712,10 @@ def train(args):
         sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/SPS", sps, global_step)
         if ep_success:
-            # Rolling success_any over the last STATS_WINDOW episodes (matches the console bar).
+            # Rolling success_any / success_all over the last STATS_WINDOW episodes
+            # (success_rate matches the console bar).
             writer.add_scalar("charts/success_rate", float(np.mean(ep_success)), global_step)
+            writer.add_scalar("charts/success_all_rate", float(np.mean(ep_success_all)), global_step)
 
         # Periodic deterministic evaluation — charts/success_rate above tracks the
         # STOCHASTIC policy; greedy argmax is what plot_trajectories.py and
@@ -757,6 +735,7 @@ def train(args):
             ret=(float(np.mean(ep_returns)) if ep_returns else float("nan")),
             len=(float(np.mean(ep_lengths)) if ep_lengths else float("nan")),
             succ=(100.0 * float(np.mean(ep_success)) if ep_success else 0.0),
+            sall=(100.0 * float(np.mean(ep_success_all)) if ep_success_all else 0.0),
             eps=len(ep_returns),
             sps=sps,
         )

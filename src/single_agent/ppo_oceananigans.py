@@ -144,7 +144,7 @@ class Args:
     """tail mode only: tail width in percent — S* below this percentile (low side)
     or above 100 minus it (high side) of the salinity values on its depth plane
     (Monte Carlo estimate, 256 plane points per reset)"""
-    reward_potential: str = "error"
+    reward_potential: str = "distance"
     """shaping potential Φ: 'error' = Gaussian over the (ΔS, Δτ) measurement error
     (agent-sensible, but every filament with S ≈ S* is a reward local optimum);
     'distance' = 1 − d/diag with d the distance to the nearest success-zone cell
@@ -153,7 +153,7 @@ class Args:
     potential-based shaping keeps the optimal policy identical (Ng et al. 1999)."""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
-    max_steps: int = 1440
+    max_steps: int = 3600
     """maximum env steps per episode before truncation. One env step ≈ 1 m of travel
     (v_agent·dt·frame_skip = 1 m), the domain is 1 km and targets spawn ~0.3·diagonal
     ≈ 425 m away, so 1440 steps (~24 min sim) is ~3.4× the optimal path — enough slack
@@ -171,7 +171,7 @@ class Args:
     """sim sub-steps per env step; one env step = dt·frame_skip = 1 s of sim time,
     so distance per step ≈ v_agent·dt·frame_skip = 1 m (1000 m domain -> ~1000 steps
     to cross; targets spawn ≥30% of the diagonal away)"""
-    success_bonus: float = 10.0
+    success_bonus: float = 20.0
     """reward bonus on reaching the target zone (shaped potential otherwise)"""
     static_frame: bool = True 
     """Either static or dynamic mode"""
@@ -183,11 +183,7 @@ class Args:
     distance check, so targets may land close to the spawn — episode difficulty then
     varies (some easy, near-target episodes), giving a stuck sparse-reward policy
     denser success signal to bootstrap from. Raise (e.g. 0.3) to force far targets."""
-    wall_penalty: float = 0.05
-    """per-step reward penalty for pinning against a domain wall, scaled by the
-    fraction of the step's frame_skip ticks that were clamped. Discourages the
-    degenerate 'drive into a boundary and stall' local optimum. 0 disables."""
-    success_steps_required: int = 3
+    success_steps_required: int = 1
     """consecutive in-zone steps required to count as success. 1 (run 1783508432) let
     a single lucky in-zone step terminate: on the turbulent LES field the STOCHASTIC
     policy wiggles across the thin |ΔS|<ε band and clips it by chance, which (a)
@@ -223,7 +219,7 @@ class Args:
     at 7.5M, so a full lr→0 decay by 10M throws away the best policy. Base runs never
     annealed lr either. Keep a flat lr and let the entropy anneal do the late-stage
     sharpening instead."""
-    gamma: float = 0.999
+    gamma: float = 0.9997
     """discount factor; effective horizon 1/(1-γ) = 1000 steps ≈ 1000 m, matched to
     the ~1 m/step, up-to-1280-step episodes. MUST equal the env's γ for the
     potential-based shaping to stay policy-invariant (passed to the env below)."""

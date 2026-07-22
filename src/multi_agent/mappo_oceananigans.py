@@ -111,7 +111,7 @@ class Args:
     (num_envs + 1 eval env) · max_cached_loaders · 90 MB (7·8 ≈ 5 GB)."""
     n_agents: int = 2
     """number of agents in the swarm (parameter-shared policy, one shared target)"""
-    k: int = 0
+    k: int = 12
     """observation history depth: last k (action direction, ΔS, Δτ) tuples appended to
     the 9-dim sensor frame (obs = 9 + 5k values per agent). 0 = the memoryless
     BASELINE: the actor sees only the current sensor frame."""
