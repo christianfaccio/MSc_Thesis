@@ -516,6 +516,17 @@ def train(args):
     ep_terminated = deque(maxlen=STATS_WINDOW)  # 1.0 if reached target, 0.0 if truncated
     ep_ttfs = deque(maxlen=STATS_WINDOW)        # episode length, successful episodes only
 
+    # Episode-completion metrics are CENSORED for the first max_steps env-steps:
+    # a SUCCESSFUL episode ends the moment the agent reaches the zone, but a
+    # FAILED one only ends at truncation (max_steps). So until max_steps env-steps
+    # have elapsed, the only episodes that CAN have finished are successes, and
+    # charts/success_rate reads exactly 1.00 by construction — not because the
+    # policy is good. Hold the rolling stats back until failures are observable,
+    # then flush the all-success backlog once.
+    stats_warmup_steps = args.max_steps * args.num_envs
+    stats_ready = False
+    stats_deques = (ep_returns, ep_lengths, ep_terminated, ep_ttfs)
+
     progress = Progress(
         TextColumn("[bold blue]iter"), MofNCompleteColumn(), BarColumn(),
         TextColumn("ret={task.fields[ret]:>6.2f}  len={task.fields[len]:>5.1f}  "
@@ -669,6 +680,12 @@ def train(args):
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
+        # Release the rolling episode stats once failures can actually be observed.
+        if not stats_ready and global_step >= stats_warmup_steps:
+            stats_ready = True
+            for _dq in stats_deques:
+                _dq.clear()
+
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("charts/ent_coef", ent_coef_now, global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
@@ -680,9 +697,9 @@ def train(args):
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/SPS", sps, global_step)
-        if ep_terminated:
+        if stats_ready and ep_terminated:
             writer.add_scalar("charts/success_rate", float(np.mean(ep_terminated)), global_step)
-        if ep_ttfs:
+        if stats_ready and ep_ttfs:
             writer.add_scalar("team/time_to_first_success_mean", float(np.mean(ep_ttfs)), global_step)
             writer.add_scalar("team/time_to_first_success_median", float(np.median(ep_ttfs)), global_step)
 
@@ -701,7 +718,7 @@ def train(args):
             task_id, completed=iteration,
             ret=(float(np.mean(ep_returns)) if ep_returns else float("nan")),
             len=(float(np.mean(ep_lengths)) if ep_lengths else float("nan")),
-            term=(100.0 * float(np.mean(ep_terminated)) if ep_terminated else 0.0),
+            term=(100.0 * float(np.mean(ep_terminated)) if (stats_ready and ep_terminated) else 0.0),
             eps=len(ep_returns), sps=sps,
         )
 

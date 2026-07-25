@@ -151,9 +151,14 @@ class Args:
     only earn by leading somewhere the others are not. This is the division-of-labour
     term. Used as a potential, so invariance holds (D-PBRS, Devlin et al. 2014).
     ON by default; set 0.0 to recover the individual-reward baseline."""
-    lambda_separation: float = 0.25
+    lambda_separation: float = 0.0
     """weight on the anti-redundancy potential Φ_sep = 10·min(d_NN/ℓ, 1) — dense
-    counterpart to the (sparse) difference reward. Set 0.0 to disable."""
+    counterpart to the (sparse) difference reward. OFF by default: on the 1 km domain
+    with uniform spawns the agents sit ~520-590 m apart naturally (measured, run
+    1784992350) against ℓ=150 m, so Φ_sep is saturated at its cap essentially always
+    and contributes nothing but a constant negative drift (~-0.0015/step). Coverage
+    redundancy was already 0.98-0.99 — there is no redundant search left to remove.
+    To make it bind, raise separation_scale to a few hundred metres FIRST."""
     separation_scale: float = 150.0
     """ℓ (metres) at which Φ_sep saturates: the salinity-gradient correlation length,
     past which extra spread gathers no new information. The cap is what stops the term
@@ -535,6 +540,20 @@ def train(args):
     ep_redundancy = deque(maxlen=STATS_WINDOW)    # unique voxels / summed per-agent voxels
     ep_nn_dist = deque(maxlen=STATS_WINDOW)       # mean nearest-neighbour distance at episode end
 
+    # Episode-completion metrics are CENSORED for the first max_steps env-steps:
+    # a SUCCESSFUL episode ends the moment an agent reaches the zone (possibly
+    # step ~200), but a FAILED one only ends at truncation (max_steps). So until
+    # max_steps env-steps have elapsed, the only episodes that CAN have finished
+    # are successes, and charts/success_rate reads exactly 1.00 by construction —
+    # not because the policy is good. Hold the rolling stats back until failures
+    # are observable, then flush the all-success backlog once (without the flush
+    # the 100-episode window still takes ~100 episodes to churn the bias out).
+    # charts/greedy_success_rate is unaffected: it runs complete fixed episodes.
+    stats_warmup_steps = args.max_steps * args.num_envs * n_agents
+    stats_ready = False
+    stats_deques = (ep_returns, ep_lengths, ep_success, ep_success_all,
+                    ep_ttfs, ep_redundancy, ep_nn_dist)
+
     progress = Progress(
         TextColumn("[bold blue]iter"),
         MofNCompleteColumn(),
@@ -627,7 +646,13 @@ def train(args):
                 # the episode and reset it. done_after stays 1 so GAE stops at the
                 # boundary; next_obs/next_global become the NEW episode's reset state.
                 if d.all():
-                    trunc_flags[e] = np.logical_and(trunc, np.logical_not(term))
+                    # Bootstrap ONLY on a genuine time limit. When the episode
+                    # ended because a teammate succeeded, that is terminal for the
+                    # whole team: the shared bonus IS the terminal reward, and
+                    # adding gamma*V(final) on top double-counts it and pays the
+                    # non-finder MORE than the finder (measured: +35% at iter 200).
+                    if info.get("timeout", True):
+                        trunc_flags[e] = np.logical_and(trunc, np.logical_not(term))
                     final_global[e] = info["global_state"]
                     succeeded = float(term.any())   # success_any: ANY agent reached the target
                     succeeded_all = float(term.all())  # success_all: EVERY agent reached it
@@ -781,6 +806,12 @@ def train(args):
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
+        # Release the rolling episode stats once failures can actually be observed.
+        if not stats_ready and global_step >= stats_warmup_steps:
+            stats_ready = True
+            for _dq in stats_deques:
+                _dq.clear()
+
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("charts/ent_coef", ent_coef_now, global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
@@ -798,7 +829,7 @@ def train(args):
         writer.add_scalar("charts/active_frac", float(b_masks.mean().item()), global_step)
         sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/SPS", sps, global_step)
-        if ep_success:
+        if stats_ready and ep_success:
             # Rolling success_any / success_all over the last STATS_WINDOW episodes
             # (success_rate matches the console bar).
             writer.add_scalar("charts/success_rate", float(np.mean(ep_success)), global_step)
@@ -807,12 +838,12 @@ def train(args):
         # headline efficiency number for the swarm-vs-N-independent-agents question;
         # team/coverage_redundancy (1.0 = perfectly disjoint search, 1/N = everyone
         # swept the same water) is what the difference/separation terms should move.
-        if ep_ttfs:
+        if stats_ready and ep_ttfs:
             writer.add_scalar("team/time_to_first_success_mean", float(np.mean(ep_ttfs)), global_step)
             writer.add_scalar("team/time_to_first_success_median", float(np.median(ep_ttfs)), global_step)
-        if ep_redundancy:
+        if stats_ready and ep_redundancy:
             writer.add_scalar("team/coverage_redundancy", float(np.mean(ep_redundancy)), global_step)
-        if ep_nn_dist:
+        if stats_ready and ep_nn_dist:
             writer.add_scalar("team/nn_distance", float(np.mean(ep_nn_dist)), global_step)
 
         # Periodic deterministic evaluation — charts/success_rate above tracks the
@@ -832,8 +863,8 @@ def train(args):
             completed=iteration,
             ret=(float(np.mean(ep_returns)) if ep_returns else float("nan")),
             len=(float(np.mean(ep_lengths)) if ep_lengths else float("nan")),
-            succ=(100.0 * float(np.mean(ep_success)) if ep_success else 0.0),
-            sall=(100.0 * float(np.mean(ep_success_all)) if ep_success_all else 0.0),
+            succ=(100.0 * float(np.mean(ep_success)) if (stats_ready and ep_success) else 0.0),
+            sall=(100.0 * float(np.mean(ep_success_all)) if (stats_ready and ep_success_all) else 0.0),
             eps=len(ep_returns),
             sps=sps,
         )

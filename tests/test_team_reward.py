@@ -173,3 +173,27 @@ def rollout_no_reset(env, steps):
         if np.logical_or(term, trunc).all():
             break
     return np.array(rewards), None
+
+
+def test_timeout_flag_distinguishes_team_terminal_from_time_limit():
+    '''Regression: under end_on_any_success the non-succeeding agents are flagged
+    `truncated`, but a teammate's success is TERMINAL for the team — bootstrapping
+    gamma*V(final) there while also paying the shared bonus double-counts it and
+    makes free-riding pay more than finding the target.'''
+    # (a) episode ends on a teammate's success -> NOT a timeout
+    env = make_env(max_steps=10_000, end_on_any_success=True,
+                   shared_success_bonus=True)
+    env.reset(seed=11)
+    env.epsilon_salinity = 1e9      # everything is in-zone -> immediate success
+    env.epsilon_turbidity = 1e9
+    _, _, term, trunc, info = env.step(np.zeros(env.n_agents, dtype=np.int64))
+    assert term.any(), "expected a success"
+    assert info["timeout"] is False, "team success must not be reported as a timeout"
+
+    # (b) episode ends at max_steps with nobody succeeding -> IS a timeout
+    env = make_env(max_steps=3, epsilon_salinity=1e-9)  # unreachable zone
+    env.reset(seed=11)
+    for _ in range(3):
+        _, _, term, trunc, info = env.step(np.zeros(env.n_agents, dtype=np.int64))
+    assert not term.any() and trunc.all()
+    assert info["timeout"] is True, "a genuine time limit must be bootstrappable"

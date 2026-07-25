@@ -768,7 +768,16 @@ class OceananigansEnv(gym.Env):
         episode_over = out_of_time or (self.end_on_any_success and bool(terminateds.any()))
         truncateds = np.full(self.n_agents, episode_over) & (~self._success)
 
-        info = {"global_state": self._build_global_state()}
+        # TIME-LIMIT vs TEAM-TERMINAL. A trainer must bootstrap γV(s') for an agent
+        # cut off by a time limit (the episode would have continued) but NOT for one
+        # whose episode genuinely ended. Under end_on_any_success the non-succeeding
+        # agents are flagged `truncated`, yet a teammate's success is a TERMINAL event
+        # for the whole team — there is no future to bootstrap. Bootstrapping it while
+        # also paying the shared success bonus double-counts the bonus and makes
+        # hanging back strictly more profitable than finding the target. Expose which
+        # kind of ending this is so the trainers can tell them apart.
+        info = {"global_state": self._build_global_state(),
+                "timeout": bool(out_of_time and not terminateds.any())}
         if episode_over or bool(terminateds.all()):
             info.update(self._episode_stats())
         if self.n_agents == 1:
