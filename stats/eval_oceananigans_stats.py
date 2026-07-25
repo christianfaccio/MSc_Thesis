@@ -150,6 +150,8 @@ def build_env(args):
         dead_reckoning=getattr(args, "dead_reckoning", False),
         communication=getattr(args, "communication", False),
         comms_radius=getattr(args, "comms_radius", float("inf")),
+        min_spawn_distance=getattr(args, "min_spawn_distance", 0.0),
+        spawn_max_tries=getattr(args, "spawn_max_tries", 200),
     )
 
 

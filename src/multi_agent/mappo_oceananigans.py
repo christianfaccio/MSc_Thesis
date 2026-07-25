@@ -121,7 +121,7 @@ class Args:
     sensing — no absolute position; gives the actor the anchor the baseline
     triangle showed is needed for systematic search beyond the ~100-150 m local
     gradient horizon."""
-    communication: bool = False
+    communication: bool = True
     """coordination ablation: append a per-neighbor block (5 values each: in_range,
     body-frame rel_x, rel_y, rel_z, S_j - S*) to every agent's obs, enabling FIELD
     TRIANGULATION — two spatially-separated salinity samples give a long-baseline
@@ -133,6 +133,38 @@ class Args:
     obs (in_range flag = 0). Default inf = global sharing (establish the ceiling);
     pass a finite value later to model the Abu Dhabi range constraint without code
     changes."""
+    min_spawn_distance: float = 0.0
+    """distant-start difficulty knob: if >0, reject-sample every agent's spawn until
+    it starts at least this many METRES from the nearest success-zone cell (0 = the
+    original uniform spawn). Pair with target_mode='tail' for the hard regime; keep
+    it identical to the single-agent PPO baseline so the comparison stays fair."""
+    spawn_max_tries: int = 200
+    """rejection budget per agent for min_spawn_distance; the farthest candidate
+    found is used if none clears the threshold (so a too-large distance can't hang)."""
+    alpha_individual: float = 1.0
+    """weight on the per-agent potential Φ_i (the original, individual shaping term).
+    Leave at 1.0 unless deliberately trading per-agent guidance for team signal."""
+    beta_difference: float = 1.0
+    """weight on the DIFFERENCE-REWARD potential D_i = G(s) − G(s_-i), G(s) = g(min_j d_j).
+    Zero for every agent except the one currently closest to the zone, for which it is
+    its margin over the runner-up: an agent shadowing a teammate earns nothing and can
+    only earn by leading somewhere the others are not. This is the division-of-labour
+    term. Used as a potential, so invariance holds (D-PBRS, Devlin et al. 2014).
+    ON by default; set 0.0 to recover the individual-reward baseline."""
+    lambda_separation: float = 0.25
+    """weight on the anti-redundancy potential Φ_sep = 10·min(d_NN/ℓ, 1) — dense
+    counterpart to the (sparse) difference reward. Set 0.0 to disable."""
+    separation_scale: float = 150.0
+    """ℓ (metres) at which Φ_sep saturates: the salinity-gradient correlation length,
+    past which extra spread gathers no new information. The cap is what stops the term
+    degenerating into 'flee to opposite corners'."""
+    shared_success_bonus: bool = True
+    """pay success_bonus to EVERY live agent on each success rather than only the agent
+    that reached. The one change that actually moves the equilibrium: with
+    end_on_any_success the per-agent bonus makes the episode a RACE (a teammate winning
+    costs you your shot), so coordination has nothing to buy at the baseline."""
+    coverage_cell: float = 50.0
+    """voxel edge (m) for the coverage/redundancy diagnostic; 0 disables the tracking."""
     target_mode: str = "random"
     """'random' = target (S*, τ*) read at a uniform random field point; 'tail' = S*
     from a rare tail (LOW/HIGH side 50/50 per episode) of the salinity distribution
@@ -149,7 +181,7 @@ class Args:
     potential-based shaping keeps the optimal policy identical (Ng et al. 1999)."""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
-    max_steps: int = 3600
+    max_steps: int = 1800
     """maximum env steps per episode before truncation"""
     dt: float = 0.1
     """simulator timestep (s) per sim sub-step"""
@@ -164,7 +196,7 @@ class Args:
     dynamic later"""
     success_steps_required: int = 1
     """consecutive in-zone steps required to count as success (arrive AND hold)"""
-    end_on_any_success: bool = False
+    end_on_any_success: bool = True
     """TRAINING termination: False = the episode runs until ALL agents reach the
     target (or truncation), so BOTH agents get a full learning signal instead of
     the partner being censored the moment the first one succeeds. Each success
@@ -177,7 +209,7 @@ class Args:
     """total timesteps of the experiment (counts agent-env steps)"""
     learning_rate: float = 3.0e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 6
+    num_envs: int = 12
     """the number of parallel environments (6 envs · 2 agents = 12 agent-streams)"""
     async_envs: bool = True
     """step the parallel envs in worker processes (src/envs/env_pool.py, spawn
@@ -188,12 +220,12 @@ class Args:
     anneal_lr: bool = False
     """OFF for this field (see ppo_oceananigans: lr→0 froze the policy while it was
     still improving)"""
-    gamma: float = 0.9997
+    gamma: float = 0.9995
     """discount factor. MUST equal the env's γ for the potential-based shaping to
     stay policy-invariant."""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 12
+    num_minibatches: int = 24
     """the number of mini-batches"""
     update_epochs: int = 10
     """the K epochs to update the policy"""
@@ -259,7 +291,9 @@ ENV_CFG_KEYS = (
     "success_steps_required", "max_cached_loaders", "end_on_any_success",
     "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
     "target_mode", "target_percentile", "reward_potential", "dead_reckoning",
-    "communication", "comms_radius",
+    "communication", "comms_radius", "min_spawn_distance", "spawn_max_tries",
+    "alpha_individual", "beta_difference", "lambda_separation",
+    "separation_scale", "shared_success_bonus", "coverage_cell",
 )
 
 
@@ -323,8 +357,14 @@ def greedy_eval(agent, eval_pool, obs_rms, device, n_episodes, max_steps,
 
 def train(args):
     # batch_size collapses (num_steps, num_envs, n_agents): every agent-step is a sample.
-    args.batch_size = int(args.num_envs * args.num_steps * args.n_agents)
+    env_steps_per_iter = int(args.num_envs * args.num_steps)
+    args.batch_size = int(env_steps_per_iter * args.n_agents)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
+    # total_timesteps counts AGENT-steps, matching ippo_oceananigans.py and the
+    # agent-count scaling convention (iterations ∝ 1/n_agents at fixed budget).
+    # This used to divide by env_steps_per_iter, which gave MAPPO n_agents× more
+    # iterations than IPPO for the same --total-timesteps and made the two runs'
+    # TensorBoard x-axes incomparable.
     args.num_iterations = args.total_timesteps // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if DEBUG:
@@ -488,6 +528,12 @@ def train(args):
     # deployment metric (success_any).
     ep_success = deque(maxlen=STATS_WINDOW)
     ep_success_all = deque(maxlen=STATS_WINDOW)
+    # Coordination diagnostics (env-reported, see OceananigansEnv._episode_stats).
+    # ep_ttfs holds ONLY successful episodes: a mean over all episodes would count
+    # fast failures as fast successes.
+    ep_ttfs = deque(maxlen=STATS_WINDOW)          # time to FIRST success (steps)
+    ep_redundancy = deque(maxlen=STATS_WINDOW)    # unique voxels / summed per-agent voxels
+    ep_nn_dist = deque(maxlen=STATS_WINDOW)       # mean nearest-neighbour distance at episode end
 
     progress = Progress(
         TextColumn("[bold blue]iter"),
@@ -593,6 +639,14 @@ def train(args):
                     writer.add_scalar("charts/episodic_length", float(env_ep_len[e]), global_step)
                     writer.add_scalar("charts/episode_success", succeeded, global_step)
                     writer.add_scalar("charts/episode_success_all", succeeded_all, global_step)
+                    ttfs = info.get("time_to_first_success", float("nan"))
+                    if ttfs == ttfs:  # not NaN -> the episode actually succeeded
+                        ep_ttfs.append(float(ttfs))
+                        writer.add_scalar("team/time_to_first_success", float(ttfs), global_step)
+                    if "coverage_redundancy" in info:
+                        ep_redundancy.append(float(info["coverage_redundancy"]))
+                    if "nn_distance" in info:
+                        ep_nn_dist.append(float(info["nn_distance"]))
                     env_ep_return[e] = 0.0
                     env_ep_len[e] = 0
                     o, reset_info = envs.reset_at(e)
@@ -736,6 +790,12 @@ def train(args):
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        # Fraction of the nominal batch that actually contributes to the loss.
+        # A succeeded agent freezes and keeps emitting masked steps until every
+        # agent in its env is done, so the EFFECTIVE batch is active_frac ·
+        # batch_size. This falls as n_agents grows (longer wait for the last
+        # agent) — check it first when comparing across n_agents.
+        writer.add_scalar("charts/active_frac", float(b_masks.mean().item()), global_step)
         sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/SPS", sps, global_step)
         if ep_success:
@@ -743,6 +803,17 @@ def train(args):
             # (success_rate matches the console bar).
             writer.add_scalar("charts/success_rate", float(np.mean(ep_success)), global_step)
             writer.add_scalar("charts/success_all_rate", float(np.mean(ep_success_all)), global_step)
+        # Rolling coordination metrics. team/time_to_first_success_mean is the
+        # headline efficiency number for the swarm-vs-N-independent-agents question;
+        # team/coverage_redundancy (1.0 = perfectly disjoint search, 1/N = everyone
+        # swept the same water) is what the difference/separation terms should move.
+        if ep_ttfs:
+            writer.add_scalar("team/time_to_first_success_mean", float(np.mean(ep_ttfs)), global_step)
+            writer.add_scalar("team/time_to_first_success_median", float(np.median(ep_ttfs)), global_step)
+        if ep_redundancy:
+            writer.add_scalar("team/coverage_redundancy", float(np.mean(ep_redundancy)), global_step)
+        if ep_nn_dist:
+            writer.add_scalar("team/nn_distance", float(np.mean(ep_nn_dist)), global_step)
 
         # Periodic deterministic evaluation — charts/success_rate above tracks the
         # STOCHASTIC policy; greedy argmax is what plot_trajectories.py and

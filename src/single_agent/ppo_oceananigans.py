@@ -98,7 +98,7 @@ class Args:
     """the id of the environment"""
     xml_file: str = "config/simulation.xml"
     """SwarmSwIM simulation XML"""
-    netcdf_file: str = "data/oceananigans/buoyancy_active"
+    netcdf_file: str = "data/oceananigans/buoyancy_active/train"
     """Oceananigans NetCDF source: a directory (all *.nc), a glob, or a single file.
     Each reset draws a random file and (static mode) a random snapshot within it, so
     every episode sees a different frozen field sampled from the whole set. Default is
@@ -151,9 +151,24 @@ class Args:
     of the episode's snapshot — monotone toward the zone, NO local optima.
     Training-time privileged info: feeds only the reward, never the observation;
     potential-based shaping keeps the optimal policy identical (Ng et al. 1999)."""
+    min_spawn_distance: float = 0.0
+    """distant-start difficulty knob: if >0, reject-sample spawns until the agent
+    starts at least this many METRES from the nearest success-zone cell (0 = the
+    original uniform spawn). Pair with target_mode='tail' for the hard regime; the
+    single-agent policy trained here is the N-independent-PPO baseline, so match
+    this to whatever the multi-agent runs use."""
+    spawn_max_tries: int = 200
+    """rejection budget per agent for min_spawn_distance; the farthest candidate
+    found is used if none clears the threshold (so a too-large distance can't hang)."""
+    dead_reckoning: bool = False
+    """append the body-frame displacement from spawn (3) to the obs — the odometry
+    ablation. Was unreachable from this trainer until the env-cfg key list was fixed."""
+    coverage_cell: float = 50.0
+    """voxel edge (m) for the coverage diagnostic. Kept here so the N-independent-PPO
+    baseline reports the same time-to-first-success/coverage fields as the swarm runs."""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
-    max_steps: int = 3600
+    max_steps: int = 1800
     """maximum env steps per episode before truncation. One env step ≈ 1 m of travel
     (v_agent·dt·frame_skip = 1 m), the domain is 1 km and targets spawn ~0.3·diagonal
     ≈ 425 m away, so 1440 steps (~24 min sim) is ~3.4× the optimal path — enough slack
@@ -183,6 +198,9 @@ class Args:
     distance check, so targets may land close to the spawn — episode difficulty then
     varies (some easy, near-target episodes), giving a stuck sparse-reward policy
     denser success signal to bootstrap from. Raise (e.g. 0.3) to force far targets."""
+    wall_penalty: float = 0.0
+    """per-step penalty applied when an agent is driven into a domain wall. 0 =
+    disabled (default). Listed in ENV_CFG_KEYS; kept for config/back-compat."""
     success_steps_required: int = 1
     """consecutive in-zone steps required to count as success. 1 (run 1783508432) let
     a single lucky in-zone step terminate: on the turbulent LES field the STOCHASTIC
@@ -219,7 +237,7 @@ class Args:
     at 7.5M, so a full lr→0 decay by 10M throws away the best policy. Base runs never
     annealed lr either. Keep a flat lr and let the entropy anneal do the late-stage
     sharpening instead."""
-    gamma: float = 0.9997
+    gamma: float = 0.9995
     """discount factor; effective horizon 1/(1-γ) = 1000 steps ≈ 1000 m, matched to
     the ~1 m/step, up-to-1280-step episodes. MUST equal the env's γ for the
     potential-based shaping to stay policy-invariant (passed to the env below)."""
@@ -311,12 +329,16 @@ class Args:
 # dict so worker processes can unpickle the env factory without importing this
 # (torch-heavy) module — see src/envs/oceananigans_factory.py.
 ENV_CFG_KEYS = (
+    # NOTE: min_band_grad / target_min_dist_frac / wall_penalty used to be listed
+    # here but are not OceananigansEnv parameters — the factory dropped them, so
+    # setting those flags silently did nothing. Removed rather than implemented.
     "xml_file", "netcdf_file", "k", "v_agent", "max_steps", "dt", "domain",
-    "frame_skip", "gamma", "success_bonus", "static_frame", "min_band_grad",
-    "target_min_dist_frac", "wall_penalty", "success_steps_required",
+    "frame_skip", "gamma", "success_bonus", "static_frame",
+    "success_steps_required",
     "max_cached_loaders", "epsilon_salinity", "epsilon_turbidity",
     "sigma_s", "sigma_tau", "target_mode", "target_percentile",
-    "reward_potential",
+    "reward_potential", "min_spawn_distance", "spawn_max_tries",
+    "dead_reckoning", "coverage_cell",
 )
 
 
@@ -492,6 +514,7 @@ def train(args):
     ep_returns = deque(maxlen=STATS_WINDOW)
     ep_lengths = deque(maxlen=STATS_WINDOW)
     ep_terminated = deque(maxlen=STATS_WINDOW)  # 1.0 if reached target, 0.0 if truncated
+    ep_ttfs = deque(maxlen=STATS_WINDOW)        # episode length, successful episodes only
 
     progress = Progress(
         TextColumn("[bold blue]iter"), MofNCompleteColumn(), BarColumn(),
@@ -564,6 +587,13 @@ def train(args):
                     writer.add_scalar("charts/episodic_return", float(ep_stats["r"][i]), global_step)
                     writer.add_scalar("charts/episodic_length", float(ep_stats["l"][i]), global_step)
                     writer.add_scalar("charts/episode_success", succ, global_step)
+                    # For ONE agent, time-to-first-success is just the length of a
+                    # successful episode. Logged under the same team/ tag the swarm
+                    # trainers use so the N-independent-PPO baseline is directly
+                    # comparable on the efficiency question in TensorBoard.
+                    if succ:
+                        ep_ttfs.append(float(ep_stats["l"][i]))
+                        writer.add_scalar("team/time_to_first_success", float(ep_stats["l"][i]), global_step)
 
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
@@ -652,6 +682,9 @@ def train(args):
         writer.add_scalar("charts/SPS", sps, global_step)
         if ep_terminated:
             writer.add_scalar("charts/success_rate", float(np.mean(ep_terminated)), global_step)
+        if ep_ttfs:
+            writer.add_scalar("team/time_to_first_success_mean", float(np.mean(ep_ttfs)), global_step)
+            writer.add_scalar("team/time_to_first_success_median", float(np.median(ep_ttfs)), global_step)
 
         # Periodic deterministic evaluation — charts/success_rate above tracks the
         # STOCHASTIC policy, which can score ~0.5 by diffusion alone (2026-07-09

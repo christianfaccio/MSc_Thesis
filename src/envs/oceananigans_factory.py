@@ -42,10 +42,20 @@ def make_raw_env_from_cfg(cfg: dict) -> OceananigansEnv:
         sigma_tau=cfg["sigma_tau"],
         target_mode=cfg["target_mode"],
         target_percentile=cfg["target_percentile"],
-        reward_potential=cfg.get("reward_potential", "error"),
+        # Default MUST match OceananigansEnv's own default: a mismatch here means
+        # eval/plot tooling silently shapes on a different potential than training.
+        reward_potential=cfg.get("reward_potential", "distance"),
         dead_reckoning=cfg.get("dead_reckoning", False),
         communication=cfg.get("communication", False),
         comms_radius=cfg.get("comms_radius", float("inf")),
+        min_spawn_distance=cfg.get("min_spawn_distance", 0.0),
+        spawn_max_tries=cfg.get("spawn_max_tries", 200),
+        alpha_individual=cfg.get("alpha_individual", 1.0),
+        beta_difference=cfg.get("beta_difference", 0.0),
+        lambda_separation=cfg.get("lambda_separation", 0.0),
+        separation_scale=cfg.get("separation_scale", 150.0),
+        shared_success_bonus=cfg.get("shared_success_bonus", False),
+        coverage_cell=cfg.get("coverage_cell", 50.0),
     )
 
 

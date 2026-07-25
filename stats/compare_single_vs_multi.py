@@ -1,50 +1,58 @@
 """
-Head-to-head comparison of THREE policies on the Oceananigans swarm task, all
-deployed with the SAME number of agents (default N=2):
+Head-to-head comparison of ANY NUMBER of policies on the Oceananigans swarm
+task, all deployed with the SAME number of agents (default N=2):
 
-  1. single-agent  — one PPO policy trained with n_agents=1, deployed as N
-                     INDEPENDENT copies (batched forward, no shared observation,
-                     no coordination). This is the "N independent RL agents"
-                     baseline the thesis must beat.
-  2. multi-agent   — the MAPPO/IPPO shared policy trained jointly at N agents
-                     (centralized critic in training; decentralized at exec).
-  3. random        — N agents choosing uniformly-random actions (the luck floor).
+  * each --policy arm is a trained PPO (single-agent) or MAPPO/IPPO (multi-agent)
+    checkpoint. Single- and multi-agent checkpoints are AUTO-DETECTED and
+    deployed identically as N agents in an N-agent env — a PPO policy runs as N
+    INDEPENDENT copies (batched forward, no shared obs, no coordination); a
+    MAPPO/IPPO policy runs its jointly-trained shared policy. So you can line up,
+    in ONE run, e.g. ppo vs mappo vs mappo+comm without re-rolling ppo each time.
+  * random — N agents choosing uniformly-random actions (the luck floor), added
+    by default (drop with --no-random).
 
 The thesis claim is "a jointly-trained MARL policy with N agents beats N
 independent single-agent RL policies", judged on success_any (the metric the
 committee cares about). This script makes that comparison HONEST:
 
   * every arm is evaluated on the SAME episode seeds, so each seed is the SAME
-    frozen field + target + spawn for all three arms -> the episodes are PAIRED;
+    frozen field + target + spawn for all arms -> the episodes are PAIRED;
   * the primary metric (episode success_any, first-reach lens) is reported with
-    a Wilson 95% CI per arm AND a paired McNemar exact test between arms, so
-    "MAPPO > single-agent" is a statistical statement, not an eyeball;
+    a Wilson 95% CI per arm AND a paired McNemar exact test for EVERY pair of
+    arms, so "MAPPO > single-agent" is a statistical statement, not an eyeball;
   * success_all / per-agent / SPL / success@T are reported too (use
     --no-end-on-any-success for the swarm-truth lens where success_all is
     meaningful — under the default first-reach lens the episode ends at the
     first arrival, so success_all is censored).
 
-The single-agent policy runs in an N-agent env built WITHOUT the communication
-neighbor block, so its per-agent observation is byte-identical to what it was
-trained on (obs dims are N-independent when communication=False). The MAPPO
-policy runs in its own N-agent env. Both envs are forced to identical
-task-defining parameters (field, domain, target mode, epsilon, ...), so a seed
-reproduces the same instance in every arm.
+The FIRST policy supplies the common task config (field, domain, target mode,
+epsilon, ...); every other arm is FORCED onto it, so a seed reproduces the same
+instance in every arm. The obs-affecting params (k, communication,
+dead_reckoning, sigma_*) stay per-arm — each policy sees exactly the observation
+layout it was trained on.
 
-Outputs (under --out-dir, default stats/out/compare__<sa>__vs__<ma>/):
+Outputs (under --out-dir, default stats/out/compare__<labels>__N<N>_<mode>/):
   * summary.json          — every metric + the paired McNemar tests
   * per_episode.csv       — one row per agent-episode, arm in the 'mode' column
-  * paired_episodes.csv   — one row per seed: success_any/all for all three arms
+  * paired_episodes.csv    — one row per seed: success_any/all for all arms
   * figures/success_at_budget.png  — success vs step budget (any solid, all dashed)
   * figures/approach_curve.png     — mean distance-to-zone vs normalized time
   * figures/success_bars.png       — success_any / success_all / per-agent / SPL
 
 Usage:
+    # new multi-policy form (label optional; derived from the run name if omitted)
+    python stats/compare_single_vs_multi.py \
+        --policy ppo=runs/ppo_buoyancy_history/checkpoints/latest.pt \
+        --policy mappo=runs/mappo_buoyancy_history_success_all/checkpoints/iter_0720.pt \
+        --policy mappo_comm=runs/mappo_comms_success_all/checkpoints/iter_0720.pt \
+        --netcdf-file data/oceananigans/buoyancy_active/test \
+        --episodes 200 --seed 0 --no-end-on-any-success
+
+    # legacy two-arm form still works
     python stats/compare_single_vs_multi.py \
         --sa-checkpoint runs/ppo_buoyancy_history/checkpoints/latest.pt \
         --ma-checkpoint runs/mappo_buoyancy_history/checkpoints/latest.pt \
-        --netcdf-file data/oceananigans/buoyancy_active/test \
-        --episodes 200 --seed 0
+        --netcdf-file data/oceananigans/buoyancy_active/test --episodes 200 --seed 0
 """
 import argparse
 import csv
@@ -70,54 +78,79 @@ import eval_oceananigans_stats as ev  # reuse env/policy/rollout/metric machiner
 
 BUDGETS = (100, 250, 500, 700, 1000, 1500, 2000, 3600)
 
-# Task-defining parameters copied from the multi-agent checkpoint onto the
-# single-agent env so a seed reproduces the SAME field/target/spawn in every
-# arm. These affect the episode INSTANCE, not the observation layout — the
-# obs-affecting params (k, communication, dead_reckoning, sigma_*) stay per-arm.
+# Task-defining parameters copied from the FIRST policy's checkpoint onto every
+# other arm so a seed reproduces the SAME field/target/spawn everywhere. These
+# affect the episode INSTANCE, not the observation layout — the obs-affecting
+# params (k, communication, dead_reckoning, sigma_*) stay per-arm.
 TASK_KEYS = ("netcdf_file", "domain", "target_mode", "target_percentile",
              "static_frame", "epsilon_salinity", "epsilon_turbidity",
              "v_agent", "dt", "frame_skip", "max_steps", "n_agents",
-             "end_on_any_success", "eval_success_steps")
+             "end_on_any_success", "eval_success_steps",
+             "min_spawn_distance", "spawn_max_tries")
 
-COLORS = {"single-agent": "tab:blue", "multi-agent": "tab:red",
-          "random": "tab:gray"}
+# Keys whose mismatch vs the task-source policy is worth surfacing (a policy
+# optimized on a different task is still evaluated, but the warning flags it).
+WARN_KEYS = ("netcdf_file", "target_mode", "epsilon_salinity", "domain",
+             "target_percentile", "static_frame")
+
+# Qualitative palette for the policy arms (random is always gray).
+_PALETTE = ["tab:blue", "tab:red", "tab:green", "tab:purple", "tab:orange",
+            "tab:brown", "tab:pink", "tab:olive", "tab:cyan"]
 
 
 # --------------------------------------------------------------------------- #
 def parse_args():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--sa-checkpoint", required=True,
-                   help="single-agent PPO checkpoint (.pt), deployed as N copies")
-    p.add_argument("--ma-checkpoint", required=True,
-                   help="multi-agent MAPPO/IPPO checkpoint (.pt)")
+    p.add_argument("--policy", action="append", default=[], metavar="[LABEL=]CKPT",
+                   help="a policy arm as LABEL=path/to/checkpoint.pt (repeatable). "
+                        "LABEL is optional (derived from the run name if omitted). "
+                        "PPO / MAPPO / IPPO checkpoints are auto-detected and all "
+                        "deployed as N agents. The FIRST policy supplies the common "
+                        "task config.")
+    # legacy two-arm aliases (kept for backward compatibility)
+    p.add_argument("--sa-checkpoint", default=None,
+                   help="(legacy) shorthand for --policy single-agent=CKPT")
+    p.add_argument("--ma-checkpoint", default=None,
+                   help="(legacy) shorthand for --policy multi-agent=CKPT")
+    p.add_argument("--no-random", dest="include_random", action="store_false",
+                   default=True, help="omit the random baseline arm (on by default)")
     p.add_argument("--n-agents", type=int, default=2,
-                   help="agents per arm (default 2). Must equal the MA checkpoint's "
-                        "trained n_agents if it uses communication (its neighbor-block "
+                   help="agents per arm (default 2). Must equal a policy's trained "
+                        "n_agents if that policy uses communication (its neighbor-block "
                         "observation is N-specific); free otherwise.")
     p.add_argument("--netcdf-file", type=str, default=None,
                    help="field spec for ALL arms — a folder (globs *.nc), a single "
-                        ".nc, or a glob. Default: the MA checkpoint's field. Use a "
+                        ".nc, or a glob. Default: the first policy's field. Use a "
                         "held-out split, e.g. data/oceananigans/buoyancy_active/test.")
     p.add_argument("--episodes", type=int, default=100,
                    help="paired episodes (same seeds across arms; default 100)")
     p.add_argument("--seed", type=int, default=None,
                    help="base seed; episode i uses seed+i (default: random base)")
     p.add_argument("--max-steps", type=int, default=None,
-                   help="override episode length for all arms (default: MA checkpoint's)")
+                   help="override episode length for all arms (default: first policy's)")
     p.add_argument("--target-mode", type=str, default=None,
                    choices=["random", "tail"],
-                   help="override the target sampling for ALL arms (default: the MA "
-                        "checkpoint's). 'tail' draws S* from a rare salinity tail on the "
+                   help="override the target sampling for ALL arms (default: the first "
+                        "policy's). 'tail' draws S* from a rare salinity tail on the "
                         "target's depth plane (LOW/HIGH 50/50), shrinking the success "
                         "zone so success needs real navigation — the harder, "
                         "meeting-scenario regime. Applied identically to every arm, so "
                         "the episodes stay paired.")
     p.add_argument("--target-percentile", type=float, default=None,
-                   help="tail width in percent (tail mode only; default: MA "
-                        "checkpoint's, typically 5.0)")
+                   help="tail width in percent (tail mode only; default: first "
+                        "policy's, typically 5.0)")
     p.add_argument("--success-steps", type=int, default=1,
                    help="consecutive in-zone steps counted as success (default 1)")
+    p.add_argument("--min-spawn-distance", type=float, default=0.0,
+                   help="distant-start difficulty knob: reject-sample spawns until "
+                        "every agent starts at least this many METRES from the nearest "
+                        "success-zone cell, applied identically to all arms (paired). "
+                        "0 (default) = original uniform spawn. Most meaningful with "
+                        "--target-mode tail, where the zone is small and localized.")
+    p.add_argument("--spawn-max-tries", type=int, default=200,
+                   help="rejection budget per agent for --min-spawn-distance (default "
+                        "200); the farthest candidate is used if none clears it.")
     p.add_argument("--mode", default="greedy", choices=["greedy", "stochastic"],
                    help="decode for the trained policies (default greedy = deployment)")
     p.add_argument("--end-on-any-success", dest="end_on_any_success",
@@ -129,8 +162,63 @@ def parse_args():
                    help="swarm-truth lens: episode runs until EVERY agent arrives, so "
                         "success_all and per-agent success are de-censored.")
     p.add_argument("--out-dir", type=str, default=None,
-                   help="output dir (default: stats/out/compare__<sa>__vs__<ma>/)")
+                   help="output dir (default: stats/out/compare__<labels>__N<N>_<mode>/)")
     return p.parse_args()
+
+
+# --------------------------------------------------------------------------- #
+def collect_policy_specs(cli):
+    """Ordered list of (label_or_None, checkpoint_path) from the legacy aliases
+    (first) followed by every --policy entry. The first spec is the task source."""
+    specs = []
+    if cli.sa_checkpoint:
+        specs.append(("single-agent", cli.sa_checkpoint))
+    if cli.ma_checkpoint:
+        specs.append(("multi-agent", cli.ma_checkpoint))
+    for item in cli.policy:
+        if "=" in item:
+            label, path = item.split("=", 1)
+            specs.append((label.strip() or None, path.strip()))
+        else:
+            specs.append((None, item.strip()))
+    if not specs:
+        raise SystemExit(
+            "no policies given. Pass at least one --policy LABEL=checkpoint.pt "
+            "(or the legacy --sa-checkpoint / --ma-checkpoint).")
+    return specs
+
+
+def derive_label(ckpt, path, kind):
+    """A short arm label: the run's exp_name if available, else the run dir name."""
+    rn = ckpt.get("run_name")
+    if rn and "__" in rn:
+        parts = rn.split("__")
+        if len(parts) >= 2 and parts[1]:
+            return parts[1]                       # exp_name slot of the run name
+    # fallback: the directory two levels above the checkpoint (the run dir)
+    run_dir = os.path.basename(os.path.dirname(os.path.dirname(path)))
+    return run_dir or kind
+
+
+def uniquify(label, existing):
+    """Disambiguate a duplicate label with a #2, #3, ... suffix."""
+    if label not in existing:
+        return label
+    i = 2
+    while f"{label}#{i}" in existing:
+        i += 1
+    return f"{label}#{i}"
+
+
+def build_colors(labels):
+    colors, k = {}, 0
+    for l in labels:
+        if l == "random":
+            colors[l] = "tab:gray"
+        else:
+            colors[l] = _PALETTE[k % len(_PALETTE)]
+            k += 1
+    return colors
 
 
 # --------------------------------------------------------------------------- #
@@ -145,9 +233,9 @@ def mcnemar_exact(a_wins, b_wins):
     return float(min(1.0, 2.0 * tail))
 
 
-def load_arm(ckpt_path, task_args, device, mode, is_multi_hint):
+def load_arm(ckpt_path, task_args, device, mode):
     """Build the env (task params forced from `task_args`) + the action selector
-    for one trained-policy arm. Returns (env, selector, agg_label_kind, obs_dim)."""
+    for one trained-policy arm. Returns (ckpt, env, selector, kind, obs_dim)."""
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     a = ckpt["args"]
     if "netcdf_file" not in a:
@@ -252,25 +340,43 @@ def print_table(labels, results, ep_stats, header):
     print("=" * total)
 
 
-def print_mcnemar(labels, any_by_label):
-    print("\nPaired McNemar exact test on episode success_any (same seeds):")
-    print("-" * 74)
-    for a, b in ((labels[0], labels[1]), (labels[1], labels[2]), (labels[0], labels[2])):
-        xa = np.asarray(any_by_label[a], bool)
-        xb = np.asarray(any_by_label[b], bool)
-        a_wins = int(np.sum(xa & ~xb))   # a succeeded, b failed
-        b_wins = int(np.sum(xb & ~xa))
-        p = mcnemar_exact(a_wins, b_wins)
-        sig = "**" if p < 0.05 else ("*" if p < 0.10 else "ns")
-        lead = a if a_wins > b_wins else b
-        print(f"  {a:>16} vs {b:<16}  {a}-only={a_wins:3d}  {b}-only={b_wins:3d}  "
-              f"p={p:.3f} {sig}  (lead: {lead})")
-    print("-" * 74)
+def pairwise_mcnemar(labels, flags_by_label):
+    """Exact McNemar for every unordered pair; returns list of dicts.
+
+    `flags_by_label` maps label -> per-episode 0/1 outcome, so the same routine
+    serves success_any and success_all."""
+    out = []
+    for i in range(len(labels)):
+        for j in range(i + 1, len(labels)):
+            a, b = labels[i], labels[j]
+            xa = np.asarray(flags_by_label[a], bool)
+            xb = np.asarray(flags_by_label[b], bool)
+            a_wins = int(np.sum(xa & ~xb))   # a succeeded, b failed
+            b_wins = int(np.sum(xb & ~xa))
+            p = mcnemar_exact(a_wins, b_wins)
+            lead = a if a_wins > b_wins else (b if b_wins > a_wins else "tie")
+            out.append(dict(a=a, b=b, a_only=a_wins, b_only=b_wins,
+                            p_value=p, lead=lead))
+    return out
+
+
+def print_mcnemar(labels, flags_by_label, metric="success_any"):
+    tests = pairwise_mcnemar(labels, flags_by_label)
+    w = max(12, max(len(l) for l in labels))
+    print(f"\nPaired McNemar exact test on episode {metric} (same seeds):")
+    print("-" * (2 * w + 52))
+    for t in tests:
+        sig = "**" if t["p_value"] < 0.05 else ("*" if t["p_value"] < 0.10 else "ns")
+        print(f"  {t['a']:>{w}} vs {t['b']:<{w}}  {t['a']}-only={t['a_only']:3d}  "
+              f"{t['b']}-only={t['b_only']:3d}  p={t['p_value']:.3f} {sig}  "
+              f"(lead: {t['lead']})")
+    print("-" * (2 * w + 52))
     print("  ** p<0.05   * p<0.10   ns not significant")
+    return tests
 
 
 # --------------------------------------------------------------------------- #
-def make_plots(fig_dir, labels, results, curves, any_ts, all_ts, ep_stats,
+def make_plots(fig_dir, labels, colors, results, curves, any_ts, all_ts, ep_stats,
                max_steps, n_agents, episodes):
     os.makedirs(fig_dir, exist_ok=True)
 
@@ -286,7 +392,7 @@ def make_plots(fig_dir, labels, results, curves, any_ts, all_ts, ep_stats,
             plt.step(x, y, where="post", lw=2, color=color, linestyle=style, label=label)
 
     for l in labels:
-        c = COLORS[l]
+        c = colors[l]
         cdf(any_ts[l], c, "-", f"{l} (any)")
         cdf(all_ts[l], c, "--", f"{l} (all)")
     plt.xlabel("step budget T"); plt.ylabel("episode success within T")
@@ -301,7 +407,7 @@ def make_plots(fig_dir, labels, results, curves, any_ts, all_ts, ep_stats,
     for l in labels:
         grid, curve = curves[l]
         if curve is not None:
-            plt.plot(grid, curve, lw=2, color=COLORS[l], label=l)
+            plt.plot(grid, curve, lw=2, color=colors[l], label=l)
     plt.xlabel("normalized episode time"); plt.ylabel("distance to zone / spawn distance")
     plt.title(f"Mean approach to target zone  (N={n_agents})"); plt.ylim(0, 1.05)
     plt.grid(alpha=0.3); plt.legend()
@@ -314,10 +420,10 @@ def make_plots(fig_dir, labels, results, curves, any_ts, all_ts, ep_stats,
                 results[l]["success_rate"], results[l]["spl_mean"]] for l in labels}
     x = np.arange(len(metrics))
     w = 0.8 / len(labels)
-    plt.figure(figsize=(8.5, 5))
+    plt.figure(figsize=(max(8.5, 2.0 * len(labels)), 5))
     for j, l in enumerate(labels):
         xs = x + (j - (len(labels) - 1) / 2) * w
-        bars = plt.bar(xs, vals[l], width=w, color=COLORS[l], label=l)
+        plt.bar(xs, vals[l], width=w, color=colors[l], label=l)
         for xi, v in zip(xs, vals[l]):
             if v is not None:
                 plt.text(xi, v + 0.01, f"{v * 100:.0f}" if v <= 1 else f"{v:.2f}",
@@ -347,81 +453,95 @@ def main():
     cli = parse_args()
     device = torch.device("cpu")
     N = cli.n_agents
+    specs = collect_policy_specs(cli)
 
-    # Resolve the common task config from the MA checkpoint + CLI overrides. Both
-    # trained-policy arms and the random arm are forced onto these, so a seed is
-    # the SAME episode instance in every arm (paired comparison).
-    ma_raw = torch.load(cli.ma_checkpoint, map_location=device, weights_only=False)
-    if "netcdf_file" not in ma_raw["args"]:
-        raise SystemExit(f"'{cli.ma_checkpoint}' is not an Oceananigans checkpoint.")
-    task = SimpleNamespace(**ma_raw["args"])
+    # Resolve the common task config from the FIRST policy + CLI overrides. Every
+    # arm (trained + random) is forced onto these, so a seed is the SAME episode
+    # instance in every arm (paired comparison).
+    src_raw = torch.load(specs[0][1], map_location=device, weights_only=False)
+    if "netcdf_file" not in src_raw["args"]:
+        raise SystemExit(f"'{specs[0][1]}' is not an Oceananigans checkpoint.")
+    task = SimpleNamespace(**src_raw["args"])
     task.n_agents = N
     task.netcdf_file = cli.netcdf_file or task.netcdf_file
     task.max_steps = cli.max_steps or task.max_steps
     task.end_on_any_success = cli.end_on_any_success
     task.eval_success_steps = cli.success_steps
+    task.min_spawn_distance = cli.min_spawn_distance
+    task.spawn_max_tries = cli.spawn_max_tries
     if cli.target_mode is not None:
         task.target_mode = cli.target_mode
     if cli.target_percentile is not None:
         task.target_percentile = cli.target_percentile
 
-    if getattr(task, "communication", False) and N != int(ma_raw["args"].get("n_agents", 1)):
-        raise SystemExit(
-            f"MA checkpoint was trained with communication at n_agents="
-            f"{ma_raw['args'].get('n_agents')}, whose neighbor-block observation is "
-            f"N-specific — rerun with --n-agents {ma_raw['args'].get('n_agents')}.")
+    # Build every policy arm. Random (if requested) reuses the first arm's env
+    # (identical task params -> paired instances; it ignores the observation).
+    labels, arms, kinds, dims, run_names, paths = [], {}, {}, {}, {}, {}
+    for label, path in specs:
+        ckpt, env, selector, kind, dim = load_arm(path, task, device, cli.mode)
+        # communication policies are locked to their trained n_agents (their
+        # neighbor-block observation is N-specific).
+        if ckpt["args"].get("communication", False) and \
+                N != int(ckpt["args"].get("n_agents", 1)):
+            raise SystemExit(
+                f"'{path}' was trained with communication at n_agents="
+                f"{ckpt['args'].get('n_agents')}, whose neighbor-block observation is "
+                f"N-specific — rerun with --n-agents {ckpt['args'].get('n_agents')}.")
+        if label is None:
+            label = derive_label(ckpt, path, kind)
+        label = uniquify(label, labels)
+        # surface task mismatches vs the source policy (still evaluated, forced
+        # onto the common task, but the policy was optimized on a different one).
+        for key in WARN_KEYS:
+            sv, mv = ckpt["args"].get(key), src_raw["args"].get(key)
+            if sv is not None and mv is not None and \
+                    tuple(np.atleast_1d(sv)) != tuple(np.atleast_1d(mv)):
+                print(f"  WARNING: [{label}] trained with {key}={sv} but task source "
+                      f"used {key}={mv} — forcing {mv} (episodes still paired, but "
+                      f"this policy was optimized on a different task).")
+        labels.append(label)
+        arms[label] = (env, selector)
+        kinds[label] = kind
+        dims[label] = dim
+        paths[label] = path
+        run_names[label] = ckpt.get("run_name") or os.path.basename(
+            os.path.dirname(os.path.dirname(path)))
 
-    # Warn if the single-agent checkpoint was trained on a different task instance
-    # (its task params get FORCED to the common set, but a mismatch means the two
-    # policies were not trained on the same problem — worth surfacing).
-    sa_raw = torch.load(cli.sa_checkpoint, map_location=device, weights_only=False)
-    for key in ("netcdf_file", "target_mode", "epsilon_salinity", "domain",
-                "target_percentile", "static_frame"):
-        sv, mv = sa_raw["args"].get(key), ma_raw["args"].get(key)
-        if key != "netcdf_file" and sv is not None and mv is not None and \
-                tuple(np.atleast_1d(sv)) != tuple(np.atleast_1d(mv)):
-            print(f"  WARNING: single-agent trained with {key}={sv} but multi-agent "
-                  f"used {key}={mv} — forcing {mv} for the eval (episodes still paired, "
-                  f"but the SA policy was optimized on a different task).")
+    if cli.include_random:
+        sel_random = ev.make_random_selector(cli.seed if cli.seed is not None else 0)
+        arms["random"] = (arms[labels[0]][0], sel_random)  # reuse first env -> paired
+        labels.append("random")
+        kinds["random"] = "random"
+        dims["random"] = dims[labels[0]]
 
-    # Build the three arms.  Random reuses the single-agent env (identical task
-    # params, communication off) so its episodes are paired with the others.
-    _, env_sa, sel_sa, kind_sa, dim_sa = load_arm(
-        cli.sa_checkpoint, task, device, cli.mode, is_multi_hint=False)
-    _, env_ma, sel_ma, kind_ma, dim_ma = load_arm(
-        cli.ma_checkpoint, task, device, cli.mode, is_multi_hint=True)
-    sel_random = ev.make_random_selector(
-        cli.seed if cli.seed is not None else 0)
-
-    labels = ["single-agent", "multi-agent", "random"]
-    arms = {
-        "single-agent": (env_sa, sel_sa),
-        "multi-agent": (env_ma, sel_ma),
-        "random": (env_sa, sel_random),  # same env as SA -> paired instances
-    }
-
+    colors = build_colors(labels)
     dt_s = task.dt * task.frame_skip
     base_seed = cli.seed if cli.seed is not None else int(
         np.random.SeedSequence().entropy % (2 ** 31))
     multi_agent = N > 1
 
-    run_name_sa = sa_raw.get("run_name") or os.path.basename(
-        os.path.dirname(os.path.dirname(cli.sa_checkpoint)))
-    run_name_ma = ma_raw.get("run_name") or os.path.basename(
-        os.path.dirname(os.path.dirname(cli.ma_checkpoint)))
-    tag = f"compare__{run_name_sa}__vs__{run_name_ma}__N{N}__{task.target_mode}"
+    pol_labels = [l for l in labels if l != "random"]
+    tag = "compare__" + "__".join(l[:20] for l in pol_labels) + \
+          f"__N{N}__{task.target_mode}"
+    if cli.min_spawn_distance > 0.0:
+        tag += f"__d{int(cli.min_spawn_distance)}"
     out_dir = cli.out_dir or os.path.join(ROOT, "stats", "out", tag)
     os.makedirs(out_dir, exist_ok=True)
 
     lens = "first-reach (success_any)" if cli.end_on_any_success else "all-success (swarm-truth)"
-    print(f"Single-agent : {cli.sa_checkpoint}  ({kind_sa}, obs {dim_sa})")
-    print(f"Multi-agent  : {cli.ma_checkpoint}  ({kind_ma}, obs {dim_ma})")
+    print(f"Policies ({len(pol_labels)}):")
+    for l in pol_labels:
+        print(f"  [{l:>16}] {kinds[l]:>5}  obs {dims[l]:>3}  <- {run_names[l]}")
+    print(f"Random arm   : {'yes' if cli.include_random else 'no'}")
     print(f"Agents/arm   : {N}   Episodes: {cli.episodes} paired, base seed {base_seed}")
     tgt = f"{task.target_mode}" + (f" (±{task.target_percentile}%)"
                                    if task.target_mode == "tail" else "")
     print(f"Field        : {task.netcdf_file}   max_steps {task.max_steps}   "
           f"success_steps {cli.success_steps}")
     print(f"Target       : {tgt}")
+    if cli.min_spawn_distance > 0.0:
+        print(f"Spawn        : >= {cli.min_spawn_distance:.0f} m from zone "
+              f"(distant-start, {cli.spawn_max_tries} tries/agent)")
     print(f"Lens         : {lens}   decode: {cli.mode}")
     print(f"Out          : {out_dir}")
 
@@ -446,35 +566,50 @@ def main():
         ep_stats[l] = dict(
             any_rate=k_any / n_ep, any_ci=list(ev.wilson_ci(k_any, n_ep)),
             all_rate=k_all / n_ep, all_ci=list(ev.wilson_ci(k_all, n_ep)), n=n_ep)
-        print(f"  [{l:>12}] success_any {ep_stats[l]['any_rate']*100:5.1f}%  "
+        print(f"  [{l:>16}] success_any {ep_stats[l]['any_rate']*100:5.1f}%  "
               f"success_all {ep_stats[l]['all_rate']*100:5.1f}%  "
               f"per-agent {agg['success_rate']*100:5.1f}%  SPL {agg['spl_mean']:.3f}")
 
-    header = (f"single-agent vs multi-agent vs random   N={N}   "
+    header = (f"{' vs '.join(labels)}   N={N}   "
               f"{cli.episodes} paired episodes   [{lens}]")
     print_table(labels, results, ep_stats, header)
-    print_mcnemar(labels, any_by_label)
+    tests = print_mcnemar(labels, any_by_label, "success_any")
+    # success_all is the swarm-truth lens and the one where cooperation (comms,
+    # CTDE) can actually pay: success_any over N no-comms agents is best-of-N
+    # independent draws, so it cannot reward coordination by construction.
+    if cli.end_on_any_success:
+        print("\n  [success_all McNemar skipped: --end-on-any-success stops the "
+              "episode at first arrival, so success_all is censored. "
+              "Re-run with --no-end-on-any-success.]")
+        tests_all = []
+    else:
+        tests_all = print_mcnemar(labels, all_by_label, "success_all")
 
-    make_plots(os.path.join(out_dir, "figures"), labels, results, curves,
+    make_plots(os.path.join(out_dir, "figures"), labels, colors, results, curves,
                any_ts, all_ts, ep_stats, task.max_steps, N, cli.episodes)
 
-    # McNemar tests for the JSON record.
-    mcnemar = {}
-    for a, b in (("multi-agent", "single-agent"), ("multi-agent", "random"),
-                 ("single-agent", "random")):
-        xa, xb = np.asarray(any_by_label[a], bool), np.asarray(any_by_label[b], bool)
-        aw, bw = int(np.sum(xa & ~xb)), int(np.sum(xb & ~xa))
-        mcnemar[f"{a}_vs_{b}"] = dict(a_only=aw, b_only=bw,
-                                      p_value=mcnemar_exact(aw, bw))
+    def _mcnemar_block(ts):
+        return {f"{t['a']}_vs_{t['b']}": dict(
+            a_only=t["a_only"], b_only=t["b_only"],
+            p_value=t["p_value"], lead=t["lead"]) for t in ts}
+
+    mcnemar = _mcnemar_block(tests)
+    mcnemar_all = _mcnemar_block(tests_all)
 
     summary = dict(
-        sa_checkpoint=cli.sa_checkpoint, ma_checkpoint=cli.ma_checkpoint,
-        sa_kind=kind_sa, ma_kind=kind_ma, n_agents=N,
+        policies={l: dict(checkpoint=paths[l],
+                          run_name=run_names[l], kind=kinds[l], obs_dim=dims[l])
+                  for l in pol_labels},
+        labels=labels, include_random=cli.include_random,
+        task_source=labels[0], n_agents=N,
         episodes=cli.episodes, base_seed=base_seed, max_steps=task.max_steps,
         success_steps=cli.success_steps, netcdf_file=task.netcdf_file,
+        target_mode=task.target_mode, target_percentile=task.target_percentile,
+        min_spawn_distance=cli.min_spawn_distance,
         end_on_any_success=cli.end_on_any_success, decode=cli.mode,
         generated=datetime.now().isoformat(timespec="seconds"),
         episode_stats=ep_stats, results=results, mcnemar_success_any=mcnemar,
+        mcnemar_success_all=mcnemar_all,
     )
     with open(os.path.join(out_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -483,8 +618,8 @@ def main():
                      labels, any_by_label, all_by_label, cli.episodes)
 
     print(f"\nWrote summary.json, per_episode.csv, paired_episodes.csv, figures/ -> {out_dir}")
-    env_sa.close()
-    env_ma.close()
+    for env in {id(arms[l][0]): arms[l][0] for l in labels}.values():
+        env.close()
 
 
 if __name__ == "__main__":

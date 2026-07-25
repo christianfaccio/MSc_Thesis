@@ -63,6 +63,15 @@ class OceananigansEnv(gym.Env):
                  dead_reckoning: bool = False,      # append the body-frame dead-reckoned displacement from spawn (3) to the obs — the odometry ablation over the 9-dim baseline
                  communication: bool = False,       # multi-agent: append a per-neighbor block (5 each) enabling field triangulation — [in_range, rel_x, rel_y, rel_z (body frame), S_j - S*]
                  comms_radius: float = float("inf"),# communication range (m); neighbors farther than this are zeroed (in_range=0). inf = global sharing (default)
+                 min_spawn_distance: float = 0.0,   # if >0, reject-sample spawns until every agent starts at least this many metres from the nearest success-zone cell (a distant-start difficulty knob; 0 = original uniform spawn)
+                 spawn_max_tries: int = 200,        # rejection-sampling budget per agent for min_spawn_distance; the farthest candidate found is used if none clears the threshold
+                 # --- team-reward block (all defaults reproduce the individual-reward baseline byte-for-byte) ---
+                 alpha_individual: float = 1.0,     # weight on the per-agent potential Φ_i (the original shaping term)
+                 beta_difference: float = 0.0,      # weight on the difference-reward potential D_i = G(s) − G(s_-i); the division-of-labour incentive
+                 lambda_separation: float = 0.0,    # weight on the anti-redundancy potential Φ_sep (saturating nearest-neighbour separation)
+                 separation_scale: float = 150.0,   # ℓ (m): separation past this buys no Φ_sep — size to the field's salinity-gradient correlation length (~100-150 m measured)
+                 shared_success_bonus: bool = False,# give success_bonus to EVERY live agent, not just the one that reached; this is what turns the race into a cooperative game
+                 coverage_cell: float = 50.0,       # (m) voxel edge for the episode coverage/redundancy diagnostic; 0 disables the tracking
                  ):
         super().__init__()
 
@@ -125,8 +134,46 @@ class OceananigansEnv(gym.Env):
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
 
+        # --- team reward ---
+        # The reward is a weighted sum of THREE potentials, each a function of the
+        # joint state, so every one of them keeps the γΦ(s')−Φ(s) telescoping and
+        # leaves the optimal JOINT policy unchanged (Ng et al. 1999; Devlin &
+        # Kudenko 2011 for the multi-agent extension):
+        #   Φ_i   individual distance-to-zone  — dense, per-agent guidance
+        #   D_i   difference reward G(s)−G(s_-i) — credit only for progress the
+        #         team would NOT have had without agent i (Wolpert & Tumer 2002,
+        #         as a potential: Devlin et al. 2014). This is the division-of-
+        #         labour term: shadowing a teammate earns exactly zero.
+        #   Φ_sep saturating nearest-neighbour separation — dense anti-redundancy.
+        # shared_success_bonus is the one change that genuinely moves the
+        # equilibrium (a sparse bonus is not a potential): with end_on_any_success
+        # the default per-agent bonus makes the episode a RACE (if a teammate wins
+        # first, everyone else loses their shot), which is why coordination has
+        # nothing to buy at the baseline.
+        self.alpha_individual = float(alpha_individual)
+        self.beta_difference = float(beta_difference)
+        self.lambda_separation = float(lambda_separation)
+        self.separation_scale = float(separation_scale)
+        self.shared_success_bonus = bool(shared_success_bonus)
+        self.team_reward = (self.beta_difference != 0.0) or (self.lambda_separation != 0.0)
+        if self.team_reward and self.n_agents < 2:
+            raise ValueError(
+                "beta_difference/lambda_separation require n_agents >= 2 "
+                f"(got n_agents={self.n_agents}); both terms are identically zero for a single agent.")
+        if self.separation_scale <= 0.0:
+            raise ValueError(f"separation_scale must be > 0, got {self.separation_scale}")
+        self._prev_difference = np.zeros(self.n_agents, dtype=np.float64)
+        self._prev_separation = np.zeros(self.n_agents, dtype=np.float64)
+        # Coverage diagnostic: per-agent set of visited voxel ids, reduced at
+        # episode end to a redundancy ratio (see _coverage_stats).
+        self.coverage_cell = float(coverage_cell)
+        self._visited = None
+        self._first_success_step = None
+
         self.dead_reckoning = bool(dead_reckoning)
         self.communication = bool(communication)
+        self.min_spawn_distance = float(min_spawn_distance)
+        self.spawn_max_tries = int(spawn_max_tries)
         self.comms_radius = float(comms_radius)
         self.action_space = gym.spaces.Discrete(27)
         # obs = 9 baseline [+3 dead-reckoning] [+5·(N-1) neighbor-comms] + 5k history
@@ -329,6 +376,42 @@ class OceananigansEnv(gym.Env):
         pts = np.column_stack((loader.x[ix], loader.y[iy], z_down[iz]))
         self._zone_tree = cKDTree(pts)
 
+    def _sample_far_position(self):
+        '''One spawn position at least min_spawn_distance metres from the nearest
+        success-zone cell. Rejection-samples up to spawn_max_tries uniform points;
+        returns the first that clears the threshold, else the farthest one found
+        (so a threshold larger than the domain can't hang the reset).'''
+        best_pos, best_d = None, -1.0
+        for _ in range(self.spawn_max_tries):
+            pos = np.array([self.np_random.uniform(0.0, self.domain[0]),
+                            self.np_random.uniform(0.0, self.domain[1]),
+                            self.np_random.uniform(0.0, self.domain[2])])
+            d, _ = self._zone_tree.query((pos[0], pos[1], pos[2]))
+            if d >= self.min_spawn_distance:
+                return pos
+            if d > best_d:
+                best_d, best_pos = float(d), pos
+        return best_pos
+
+    def _respawn_far_from_zone(self, loader):
+        '''Replace all agents with fresh ones whose start is far from the zone.
+        Agents are RE-CREATED (not moved) because Agent caches measured/commanded
+        state from initialPosition; the zone tree is built on demand when the
+        reward isn't the distance potential.'''
+        if self._zone_tree is None:
+            self._build_zone_index(loader)
+        self.sim.remove(*self.sim.agents)
+        for i in range(self.n_agents):
+            agent = Agent(
+                    name=f"A{i + 1:02d}",
+                    Dt=self.dt,
+                    initialPosition=self._sample_far_position(),
+                    initialHeading=self.np_random.uniform(-180.0, 180.0),
+                    agent_xml="config/agent.xml",
+                    rng=int(self.np_random.integers(2**31))
+                )
+            self.sim.add(agent)
+
     def _potential_at(self, agent, S, tau) -> float:
         '''Shaping potential Φ(s) for one agent — the reward_potential switch.
         "error":    Gaussian over the measurement error (agent-sensible, but the
@@ -350,6 +433,93 @@ class OceananigansEnv(gym.Env):
                            sigma_s=self.sigma_s, sigma_tau=self.sigma_tau,
                            eps_s=self.epsilon_salinity, eps_tau=self.epsilon_turbidity)
 
+    def _zone_distances(self, live=None):
+        '''Distance from every agent to the nearest success-zone cell, (N,).
+        Agents excluded by `live` get +inf so they can never win a min().'''
+        pos = np.array([a.pos for a in self.sim.agents], dtype=float)
+        d = np.full(self.n_agents, np.inf, dtype=np.float64)
+        sel = np.ones(self.n_agents, dtype=bool) if live is None else live
+        if sel.any():
+            d[sel], _ = self._zone_tree.query(pos[sel])
+        return d
+
+    def _g(self, d) -> float:
+        '''The distance potential 10·(1 − d/diag) shared by Φ_i and the team terms.'''
+        return 10.0 * (1.0 - float(d) / self._domain_diag)
+
+    def _team_potentials(self):
+        '''(D, Φ_sep), each (N,) and each a function of the JOINT state.
+
+        D_i = G(s) − G(s_-i), with G(s) = g(min_j d_j) the team objective implied
+        by end_on_any_success ("the closest agent is what matters"). The
+        leave-one-out min of a scalar set is the runner-up for the current
+        leader and the leader for everybody else, so D is ZERO for every agent
+        except the closest one, for which it equals its margin over the
+        runner-up. Used as a potential, so γD(s')−D(s) preserves invariance.
+        The incentive: an agent trailing a teammate contributes nothing to
+        min_j d_j, earns nothing, and can only earn by leading somewhere the
+        others are not — division of labour as a gradient, not a heuristic.
+
+        Φ_sep,i = 10·min(d_i^NN / ℓ, 1): the agent's own distance to its nearest
+        live teammate, saturating at ℓ = separation_scale. The saturation is
+        load-bearing — an unbounded dispersion term is maximised by fleeing to
+        opposite corners, whereas past one gradient-correlation length there is
+        no more independent information to gain.
+
+        Agents that have already succeeded are excluded from both terms: a frozen
+        agent sits at d≈0 and would otherwise be the permanent leader (zeroing
+        every other agent's D forever when end_on_any_success is False), and it
+        no longer samples the field, so it should not repel anyone either.
+        '''
+        D = np.zeros(self.n_agents, dtype=np.float64)
+        sep = np.zeros(self.n_agents, dtype=np.float64)
+        if not self.team_reward:
+            return D, sep
+        live = ~self._success
+        if int(live.sum()) < 2:
+            # With fewer than two live agents there is no team: no runner-up to
+            # be credited against, and no neighbour to be separated from.
+            return D, sep
+
+        if self.beta_difference != 0.0:
+            d = self._zone_distances(live)
+            lead, runner = np.argsort(d)[:2]
+            D[lead] = self._g(d[lead]) - self._g(d[runner])
+
+        if self.lambda_separation != 0.0:
+            p = np.array([a.pos for a in self.sim.agents], dtype=float)[live]
+            dist = np.linalg.norm(p[:, None, :] - p[None, :, :], axis=-1)
+            np.fill_diagonal(dist, np.inf)
+            sep[live] = 10.0 * np.minimum(dist.min(axis=1) / self.separation_scale, 1.0)
+        return D, sep
+
+    def _track_coverage(self):
+        '''Accumulate each agent's visited voxel (coverage diagnostic only).'''
+        if self._visited is None:
+            return
+        for i, agent in enumerate(self.sim.agents):
+            if self._success[i]:
+                continue
+            self._visited[i].add(tuple(np.floor_divide(agent.pos, self.coverage_cell).astype(np.int64)))
+
+    def _coverage_stats(self) -> dict:
+        '''Episode-end coverage summary.
+
+        redundancy = |union of visited voxels| / Σ_i |agent i's visited voxels|.
+        1.0 = perfectly disjoint search (ideal division of labour); 1/N = every
+        agent swept exactly the same water. This is the metric the difference and
+        separation terms are supposed to move, and it is independent of whether
+        the episode happened to succeed.
+        '''
+        if self._visited is None:
+            return {}
+        per_agent = sum(len(s) for s in self._visited)
+        if per_agent == 0:
+            return {}
+        union = set().union(*self._visited)
+        return {"coverage_redundancy": len(union) / per_agent,
+                "coverage_cells": float(len(union))}
+
     def _is_in_zone(self, salinity, turbidity) -> bool:
         '''True when the given (S, τ) lie within epsilon of the target couple.'''
         return (
@@ -369,6 +539,14 @@ class OceananigansEnv(gym.Env):
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
         self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
+        self._prev_difference = np.zeros(self.n_agents, dtype=np.float64)
+        self._prev_separation = np.zeros(self.n_agents, dtype=np.float64)
+        self._first_success_step = None
+        self._visited = ([set() for _ in range(self.n_agents)]
+                         if self.coverage_cell > 0.0 else None)
+        # The zone tree is snapshot- AND target-specific: drop last episode's or
+        # the on-demand rebuild below silently measures against a stale zone.
+        self._zone_tree = None
 
         # Create Sim
         loader = None
@@ -462,9 +640,20 @@ class OceananigansEnv(gym.Env):
             self.target_salinity = salinity_at(x_sel, y_sel, z_sel)
             self.target_turbidity = compute_turbidity(z_sel)
 
-        # Reward 
-        if self.reward_potential == "distance":
+        # Reward. The difference term is defined on distance-to-zone regardless of
+        # which potential the individual term uses, so it needs the tree too.
+        if self.reward_potential == "distance" or self.beta_difference != 0.0:
             self._build_zone_index(loader)
+
+        # Distant-start difficulty knob: re-place every agent at least
+        # min_spawn_distance metres from the success zone (needs the zone tree,
+        # built here on demand if the reward doesn't already use it). Guarded so
+        # the default (0.0) path keeps the original uniform spawn byte-for-byte.
+        if self.min_spawn_distance > 0.0:
+            self._respawn_far_from_zone(loader)
+            spawn = self.sim.agents[0].pos
+            self.current_salinity = loader.salinity_at(spawn[0], spawn[1], spawn[2])
+            self.current_turbidity = compute_turbidity(spawn[2])
 
         # Dead-reckoning anchor: displacement in the obs is measured from here.
         self._spawn_pos = np.array([a.pos.copy() for a in self.sim.agents])
@@ -488,6 +677,10 @@ class OceananigansEnv(gym.Env):
             if i == 0:
                 self.current_salinity = S
                 self.current_turbidity = tau
+        # Seed the joint-state potentials so the first step's γΦ(s')−Φ(s) is a
+        # true difference and not a one-off Φ(s') windfall.
+        self._prev_difference, self._prev_separation = self._team_potentials()
+        self._track_coverage()
         info = {"global_state": self._build_global_state()}
         if self.n_agents == 1:
             return obs[0], info
@@ -513,9 +706,16 @@ class OceananigansEnv(gym.Env):
                 agent.pos[:] = np.clip(agent.pos, [0.0, 0.0, 0.0], self.domain)
         self.t_step += 1
 
+        # Joint-state potentials at s', evaluated ONCE before the per-agent loop
+        # so every agent is scored against the same success set (the loop below
+        # mutates self._success as agents terminate).
+        live_at_entry = ~self._success
+        D_next, sep_next = self._team_potentials()
+
         # Build next obs, reward and success flags per agent
         obs = np.zeros((self.n_agents, self.observation_space.shape[0]), dtype=np.float32)
         rewards = np.zeros(self.n_agents, dtype=np.float32)
+        newly_succeeded = np.zeros(self.n_agents, dtype=bool)
         for i, agent in enumerate(self.sim.agents):
             next_obs_i, phi_next, S, tau = self._build_state(
                 i, agent, None if self._success[i] else actions[i])
@@ -532,13 +732,36 @@ class OceananigansEnv(gym.Env):
                 self._in_zone_steps[i] = 0
             terminated_i = self._in_zone_steps[i] >= self._success_steps_required
 
+            # Every potential is forced to 0 at the agent's own terminal state
+            # (Ng et al. require Φ(terminal)=0); truncation keeps the real Φ(s')
+            # so the trainer can bootstrap from it.
             phi_next_eff = 0.0 if terminated_i else phi_next
-            r = self.gamma * phi_next_eff - self._prev_potential[i]
+            r = self.alpha_individual * (self.gamma * phi_next_eff - self._prev_potential[i])
+            if self.beta_difference != 0.0:
+                d_next_eff = 0.0 if terminated_i else D_next[i]
+                r += self.beta_difference * (self.gamma * d_next_eff - self._prev_difference[i])
+            if self.lambda_separation != 0.0:
+                sep_next_eff = 0.0 if terminated_i else sep_next[i]
+                r += self.lambda_separation * (self.gamma * sep_next_eff - self._prev_separation[i])
             if terminated_i:
-                r += self.success_bonus
                 self._success[i] = True
+                newly_succeeded[i] = True
+                if self._first_success_step is None:
+                    self._first_success_step = self.t_step
+                if not self.shared_success_bonus:
+                    r += self.success_bonus
             rewards[i] = r
             self._prev_potential[i] = phi_next
+        self._prev_difference = D_next
+        self._prev_separation = sep_next
+
+        # Cooperative bonus: every agent that was still live at the start of this
+        # step is paid for EACH success scored during it, the succeeder included.
+        # Without this the game is a race and coordination has nothing to buy.
+        if self.shared_success_bonus and newly_succeeded.any():
+            rewards[live_at_entry] += self.success_bonus * float(newly_succeeded.sum())
+
+        self._track_coverage()
 
         terminateds = self._success.copy()
         out_of_time = self.t_step >= self.max_steps
@@ -546,7 +769,30 @@ class OceananigansEnv(gym.Env):
         truncateds = np.full(self.n_agents, episode_over) & (~self._success)
 
         info = {"global_state": self._build_global_state()}
+        if episode_over or bool(terminateds.all()):
+            info.update(self._episode_stats())
         if self.n_agents == 1:
             return (obs[0], float(rewards[0]), bool(terminateds[0]),
                     bool(truncateds[0]), info)
         return obs, rewards, terminateds, truncateds, info
+
+    def _episode_stats(self) -> dict:
+        '''Coordination diagnostics, emitted in `info` on the episode's last step.
+
+        time_to_first_success is the headline efficiency metric for the swarm:
+        with end_on_any_success the team's job is to make SOMEONE arrive early,
+        and that is what N agents should buy over one. NaN on a failed episode,
+        so it must be aggregated over successful episodes only (a mean over all
+        episodes would silently reward failing fast).
+        '''
+        stats = {"time_to_first_success": (float(self._first_success_step)
+                                           if self._first_success_step is not None
+                                           else float("nan"))}
+        if self.n_agents > 1:
+            pos = np.array([a.pos for a in self.sim.agents], dtype=float)
+            dist = np.linalg.norm(pos[:, None, :] - pos[None, :, :], axis=-1)
+            np.fill_diagonal(dist, np.inf)
+            stats["nn_distance"] = float(dist.min(axis=1).mean())
+            stats["spread"] = float(np.linalg.norm(pos - pos.mean(axis=0), axis=1).mean())
+        stats.update(self._coverage_stats())
+        return stats
