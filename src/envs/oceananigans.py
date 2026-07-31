@@ -63,7 +63,8 @@ class OceananigansEnv(gym.Env):
                  dead_reckoning: bool = False,      # append the body-frame dead-reckoned displacement from spawn (3) to the obs — the odometry ablation over the 9-dim baseline
                  communication: bool = False,       # multi-agent: append a per-neighbor block (5 each) enabling field triangulation — [in_range, rel_x, rel_y, rel_z (body frame), S_j - S*]
                  comms_radius: float = float("inf"),# communication range (m); neighbors farther than this are zeroed (in_range=0). inf = global sharing (default)
-                 min_spawn_distance: float = 0.0,   # if >0, reject-sample spawns until every agent starts at least this many metres from the nearest success-zone cell (a distant-start difficulty knob; 0 = original uniform spawn)
+                 spawn_mode: str = "random",        # "random" = uniform over the domain; "origin" = every agent at (0,0,0); "max_dist" = evenly spread along the two land walls at z=0 (see _spawn_positions)
+                 min_spawn_distance: float = 0.0,   # if >0, reject-sample spawns until every agent starts at least this many metres from the nearest success-zone cell (a distant-start difficulty knob; 0 = original uniform spawn). Only meaningful with spawn_mode="random"
                  spawn_max_tries: int = 200,        # rejection-sampling budget per agent for min_spawn_distance; the farthest candidate found is used if none clears the threshold
                  # --- team-reward block (all defaults reproduce the individual-reward baseline byte-for-byte) ---
                  alpha_individual: float = 1.0,     # weight on the per-agent potential Φ_i (the original shaping term)
@@ -172,7 +173,17 @@ class OceananigansEnv(gym.Env):
 
         self.dead_reckoning = bool(dead_reckoning)
         self.communication = bool(communication)
+        self.spawn_mode = str(spawn_mode)
+        if self.spawn_mode not in ("random", "origin", "max_dist"):
+            raise ValueError(
+                f"spawn_mode must be 'random', 'origin' or 'max_dist', "
+                f"got {spawn_mode!r}")
         self.min_spawn_distance = float(min_spawn_distance)
+        if self.min_spawn_distance > 0.0 and self.spawn_mode != "random":
+            raise ValueError(
+                "min_spawn_distance reject-samples the spawn point, which is "
+                f"meaningless with the deterministic spawn_mode={self.spawn_mode!r}. "
+                "Use spawn_mode='random', or set min_spawn_distance=0.")
         self.spawn_max_tries = int(spawn_max_tries)
         self.comms_radius = float(comms_radius)
         self.action_space = gym.spaces.Discrete(27)
@@ -239,6 +250,50 @@ class OceananigansEnv(gym.Env):
 
         return S, tau, u, v, w, gu, gv, gw
 
+    def _spawn_positions(self):
+        '''(N, 3) initial positions for this episode, per `spawn_mode`.
+
+        "random"   — uniform over the whole domain (the training default).
+        "origin"   — every agent at (0, 0, 0): the whole swarm dropped at ONE
+                     point on the coast corner. Models a single deployment from
+                     a boat/pier, and is the hardest case for redundancy: the
+                     agents start with identical observations, so any dispersal
+                     has to come from the policy (or from the stochastic decode).
+        "max_dist" — evenly spread along the two LAND walls at the surface. The
+                     land is the West (x=0) and South (y=0) borders, so the
+                     deployable coastline is the L-shaped path
+                         (L,0) -> (0,0) -> (0,L)
+                     of total length 2L. Agent i sits at the centre of the i-th
+                     of N equal segments, s_i = (i + 0.5)·2L/N, which is the
+                     maximum-separation placement along that path. For N=2 that
+                     gives exactly (500,0,0) and (0,500,0) on the 1 km domain.
+
+        z=0 (the surface) for both fixed modes — the agents are thrown in from
+        land. Heading stays random in every mode: a deployment does not control
+        which way the vehicle is pointing when it hits the water, and it keeps
+        some episode-to-episode variability in the otherwise fixed start.
+        '''
+        Lx, Ly, Lz = self.domain
+        n = self.n_agents
+        if self.spawn_mode == "random":
+            return np.array([[self.np_random.uniform(0.0, Lx),
+                              self.np_random.uniform(0.0, Ly),
+                              self.np_random.uniform(0.0, Lz)]
+                             for _ in range(n)], dtype=float)
+        if self.spawn_mode == "origin":
+            return np.zeros((n, 3), dtype=float)
+
+        # max_dist: walk the L-shaped coastline, arclength s from (Lx,0) to (0,Ly).
+        total = Lx + Ly
+        pos = np.zeros((n, 3), dtype=float)
+        for i in range(n):
+            s = (i + 0.5) * total / n
+            if s <= Lx:
+                pos[i] = (Lx - s, 0.0, 0.0)       # along the South wall (y=0)
+            else:
+                pos[i] = (0.0, s - Lx, 0.0)       # along the West wall (x=0)
+        return pos
+
     def _build_state(self, i, agent, action=None) -> tuple[np.ndarray, float, float, float]:
         '''
         Returns (obs (9+5k,), Φ(s), S, τ) for agent index `i`; the caller turns
@@ -258,8 +313,8 @@ class OceananigansEnv(gym.Env):
             (3)     -> ONLY if dead_reckoning: body-frame displacement from the
                        spawn point (ddx, ddy, dwz) — purely relative odometry,
                        no absolute position leaks into the actor
-            (5·(N-1))-> ONLY if communication: one block PER OTHER AGENT (in agent
-                       index order) enabling field triangulation:
+            (5·(N-1))-> ONLY if communication: one block PER OTHER AGENT (sorted
+                       NEAREST-FIRST) enabling field triangulation:
                        (in_range, rel_x, rel_y, rel_z, S_j - S*). rel_* is the
                        neighbor's position relative to THIS agent, rotated into
                        this agent's body frame; S_j - S* is the neighbor's
@@ -295,16 +350,26 @@ class OceananigansEnv(gym.Env):
                       -dwx * sin_psi + dwy * cos_psi,
                       dwz]
         if self.communication:
-            # One block per OTHER agent (index order → fixed slots for the
-            # parameter-shared actor). Body-frame relative position + the
-            # neighbor's salinity error: with (S_i-S*) already in the frame the
-            # actor can form the long-baseline gradient (S_j-S_i)/‖rel‖ that a
-            # single agent's local gradient cannot see past the ~100-150 m horizon.
-            for j, other in enumerate(self.sim.agents):
-                if j == i:
-                    continue
-                rel = other.pos - agent.pos
-                if float(np.linalg.norm(rel)) <= self.comms_radius:
+            # One block per OTHER agent, sorted NEAREST-FIRST. Body-frame relative
+            # position + the neighbor's salinity error: with (S_i-S*) already in the
+            # frame the actor can form the long-baseline gradient (S_j-S_i)/‖rel‖
+            # that a single agent's local gradient cannot see past the ~100-150 m
+            # horizon.
+            #
+            # Distance ordering, not agent-index ordering: the actor is parameter-
+            # shared, so under index order slot 0 means "agent 1" to agent 0 but
+            # "agent 0" to agent 1 — the same weights would have to decode a
+            # different neighbor identity per agent. Sorting by range makes every
+            # slot mean the same thing to everyone ("my nearest neighbor", "my
+            # second nearest", ...), which is the permutation-invariant encoding
+            # the shared actor actually needs. At N=2 there is a single slot, so
+            # this is a no-op and earlier 2-agent runs stay comparable.
+            others = [(float(np.linalg.norm(other.pos - agent.pos)), j, other)
+                      for j, other in enumerate(self.sim.agents) if j != i]
+            others.sort(key=lambda t: (t[0], t[1]))   # index breaks distance ties
+            for dist, _, other in others:
+                if dist <= self.comms_radius:
+                    rel = other.pos - agent.pos
                     Sj = self._measure(other)[0]
                     frame += [1.0,
                               rel[0] * cos_psi + rel[1] * sin_psi,
@@ -565,14 +630,13 @@ class OceananigansEnv(gym.Env):
         self.sim = Simulator(timeSubdivision=self.dt, sim_xml=self.sim_xml, netcdf_file=loader)
         self.sim.remove(*self.sim.agents)  # drop ALL xml-defined agents, not just the first
 
-        # Add N agents with random position + heading.
+        # Add N agents at the spawn_mode's positions, with random heading.
+        spawn_pos = self._spawn_positions()
         for i in range(self.n_agents):
             agent = Agent(
                     name=f"A{i + 1:02d}",
                     Dt=self.dt,
-                    initialPosition=np.array([self.np_random.uniform(0.0, self.domain[0]),
-                                              self.np_random.uniform(0.0, self.domain[1]),
-                                              self.np_random.uniform(0.0, self.domain[2])]),
+                    initialPosition=spawn_pos[i].copy(),
                     initialHeading=self.np_random.uniform(-180.0, 180.0),
                     agent_xml="config/agent.xml",
                     rng=int(self.np_random.integers(2**31))

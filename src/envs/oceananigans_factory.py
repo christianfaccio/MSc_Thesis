@@ -48,6 +48,7 @@ def make_raw_env_from_cfg(cfg: dict) -> OceananigansEnv:
         dead_reckoning=cfg.get("dead_reckoning", False),
         communication=cfg.get("communication", False),
         comms_radius=cfg.get("comms_radius", float("inf")),
+        spawn_mode=cfg.get("spawn_mode", "random"),
         min_spawn_distance=cfg.get("min_spawn_distance", 0.0),
         spawn_max_tries=cfg.get("spawn_max_tries", 200),
         alpha_individual=cfg.get("alpha_individual", 1.0),

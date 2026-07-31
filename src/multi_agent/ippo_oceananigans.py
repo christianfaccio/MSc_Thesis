@@ -135,6 +135,16 @@ class Args:
     obs (in_range flag = 0). Default inf = global sharing (establish the ceiling);
     pass a finite value later to model the Abu Dhabi range constraint without code
     changes."""
+    spawn_mode: str = "random"
+    """where the agents start each episode.
+    "random"   = uniform over the domain (the training default);
+    "origin"   = every agent at (0,0,0) — the whole swarm dropped at one point
+                 on the coast corner, as if thrown in from a single boat/pier;
+    "max_dist" = evenly spread along the two LAND walls (West x=0, South y=0) at
+                 the surface, at maximum separation. For N=2 on the 1 km domain
+                 that is (500,0,0) and (0,500,0).
+    Both fixed modes spawn at z=0 with a random heading. min_spawn_distance is
+    only valid with "random"."""
     min_spawn_distance: float = 0.0
     """distant-start difficulty knob: if >0, reject-sample every agent's spawn until
     it starts at least this many METRES from the nearest success-zone cell (0 = the
@@ -146,13 +156,19 @@ class Args:
     alpha_individual: float = 1.0
     """weight on the per-agent potential Φ_i (the original, individual shaping term).
     Leave at 1.0 unless deliberately trading per-agent guidance for team signal."""
-    beta_difference: float = 1.0
+    beta_difference: float = 0.0
     """weight on the DIFFERENCE-REWARD potential D_i = G(s) − G(s_-i), G(s) = g(min_j d_j).
     Zero for every agent except the one currently closest to the zone, for which it is
-    its margin over the runner-up: an agent shadowing a teammate earns nothing and can
-    only earn by leading somewhere the others are not. This is the division-of-labour
-    term. Used as a potential, so invariance holds (D-PBRS, Devlin et al. 2014).
-    ON by default; set 0.0 to recover the individual-reward baseline."""
+    its margin over the runner-up (D-PBRS, Devlin et al. 2014).
+    OFF by default (decided 2026-07-26). Two reasons. It is a function of the SAME
+    quantity as the individual potential (distance to zone), so it does not add
+    information — it just doubles the progress signal for whichever agent happens to
+    lead, leaving the trailing agent's signal untouched. Under parameter sharing one
+    network then sees identical behaviour ("moved 1 m closer") paid at two different
+    rates depending on a teammate's position, which is variance without new content.
+    And it is not really a division-of-labour term: it rewards LEADING, not spreading,
+    and any explicit spread incentive is wrong here anyway — two agents may legitimately
+    need to converge on the same target. Set >0 only to reintroduce the ablation."""
     lambda_separation: float = 0.0
     """weight on the anti-redundancy potential Φ_sep = 10·min(d_NN/ℓ, 1) — dense
     counterpart to the (sparse) difference reward. OFF by default: on the 1 km domain
@@ -300,7 +316,7 @@ ENV_CFG_KEYS = (
     "success_steps_required", "max_cached_loaders", "end_on_any_success",
     "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
     "target_mode", "target_percentile", "reward_potential", "dead_reckoning",
-    "communication", "comms_radius", "min_spawn_distance", "spawn_max_tries",
+    "communication", "comms_radius", "spawn_mode", "min_spawn_distance", "spawn_max_tries",
     "alpha_individual", "beta_difference", "lambda_separation",
     "separation_scale", "shared_success_bonus", "coverage_cell",
 )

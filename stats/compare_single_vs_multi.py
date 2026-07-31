@@ -86,7 +86,8 @@ TASK_KEYS = ("netcdf_file", "domain", "target_mode", "target_percentile",
              "static_frame", "epsilon_salinity", "epsilon_turbidity",
              "v_agent", "dt", "frame_skip", "max_steps", "n_agents",
              "end_on_any_success", "eval_success_steps",
-             "min_spawn_distance", "spawn_max_tries")
+             "spawn_mode", "min_spawn_distance", "spawn_max_tries",
+             "max_cached_loaders")
 
 # Keys whose mismatch vs the task-source policy is worth surfacing (a policy
 # optimized on a different task is still evaluated, but the warning flags it).
@@ -115,10 +116,18 @@ def parse_args():
                    help="(legacy) shorthand for --policy multi-agent=CKPT")
     p.add_argument("--no-random", dest="include_random", action="store_false",
                    default=True, help="omit the random baseline arm (on by default)")
-    p.add_argument("--n-agents", type=int, default=2,
-                   help="agents per arm (default 2). Must equal a policy's trained "
-                        "n_agents if that policy uses communication (its neighbor-block "
-                        "observation is N-specific); free otherwise.")
+    p.add_argument("--n-agents", type=int, nargs="+", default=[2], metavar="N",
+                   help="agents per arm (default 2). Accepts SEVERAL values, e.g. "
+                        "--n-agents 2 4: the comparison is then run once per group, and "
+                        "a cross-N scaling section reports how each policy's margin over "
+                        "--baseline changes with N. A communication policy joins ONLY the "
+                        "group matching its trained n_agents (its neighbor-block "
+                        "observation is N-specific); every other policy, and random, join "
+                        "every group.")
+    p.add_argument("--baseline", type=str, default=None, metavar="LABEL",
+                   help="arm label used as the reference in the cross-N scaling section "
+                        "(default: the first single-agent/PPO arm, which is the "
+                        "'N independent copies' control the thesis claim is against).")
     p.add_argument("--netcdf-file", type=str, default=None,
                    help="field spec for ALL arms — a folder (globs *.nc), a single "
                         ".nc, or a glob. Default: the first policy's field. Use a "
@@ -142,6 +151,16 @@ def parse_args():
                         "policy's, typically 5.0)")
     p.add_argument("--success-steps", type=int, default=1,
                    help="consecutive in-zone steps counted as success (default 1)")
+    p.add_argument("--spawn-mode", type=str, default=None,
+                   choices=["random", "origin", "max_dist"],
+                   help="where the agents start, applied identically to every arm "
+                        "(default: the first policy's, normally 'random'). "
+                        "'origin' drops the whole swarm at (0,0,0) — one deployment "
+                        "point on the coast corner. 'max_dist' spreads them evenly "
+                        "along the two land walls (West x=0, South y=0) at z=0, at "
+                        "maximum separation; for N=2 that is (500,0,0) and (0,500,0). "
+                        "Both fixed modes model a real deployment and are incompatible "
+                        "with --min-spawn-distance.")
     p.add_argument("--min-spawn-distance", type=float, default=0.0,
                    help="distant-start difficulty knob: reject-sample spawns until "
                         "every agent starts at least this many METRES from the nearest "
@@ -151,6 +170,18 @@ def parse_args():
     p.add_argument("--spawn-max-tries", type=int, default=200,
                    help="rejection budget per agent for --min-spawn-distance (default "
                         "200); the farthest candidate is used if none clears it.")
+    p.add_argument("--max-cached-loaders", type=int, default=None,
+                   help="per-arm NetCDF loader LRU cap (default: the first policy's, "
+                        "normally 8). Memory, not semantics: EVERY arm keeps its own "
+                        "cache, so a 6-arm comparison can hold 6x this many open "
+                        "fields. Lower it to ~2 when running several comparisons in "
+                        "parallel; the cost is re-opening files on a cache miss.")
+    p.add_argument("--comms-radius", type=float, default=None,
+                   help="override the communication range (metres) at eval time for "
+                        "every communication arm; ignored by no-comms policies. The "
+                        "observation LAYOUT is unchanged, only how much of the "
+                        "neighbor block is non-zero — so 0 zeroes it entirely and "
+                        "asks whether the policy was ever using comms at all.")
     p.add_argument("--mode", default="greedy", choices=["greedy", "stochastic"],
                    help="decode for the trained policies (default greedy = deployment)")
     p.add_argument("--end-on-any-success", dest="end_on_any_success",
@@ -233,6 +264,50 @@ def mcnemar_exact(a_wins, b_wins):
     return float(min(1.0, 2.0 * tail))
 
 
+def paired_diff_ci(xa, xb, z=1.96):
+    """Paired difference in success proportions, p(a) - p(b), with a normal-approx
+    CI on the DISCORDANT pairs (the McNemar variance). Same data the exact test
+    uses, but reporting an effect size rather than only a p-value — 'MAPPO beats
+    the baseline by 9 points [2, 16]' is what a committee needs, since with 200
+    episodes a 1-point difference can be significant and still be irrelevant."""
+    xa = np.asarray(xa, bool); xb = np.asarray(xb, bool)
+    n = int(xa.size)
+    b = int(np.sum(xa & ~xb))      # a succeeded, b failed
+    c = int(np.sum(xb & ~xa))
+    d = (b - c) / n
+    var = (b + c - (b - c) ** 2 / n) / (n ** 2)
+    se = math.sqrt(max(var, 0.0))
+    half = z * se
+    # A difference of proportions lives in [-1, 1]; the normal approximation can
+    # overshoot that at small n or near-degenerate discordance. `se` is kept
+    # UNCLAMPED so unpaired_diff_ci() can still combine variances correctly.
+    return dict(diff=float(d), lo=float(max(-1.0, d - half)),
+                hi=float(min(1.0, d + half)), se=float(se),
+                a_only=b, b_only=c, n=n)
+
+
+def unpaired_diff_ci(d1, d2, z=1.96):
+    """Difference of two INDEPENDENT paired margins (the cross-N scaling test).
+
+    The N=2 and N=4 groups cannot be paired: OceananigansEnv.reset() draws the
+    agent spawns before the snapshot index and the target, so changing n_agents
+    shifts the RNG stream and the same seed yields a different field AND target.
+    Each within-N margin is still paired (all arms share that group's episodes);
+    the two margins are then independent samples, so their variances add."""
+    d = d1["diff"] - d2["diff"]
+    half = z * math.sqrt(d1["se"] ** 2 + d2["se"] ** 2)
+    return dict(diff=float(d), lo=float(max(-2.0, d - half)),
+                hi=float(min(2.0, d + half)))
+
+
+def median_t_any(ts):
+    """Median first-reach time over episodes that succeeded. Conditioned on
+    success, so it is only comparable between arms with similar success rates —
+    the censoring-free view is the success@budget curve."""
+    hit = [t for t in ts if t is not None]
+    return float(np.median(hit)) if hit else None
+
+
 def load_arm(ckpt_path, task_args, device, mode):
     """Build the env (task params forced from `task_args`) + the action selector
     for one trained-policy arm. Returns (ckpt, env, selector, kind, obs_dim)."""
@@ -245,6 +320,16 @@ def load_arm(ckpt_path, task_args, device, mode):
     # stay as trained; only the task instance params are forced to be common.
     for key in TASK_KEYS:
         setattr(args, key, getattr(task_args, key))
+
+    # comms_radius is an OBSERVATION param, so it is normally left as trained.
+    # Overriding it at eval time is the one deliberate exception: it does not
+    # change the observation LAYOUT (the 5·(N-1) neighbor block stays), only how
+    # much of it is non-zero, so a comms policy can be re-tested under a shorter
+    # range — or at radius 0, which zeroes the whole block and asks whether the
+    # policy was ever actually using it.
+    radius = getattr(task_args, "comms_radius_override", None)
+    if radius is not None and getattr(args, "communication", False):
+        args.comms_radius = float(radius)
 
     env = ev.build_env(args)
     try:
@@ -267,7 +352,42 @@ def load_arm(ckpt_path, task_args, device, mode):
     return ckpt, env, selector, kind, obs_dim
 
 
-def run_arm(env, selector, base_seed, episodes, max_steps, multi_agent, dt_s):
+def swarm_coverage(traces, cell=50.0):
+    """Per-episode search-overlap metrics, recomputed from the position traces.
+
+    OceananigansEnv emits coverage_redundancy/nn_distance in the terminal info
+    dict, but ev.rollout_episode drops info, so they are recomputed here from
+    the same voxelization the env uses (`coverage_cell` metres).
+
+      redundancy = |union of visited voxels| / sum of per-agent voxel counts
+                   1.0 = perfectly disjoint sweeps, 1/N = everyone swept the
+                   same water. This is the metric communication and CTDE are
+                   supposed to move, and success_any cannot see it.
+      nn_distance = mean over time of the mean nearest-neighbour separation.
+
+    Both are None for a single agent (no overlap to measure)."""
+    if len(traces) < 2:
+        return None, None
+    per_agent, union = [], set()
+    for tr in traces:
+        vox = {tuple(v) for v in np.floor(np.asarray(tr["pos"]) / cell).astype(int)}
+        per_agent.append(len(vox))
+        union |= vox
+    total = sum(per_agent)
+    redundancy = (len(union) / total) if total else None
+
+    # Nearest-neighbour separation, truncated to the shortest trace (a frozen
+    # agent stops recording, so traces have unequal length).
+    T = min(len(tr["pos"]) for tr in traces)
+    P = np.stack([np.asarray(tr["pos"])[:T] for tr in traces])      # (n, T, 3)
+    d = np.linalg.norm(P[:, None, :, :] - P[None, :, :, :], axis=-1)  # (n, n, T)
+    d = np.where(np.eye(len(traces), dtype=bool)[:, :, None], np.inf, d)
+    nn = float(np.mean(d.min(axis=1))) if T else None
+    return redundancy, nn
+
+
+def run_arm(env, selector, base_seed, episodes, max_steps, multi_agent, dt_s,
+            coverage_cell=50.0):
     """Roll out `episodes` paired episodes; return (per_agent, traces_all,
     episode_success) exactly in the shape ev.aggregate expects."""
     per_agent, traces_all, episode_success = [], [], []
@@ -283,10 +403,15 @@ def run_arm(env, selector, base_seed, episodes, max_steps, multi_agent, dt_s):
             ep_succ.append(m["success"])
             if m["success"]:
                 ep_ts.append(m["steps_to_success"])
+        redundancy, nn = swarm_coverage(traces, coverage_cell)
         episode_success.append(dict(
             any=any(ep_succ), all=all(ep_succ),
             t_any=(min(ep_ts) if ep_ts else None),
-            t_all=(max(ep_ts) if (ep_ts and all(ep_succ)) else None)))
+            t_all=(max(ep_ts) if (ep_ts and all(ep_succ)) else None),
+            coverage_redundancy=redundancy, nn_distance=nn,
+            swarm_path=float(sum(
+                np.linalg.norm(np.diff(np.asarray(tr["pos"]), axis=0), axis=1).sum()
+                for tr in traces))))
     return per_agent, traces_all, episode_success
 
 
@@ -303,7 +428,7 @@ def _stat(agg, key, field="median", pct=False):
     return _fmt(v, pct)
 
 
-def print_table(labels, results, ep_stats, header):
+def print_table(labels, results, ep_stats, header, any_ts=None):
     col_w = max(18, max(len(l) for l in labels) + 2)
     lab_w = 30
     total = lab_w + col_w * len(labels)
@@ -326,6 +451,12 @@ def print_table(labels, results, ep_stats, header):
         f"{results[l]['success_rate'] * 100:.1f}% "
         f"[{results[l]['success_ci95'][0] * 100:.0f},{results[l]['success_ci95'][1] * 100:.0f}]"))
     row("SPL", lambda l: _fmt(results[l]["spl_mean"]))
+    # Episode-level first-reach time: the metric the coordination claim rests on.
+    # Conditioned on success (failures have no arrival time), so read it next to
+    # success_any, not instead of it.
+    if any_ts is not None:
+        row("t_first_reach (med, steps)",
+            lambda l: _fmt(median_t_any(any_ts[l])))
     row("success_any@700", lambda l: _fmt(results[l]["success_at_budget"]["700"], pct=True))
     row("success_any@1500", lambda l: _fmt(results[l]["success_at_budget"]["1500"], pct=True))
     row("success_all@700", lambda l: _fmt(results[l]["success_all_at_budget"]["700"], pct=True))
@@ -337,6 +468,11 @@ def print_table(labels, results, ep_stats, header):
     row("final |dS| all (med)", lambda l: _stat(results[l], "final_dS_all"))
     row("no-op frac (med)", lambda l: _stat(results[l], "noop_frac"))
     row("z ping-pong (med)", lambda l: _stat(results[l], "zflip_frac"))
+    # Search-overlap block: what coordination is supposed to buy, and what
+    # success_any is structurally blind to.
+    row("coverage redundancy", lambda l: _fmt(ep_stats[l].get("coverage_redundancy")))
+    row("nn distance (m)", lambda l: _fmt(ep_stats[l].get("nn_distance")))
+    row("swarm path (m)", lambda l: _fmt(ep_stats[l].get("swarm_path")))
     print("=" * total)
 
 
@@ -449,18 +585,35 @@ def write_paired_csv(path, labels, any_by_label, all_by_label, episodes):
 
 
 # --------------------------------------------------------------------------- #
-def main():
-    cli = parse_args()
-    device = torch.device("cpu")
-    N = cli.n_agents
-    specs = collect_policy_specs(cli)
+def group_specs(specs, N, ckpt_args):
+    """The subset of `specs` that can be deployed with N agents.
 
-    # Resolve the common task config from the FIRST policy + CLI overrides. Every
-    # arm (trained + random) is forced onto these, so a seed is the SAME episode
-    # instance in every arm (paired comparison).
-    src_raw = torch.load(specs[0][1], map_location=device, weights_only=False)
-    if "netcdf_file" not in src_raw["args"]:
-        raise SystemExit(f"'{specs[0][1]}' is not an Oceananigans checkpoint.")
+    A communication policy carries a 5·(N-1) neighbor block in its observation,
+    so it is locked to the N it was trained at and joins only that group. Every
+    other policy (single-agent PPO, no-comms IPPO/MAPPO) is N-agnostic and joins
+    every group — that is what makes the 'N independent copies' control available
+    at both N=2 and N=4."""
+    out = []
+    for label, path in specs:
+        a = ckpt_args[path]
+        if a.get("communication", False) and int(a.get("n_agents", 1)) != N:
+            continue
+        out.append((label, path))
+    return out
+
+
+def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
+    """One full same-N comparison: build every compatible arm, roll out the shared
+    seeds, print the table + McNemar. Returns everything the cross-N section and
+    the summary need.
+
+    `cache` (optional, mutable dict) memoizes the rollout of arms whose behaviour
+    does not depend on `cli.comms_radius` — i.e. every no-communication policy and
+    the random arm. Sweeping the comms range over an otherwise-fixed task would
+    otherwise re-roll those arms identically once per radius: with paired seeds
+    and a greedy decode their outcomes are deterministic, so the repeat is pure
+    waste. Pass the SAME dict to every run_group call that shares a task and
+    differs only in comms_radius; pass a fresh one (or None) otherwise."""
     task = SimpleNamespace(**src_raw["args"])
     task.n_agents = N
     task.netcdf_file = cli.netcdf_file or task.netcdf_file
@@ -469,6 +622,15 @@ def main():
     task.eval_success_steps = cli.success_steps
     task.min_spawn_distance = cli.min_spawn_distance
     task.spawn_max_tries = cli.spawn_max_tries
+    task.comms_radius_override = getattr(cli, "comms_radius", None)
+    if getattr(cli, "max_cached_loaders", None) is not None:
+        task.max_cached_loaders = int(cli.max_cached_loaders)
+    elif not hasattr(task, "max_cached_loaders"):
+        task.max_cached_loaders = 8
+    if cli.spawn_mode is not None:
+        task.spawn_mode = cli.spawn_mode
+    elif not hasattr(task, "spawn_mode"):
+        task.spawn_mode = "random"      # checkpoints predating the flag
     if cli.target_mode is not None:
         task.target_mode = cli.target_mode
     if cli.target_percentile is not None:
@@ -477,6 +639,7 @@ def main():
     # Build every policy arm. Random (if requested) reuses the first arm's env
     # (identical task params -> paired instances; it ignores the observation).
     labels, arms, kinds, dims, run_names, paths = [], {}, {}, {}, {}, {}
+    cache_keys = {}          # label -> key, or None if the arm is radius-dependent
     for label, path in specs:
         ckpt, env, selector, kind, dim = load_arm(path, task, device, cli.mode)
         # communication policies are locked to their trained n_agents (their
@@ -504,31 +667,38 @@ def main():
         kinds[label] = kind
         dims[label] = dim
         paths[label] = path
+        # Only a communication policy can react to a comms_radius change; every
+        # other arm is reusable across the radius axis.
+        cache_keys[label] = (None if ckpt["args"].get("communication", False)
+                             else (path, N))
         run_names[label] = ckpt.get("run_name") or os.path.basename(
             os.path.dirname(os.path.dirname(path)))
 
     if cli.include_random:
         sel_random = ev.make_random_selector(cli.seed if cli.seed is not None else 0)
         arms["random"] = (arms[labels[0]][0], sel_random)  # reuse first env -> paired
-        labels.append("random")
         kinds["random"] = "random"
         dims["random"] = dims[labels[0]]
+        cache_keys["random"] = ("__random__", N)
+        labels.append("random")
 
     colors = build_colors(labels)
     dt_s = task.dt * task.frame_skip
-    base_seed = cli.seed if cli.seed is not None else int(
-        np.random.SeedSequence().entropy % (2 ** 31))
     multi_agent = N > 1
 
     pol_labels = [l for l in labels if l != "random"]
     tag = "compare__" + "__".join(l[:20] for l in pol_labels) + \
-          f"__N{N}__{task.target_mode}"
+          f"__N{N}__{task.target_mode}__spawn-{task.spawn_mode}"
     if cli.min_spawn_distance > 0.0:
         tag += f"__d{int(cli.min_spawn_distance)}"
-    out_dir = cli.out_dir or os.path.join(ROOT, "stats", "out", tag)
+    out_dir = (os.path.join(cli.out_dir, f"N{N}") if cli.out_dir
+               else os.path.join(ROOT, "stats", "out", tag))
     os.makedirs(out_dir, exist_ok=True)
 
     lens = "first-reach (success_any)" if cli.end_on_any_success else "all-success (swarm-truth)"
+    print("\n" + "#" * 78)
+    print(f"# GROUP N={N}")
+    print("#" * 78)
     print(f"Policies ({len(pol_labels)}):")
     for l in pol_labels:
         print(f"  [{l:>16}] {kinds[l]:>5}  obs {dims[l]:>3}  <- {run_names[l]}")
@@ -539,6 +709,10 @@ def main():
     print(f"Field        : {task.netcdf_file}   max_steps {task.max_steps}   "
           f"success_steps {cli.success_steps}")
     print(f"Target       : {tgt}")
+    print(f"Spawn mode   : {task.spawn_mode}" + (
+        "  (all agents at (0,0,0))" if task.spawn_mode == "origin" else
+        "  (spread along the land walls at z=0)" if task.spawn_mode == "max_dist"
+        else "  (uniform over the domain)"))
     if cli.min_spawn_distance > 0.0:
         print(f"Spawn        : >= {cli.min_spawn_distance:.0f} m from zone "
               f"(distant-start, {cli.spawn_max_tries} tries/agent)")
@@ -550,8 +724,16 @@ def main():
     any_ts, all_ts = {}, {}
     for l in labels:
         env, selector = arms[l]
-        per_agent, traces_all, episode_success = run_arm(
-            env, selector, base_seed, cli.episodes, task.max_steps, multi_agent, dt_s)
+        key = cache_keys.get(l)
+        reused = cache is not None and key is not None and key in cache
+        if reused:
+            per_agent, traces_all, episode_success = cache[key]
+        else:
+            per_agent, traces_all, episode_success = run_arm(
+                env, selector, base_seed, cli.episodes, task.max_steps, multi_agent,
+                dt_s, coverage_cell=getattr(task, "coverage_cell", 50.0))
+            if cache is not None and key is not None:
+                cache[key] = (per_agent, traces_all, episode_success)
         agg = ev.aggregate(per_agent, episode_success)
         results[l] = agg
         curves[l] = ev.approach_curve(traces_all)
@@ -563,16 +745,23 @@ def main():
         k_any = int(sum(any_by_label[l]))
         k_all = int(sum(all_by_label[l]))
         n_ep = cli.episodes
+        def _m(key):
+            vals = [e[key] for e in episode_success if e.get(key) is not None]
+            return float(np.mean(vals)) if vals else None
+
         ep_stats[l] = dict(
             any_rate=k_any / n_ep, any_ci=list(ev.wilson_ci(k_any, n_ep)),
-            all_rate=k_all / n_ep, all_ci=list(ev.wilson_ci(k_all, n_ep)), n=n_ep)
+            all_rate=k_all / n_ep, all_ci=list(ev.wilson_ci(k_all, n_ep)), n=n_ep,
+            coverage_redundancy=_m("coverage_redundancy"),
+            nn_distance=_m("nn_distance"), swarm_path=_m("swarm_path"))
         print(f"  [{l:>16}] success_any {ep_stats[l]['any_rate']*100:5.1f}%  "
               f"success_all {ep_stats[l]['all_rate']*100:5.1f}%  "
-              f"per-agent {agg['success_rate']*100:5.1f}%  SPL {agg['spl_mean']:.3f}")
+              f"per-agent {agg['success_rate']*100:5.1f}%  SPL {agg['spl_mean']:.3f}"
+              f"{'   (reused: radius-invariant)' if reused else ''}")
 
     header = (f"{' vs '.join(labels)}   N={N}   "
               f"{cli.episodes} paired episodes   [{lens}]")
-    print_table(labels, results, ep_stats, header)
+    print_table(labels, results, ep_stats, header, any_ts=any_ts)
     tests = print_mcnemar(labels, any_by_label, "success_any")
     # success_all is the swarm-truth lens and the one where cooperation (comms,
     # CTDE) can actually pay: success_any over N no-comms agents is best-of-N
@@ -605,7 +794,7 @@ def main():
         episodes=cli.episodes, base_seed=base_seed, max_steps=task.max_steps,
         success_steps=cli.success_steps, netcdf_file=task.netcdf_file,
         target_mode=task.target_mode, target_percentile=task.target_percentile,
-        min_spawn_distance=cli.min_spawn_distance,
+        spawn_mode=task.spawn_mode, min_spawn_distance=cli.min_spawn_distance,
         end_on_any_success=cli.end_on_any_success, decode=cli.mode,
         generated=datetime.now().isoformat(timespec="seconds"),
         episode_stats=ep_stats, results=results, mcnemar_success_any=mcnemar,
@@ -620,6 +809,160 @@ def main():
     print(f"\nWrote summary.json, per_episode.csv, paired_episodes.csv, figures/ -> {out_dir}")
     for env in {id(arms[l][0]): arms[l][0] for l in labels}.values():
         env.close()
+
+    return dict(n_agents=N, labels=labels, pol_labels=pol_labels, kinds=kinds,
+                any_by_label=any_by_label, all_by_label=all_by_label,
+                any_ts=any_ts, ep_stats=ep_stats, results=results,
+                out_dir=out_dir, summary=summary)
+
+
+# --------------------------------------------------------------------------- #
+def pick_baseline(group, explicit):
+    """The arm every other arm is measured against in the scaling section: the
+    'N independent copies' control, i.e. the single-agent PPO deployed as N
+    independent agents. Falls back to the first arm if there is no PPO."""
+    if explicit is not None:
+        if explicit not in group["labels"]:
+            raise SystemExit(
+                f"--baseline '{explicit}' is not an arm at N={group['n_agents']} "
+                f"(have: {', '.join(group['labels'])})")
+        return explicit
+    for l in group["pol_labels"]:
+        if group["kinds"][l] == "ppo":
+            return l
+    return group["pol_labels"][0]
+
+
+def print_scaling(groups, baseline_by_n):
+    """Cross-N section: does the MARL advantage over N independent copies GROW
+    with N? Each within-N margin is paired; the two margins are independent, so
+    the difference-of-differences carries the wider CI computed by
+    unpaired_diff_ci()."""
+    ns = sorted(groups)
+    print("\n" + "=" * 96)
+    print("CROSS-N SCALING — margin over the 'N independent copies' baseline")
+    print("=" * 96)
+    print("Each row: p(arm) - p(baseline) on success_any, paired within its own N group.")
+    for n in ns:
+        print(f"  N={n}: baseline = {baseline_by_n[n]}")
+    print("-" * 96)
+
+    margins = {}
+    hdr = f"{'arm':<24}" + "".join(f"{'N=' + str(n):>26}" for n in ns)
+    print(hdr)
+    arms_seen = []
+    for n in ns:
+        for l in groups[n]["labels"]:
+            if l != baseline_by_n[n] and l not in arms_seen:
+                arms_seen.append(l)
+    for l in arms_seen:
+        cells = []
+        for n in ns:
+            g = groups[n]
+            if l not in g["labels"]:
+                cells.append(f"{'-':>26}")
+                continue
+            m = paired_diff_ci(g["any_by_label"][l], g["any_by_label"][baseline_by_n[n]])
+            margins[(l, n)] = m
+            cells.append(f"{m['diff']*100:+6.1f} [{m['lo']*100:+5.1f},{m['hi']*100:+5.1f}]".rjust(26))
+        print(f"{l:<24}" + "".join(cells))
+    print("-" * 96)
+    print("  margin in percentage points, 95% CI. A CI spanning 0 = no detectable edge.")
+
+    # Difference-of-differences for arms measured at more than one N.
+    dod = {}
+    for l in arms_seen:
+        have = [n for n in ns if (l, n) in margins]
+        for i in range(len(have)):
+            for j in range(i + 1, len(have)):
+                n1, n2 = have[i], have[j]
+                d = unpaired_diff_ci(margins[(l, n2)], margins[(l, n1)])
+                dod[f"{l}__N{n2}_minus_N{n1}"] = d
+    if dod:
+        print("\nDoes the margin grow with N?  (margin at the larger N) - (at the smaller)")
+        print("-" * 96)
+        for k, d in dod.items():
+            verdict = ("grows" if d["lo"] > 0 else
+                       "shrinks" if d["hi"] < 0 else "no detectable change")
+            print(f"  {k:<44} {d['diff']*100:+6.1f} pp "
+                  f"[{d['lo']*100:+5.1f},{d['hi']*100:+5.1f}]  -> {verdict}")
+        print("-" * 96)
+        print("  UNPAIRED across N: reset() draws spawns before the target, so a seed")
+        print("  gives a different field/target at each N. Wider CIs than the within-N rows.")
+
+    # First-reach time is the metric the coordination story actually rests on.
+    print("\nFirst-reach time (median steps, successes only):")
+    print("-" * 96)
+    print(f"{'arm':<24}" + "".join(f"{'N=' + str(n):>16}" for n in ns))
+    for l in [baseline_by_n[ns[0]]] + [a for a in arms_seen]:
+        cells = []
+        for n in ns:
+            g = groups[n]
+            v = median_t_any(g["any_ts"][l]) if l in g["labels"] else None
+            cells.append((f"{v:.0f}" if v is not None else "-").rjust(16))
+        print(f"{l:<24}" + "".join(cells))
+    print("-" * 96)
+    print("  Conditioned on success — compare only between arms with similar success_any.")
+    return {f"{l}__N{n}": margins[(l, n)] for (l, n) in margins}, dod
+
+
+def main():
+    cli = parse_args()
+    device = torch.device("cpu")
+    specs = collect_policy_specs(cli)
+    ns = sorted(set(int(n) for n in cli.n_agents))
+
+    src_raw = torch.load(specs[0][1], map_location=device, weights_only=False)
+    if "netcdf_file" not in src_raw["args"]:
+        raise SystemExit(f"'{specs[0][1]}' is not an Oceananigans checkpoint.")
+
+    # Peek at every checkpoint's args once so arms can be assigned to N groups
+    # before any env is built.
+    ckpt_args = {}
+    for _, path in specs:
+        c = torch.load(path, map_location=device, weights_only=False)
+        if "netcdf_file" not in c["args"]:
+            raise SystemExit(f"'{path}' is not an Oceananigans checkpoint.")
+        ckpt_args[path] = c["args"]
+        del c
+
+    base_seed = cli.seed if cli.seed is not None else int(
+        np.random.SeedSequence().entropy % (2 ** 31))
+
+    groups = {}
+    for n in ns:
+        sub = group_specs(specs, n, ckpt_args)
+        if not sub:
+            print(f"\n[skipping N={n}: no policy can be deployed at this agent count]")
+            continue
+        kept = {p for _, p in sub}
+        dropped = [os.path.basename(os.path.dirname(os.path.dirname(p)))
+                   for _, p in specs if p not in kept]
+        if dropped:
+            print(f"\n[N={n}] excluded (communication policy trained at a different "
+                  f"n_agents): {', '.join(dropped)}")
+        groups[n] = run_group(n, sub, cli, device, src_raw, base_seed)
+
+    if not groups:
+        raise SystemExit("no group had any deployable policy.")
+
+    scaling = {}
+    if len(groups) > 1:
+        baseline_by_n = {n: pick_baseline(g, cli.baseline) for n, g in groups.items()}
+        margins, dod = print_scaling(groups, baseline_by_n)
+        scaling = dict(baseline_by_n=baseline_by_n, margins=margins,
+                       difference_of_differences=dod)
+        root_out = cli.out_dir or os.path.join(ROOT, "stats", "out")
+        os.makedirs(root_out, exist_ok=True)
+        path = os.path.join(root_out, "scaling_summary.json")
+        with open(path, "w") as f:
+            json.dump(dict(n_agents=sorted(groups), base_seed=base_seed,
+                           episodes=cli.episodes, decode=cli.mode,
+                           end_on_any_success=cli.end_on_any_success,
+                           generated=datetime.now().isoformat(timespec="seconds"),
+                           groups={str(n): g["summary"] for n, g in groups.items()},
+                           **scaling), f, indent=2)
+        print(f"\nWrote scaling_summary.json -> {path}")
 
 
 if __name__ == "__main__":

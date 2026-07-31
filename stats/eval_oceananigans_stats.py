@@ -94,6 +94,13 @@ def parse_args():
     p.add_argument("--no-end-on-any-success", dest="end_on_any_success",
                    action="store_false",
                    help="force the episode to run until ALL agents succeed")
+    p.add_argument("--spawn-mode", type=str, default=None,
+                   choices=["random", "origin", "max_dist"],
+                   help="override where the agents start (default: the checkpoint's). "
+                        "'origin' = whole swarm at (0,0,0), a single deployment point; "
+                        "'max_dist' = spread evenly along the two land walls (West x=0, "
+                        "South y=0) at z=0, at maximum separation. Both model a real "
+                        "deployment; 'random' is the uniform training spawn.")
     p.add_argument("--modes", nargs="+", default=["greedy", "stochastic"],
                    choices=["greedy", "stochastic"],
                    help="which policy modes to evaluate (default: both; "
@@ -150,6 +157,7 @@ def build_env(args):
         dead_reckoning=getattr(args, "dead_reckoning", False),
         communication=getattr(args, "communication", False),
         comms_radius=getattr(args, "comms_radius", float("inf")),
+        spawn_mode=getattr(args, "spawn_mode", "random"),
         min_spawn_distance=getattr(args, "min_spawn_distance", 0.0),
         spawn_max_tries=getattr(args, "spawn_max_tries", 200),
     )
@@ -599,6 +607,12 @@ def main():
         args.netcdf_file = cli.netcdf_file
     if cli.end_on_any_success is not None:
         args.end_on_any_success = cli.end_on_any_success
+    if cli.spawn_mode is not None:
+        args.spawn_mode = cli.spawn_mode
+        # the fixed modes place the agents deterministically; reject-sampling a
+        # spawn "far from the zone" on top of that is contradictory.
+        if cli.spawn_mode != "random":
+            args.min_spawn_distance = 0.0
     args.eval_success_steps = cli.success_steps
 
     env = build_env(args)

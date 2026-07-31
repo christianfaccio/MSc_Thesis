@@ -133,6 +133,16 @@ class Args:
     obs (in_range flag = 0). Default inf = global sharing (establish the ceiling);
     pass a finite value later to model the Abu Dhabi range constraint without code
     changes."""
+    spawn_mode: str = "random"
+    """where the agents start each episode.
+    "random"   = uniform over the domain (the training default);
+    "origin"   = every agent at (0,0,0) — the whole swarm dropped at one point
+                 on the coast corner, as if thrown in from a single boat/pier;
+    "max_dist" = evenly spread along the two LAND walls (West x=0, South y=0) at
+                 the surface, at maximum separation. For N=2 on the 1 km domain
+                 that is (500,0,0) and (0,500,0).
+    Both fixed modes spawn at z=0 with a random heading. min_spawn_distance is
+    only valid with "random"."""
     min_spawn_distance: float = 0.0
     """distant-start difficulty knob: if >0, reject-sample every agent's spawn until
     it starts at least this many METRES from the nearest success-zone cell (0 = the
@@ -144,13 +154,19 @@ class Args:
     alpha_individual: float = 1.0
     """weight on the per-agent potential Φ_i (the original, individual shaping term).
     Leave at 1.0 unless deliberately trading per-agent guidance for team signal."""
-    beta_difference: float = 1.0
+    beta_difference: float = 0.0
     """weight on the DIFFERENCE-REWARD potential D_i = G(s) − G(s_-i), G(s) = g(min_j d_j).
     Zero for every agent except the one currently closest to the zone, for which it is
-    its margin over the runner-up: an agent shadowing a teammate earns nothing and can
-    only earn by leading somewhere the others are not. This is the division-of-labour
-    term. Used as a potential, so invariance holds (D-PBRS, Devlin et al. 2014).
-    ON by default; set 0.0 to recover the individual-reward baseline."""
+    its margin over the runner-up (D-PBRS, Devlin et al. 2014).
+    OFF by default (decided 2026-07-26). Two reasons. It is a function of the SAME
+    quantity as the individual potential (distance to zone), so it does not add
+    information — it just doubles the progress signal for whichever agent happens to
+    lead, leaving the trailing agent's signal untouched. Under parameter sharing one
+    network then sees identical behaviour ("moved 1 m closer") paid at two different
+    rates depending on a teammate's position, which is variance without new content.
+    And it is not really a division-of-labour term: it rewards LEADING, not spreading,
+    and any explicit spread incentive is wrong here anyway — two agents may legitimately
+    need to converge on the same target. Set >0 only to reintroduce the ablation."""
     lambda_separation: float = 0.0
     """weight on the anti-redundancy potential Φ_sep = 10·min(d_NN/ℓ, 1) — dense
     counterpart to the (sparse) difference reward. OFF by default: on the 1 km domain
@@ -296,7 +312,7 @@ ENV_CFG_KEYS = (
     "success_steps_required", "max_cached_loaders", "end_on_any_success",
     "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
     "target_mode", "target_percentile", "reward_potential", "dead_reckoning",
-    "communication", "comms_radius", "min_spawn_distance", "spawn_max_tries",
+    "communication", "comms_radius", "spawn_mode", "min_spawn_distance", "spawn_max_tries",
     "alpha_individual", "beta_difference", "lambda_separation",
     "separation_scale", "shared_success_bonus", "coverage_cell",
 )
@@ -412,6 +428,7 @@ def train(args):
     n_agents = args.n_agents
     local_dim = int(np.array(envs.attr(0, "local_observation_space").shape).prod())
     global_dim = int(np.array(envs.attr(0, "global_observation_space").shape).prod())
+    per_agent_dim = global_dim // n_agents  # _build_global_state packs 11 values/agent
     n_actions = envs.attr(0, "action_space").n
 
     # Dedicated raw-env pool for the periodic greedy evaluation; created once so
@@ -453,9 +470,37 @@ def train(args):
         norm = (raw - obs_rms.mean) / np.sqrt(obs_rms.var + var_eps)
         return np.clip(norm, -obs_clip, obs_clip).astype(np.float32)
 
+    def agentize(raw):
+        '''(num_envs, global_dim) -> (num_envs, n_agents, global_dim), rotating
+        agent i's own per-agent block to the front of its copy.
+
+        AGENT-SPECIFIC global state (Yu et al. 2022 call this "AS"; the plain
+        index-ordered state is "EP"). Without it the critic input is byte-identical
+        for every agent in an env, so V(s) is ONE number shared by all of them —
+        but the env pays PER-AGENT rewards, so each agent's return differs and the
+        critic can only fit their mean. Two consequences, both measured on the
+        EP run (1785089929):
+
+          * bias — at the success step the finder is paid ~10 (shared bonus minus
+            its own collapsed potential) and the idle teammate ~20; one shared V
+            splits the difference, so the finder's advantage is understated by ~5.
+          * variance — 49% of the per-step gamma*V(s')-V(s) signal was caused by
+            the TEAMMATE moving, not the agent itself, and that leakage was 8x
+            larger than the agent's own dense shaping reward (0.0385 vs 0.0047).
+            The gradient-following signal was buried under teammate noise, which
+            is why EP-MAPPO plateaued at ~0.73 success while IPPO — whose critic
+            reads local obs and therefore has NO cross-agent term — reached ~0.90.
+
+        Rotation (not an appended agent id) keeps the critic permutation-equivariant
+        under parameter sharing: slot 0 always means "me", exactly like the sorted
+        neighbor blocks in the actor's observation.'''
+        blocks = raw.reshape(-1, n_agents, per_agent_dim)
+        return np.stack([np.roll(blocks, -i, axis=1).reshape(-1, global_dim)
+                         for i in range(n_agents)], axis=1)
+
     def normalize_global(raw, update=True):
-        '''raw: (..., global_dim). Centralized critic input — one global state
-        per env, normalized with its own running stats.'''
+        '''raw: (..., global_dim), already agentized. Centralized critic input —
+        one global state per (env, agent), normalized with its own running stats.'''
         if update:
             global_rms.update(raw.reshape(-1, global_dim))
         norm = (raw - global_rms.mean) / np.sqrt(global_rms.var + var_eps)
@@ -495,9 +540,10 @@ def train(args):
         if DEBUG:
             print(f"Resumed from {args.resume}: iteration={start_iteration}, global_step={global_step}")
 
-    # ALGO Logic: Storage setup (explicit agent axis; global state is per-ENV).
+    # ALGO Logic: Storage setup (explicit agent axis; the global state carries one
+    # too — same joint state, rotated per agent, see agentize()).
     obs = torch.zeros((args.num_steps, args.num_envs, n_agents, local_dim)).to(device)
-    global_states = torch.zeros((args.num_steps, args.num_envs, global_dim)).to(device)
+    global_states = torch.zeros((args.num_steps, args.num_envs, n_agents, global_dim)).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs, n_agents)).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs, n_agents)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs, n_agents)).to(device)
@@ -508,14 +554,14 @@ def train(args):
     start_time = time.time()
 
     # Reset every env (in parallel); stack local obs to (num_envs, n_agents,
-    # local_dim) and the global state to (num_envs, global_dim).
+    # local_dim) and the global state to (num_envs, n_agents, global_dim).
     raw_obs = np.zeros((args.num_envs, n_agents, local_dim), dtype=np.float32)
     raw_global = np.zeros((args.num_envs, global_dim), dtype=np.float32)
     for e, (o, info) in enumerate(envs.reset(seeds=[args.seed + e for e in range(args.num_envs)])):
         raw_obs[e] = o
         raw_global[e] = info["global_state"]
     next_obs = torch.tensor(normalize_obs(raw_obs)).to(device)
-    next_global = torch.tensor(normalize_global(raw_global)).to(device)
+    next_global = torch.tensor(normalize_global(agentize(raw_global))).to(device)
     next_done = torch.zeros((args.num_envs, n_agents)).to(device)
 
     # Per-env episode accumulators (raw rewards) for logging.
@@ -604,12 +650,11 @@ def train(args):
             global_states[step] = next_global
             dones[step] = next_done
 
-            # ALGO LOGIC: actor sees local obs; critic sees the env's global
-            # state, expanded so every agent-sample carries its env's state.
+            # ALGO LOGIC: actor sees local obs; critic sees the joint state, each
+            # agent-sample carrying the copy rotated to put itself first.
             with torch.no_grad():
                 flat_obs = next_obs.reshape(args.num_envs * n_agents, local_dim)
-                flat_global = next_global.unsqueeze(1).expand(-1, n_agents, -1).reshape(
-                    args.num_envs * n_agents, global_dim)
+                flat_global = next_global.reshape(args.num_envs * n_agents, global_dim)
                 action, logprob, _, _ = agent.get_action_and_value(flat_obs, flat_global)
             action = action.reshape(args.num_envs, n_agents)
             logprob = logprob.reshape(args.num_envs, n_agents)
@@ -680,21 +725,18 @@ def train(args):
 
             norm_reward = normalize_reward(raw_reward, done_after)
             if trunc_flags.any():
-                # V(final_global) is per ENV; add γ·V to each of that env's
-                # truncated agents.
-                envs_trunc = trunc_flags.any(axis=1)
-                fin_norm = normalize_global(final_global[envs_trunc], update=False)
+                # V(final_global) per truncated AGENT — the agentized state is
+                # per (env, agent), so this indexes exactly like IPPO's local one.
+                fin_norm = normalize_global(agentize(final_global),
+                                            update=False)[trunc_flags]
                 with torch.no_grad():
                     final_v = agent.get_value(
                         torch.tensor(fin_norm, device=device)).view(-1).cpu().numpy()
-                boot = np.zeros(args.num_envs, dtype=np.float32)
-                boot[envs_trunc] = args.gamma * final_v.astype(np.float32)
-                norm_reward[trunc_flags] += np.broadcast_to(
-                    boot[:, None], trunc_flags.shape)[trunc_flags]
+                norm_reward[trunc_flags] += args.gamma * final_v.astype(np.float32)
 
             rewards[step] = torch.tensor(norm_reward).to(device)
             next_obs = torch.tensor(normalize_obs(raw_next_obs)).to(device)
-            next_global = torch.tensor(normalize_global(raw_next_global)).to(device)
+            next_global = torch.tensor(normalize_global(agentize(raw_next_global))).to(device)
             next_done = torch.tensor(done_after).to(device)
 
         # ---- update -------------------------------------------------------
@@ -704,11 +746,10 @@ def train(args):
         # keeping each agent's true terminal step (where dones[step]==0).
         masks = 1.0 - dones
 
-        # flatten the batch over (num_steps, num_envs, n_agents); the per-ENV
-        # global state is expanded over the agent axis so each agent-step sample
-        # carries its env's (shared) global state.
+        # flatten the batch over (num_steps, num_envs, n_agents); each agent-step
+        # sample carries the joint state rotated to put that agent first.
         b_obs = obs.reshape(-1, local_dim)
-        b_global = global_states.unsqueeze(2).expand(-1, -1, n_agents, -1).reshape(-1, global_dim)
+        b_global = global_states.reshape(-1, global_dim)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape(-1)
         b_masks = masks.reshape(-1)
@@ -720,8 +761,7 @@ def train(args):
         for epoch in range(args.update_epochs):
             with torch.no_grad():
                 new_values = agent.get_value(b_global).reshape(args.num_steps, args.num_envs, n_agents)
-                flat_next_global = next_global.unsqueeze(1).expand(-1, n_agents, -1).reshape(
-                    args.num_envs * n_agents, global_dim)
+                flat_next_global = next_global.reshape(args.num_envs * n_agents, global_dim)
                 next_value = agent.get_value(flat_next_global).reshape(args.num_envs, n_agents)
                 advantages = torch.zeros_like(rewards).to(device)
                 lastgaelam = 0

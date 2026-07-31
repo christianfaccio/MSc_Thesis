@@ -151,6 +151,16 @@ class Args:
     of the episode's snapshot — monotone toward the zone, NO local optima.
     Training-time privileged info: feeds only the reward, never the observation;
     potential-based shaping keeps the optimal policy identical (Ng et al. 1999)."""
+    spawn_mode: str = "random"
+    """where the agents start each episode.
+    "random"   = uniform over the domain (the training default);
+    "origin"   = every agent at (0,0,0) — the whole swarm dropped at one point
+                 on the coast corner, as if thrown in from a single boat/pier;
+    "max_dist" = evenly spread along the two LAND walls (West x=0, South y=0) at
+                 the surface, at maximum separation. For N=2 on the 1 km domain
+                 that is (500,0,0) and (0,500,0).
+    Both fixed modes spawn at z=0 with a random heading. min_spawn_distance is
+    only valid with "random"."""
     min_spawn_distance: float = 0.0
     """distant-start difficulty knob: if >0, reject-sample spawns until the agent
     starts at least this many METRES from the nearest success-zone cell (0 = the
@@ -337,7 +347,7 @@ ENV_CFG_KEYS = (
     "success_steps_required",
     "max_cached_loaders", "epsilon_salinity", "epsilon_turbidity",
     "sigma_s", "sigma_tau", "target_mode", "target_percentile",
-    "reward_potential", "min_spawn_distance", "spawn_max_tries",
+    "reward_potential", "spawn_mode", "min_spawn_distance", "spawn_max_tries",
     "dead_reckoning", "coverage_cell",
 )
 
