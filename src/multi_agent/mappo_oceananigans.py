@@ -181,9 +181,9 @@ class Args:
     degenerating into 'flee to opposite corners'."""
     shared_success_bonus: bool = True
     """pay success_bonus to EVERY live agent on each success rather than only the agent
-    that reached. The one change that actually moves the equilibrium: with
-    end_on_any_success the per-agent bonus makes the episode a RACE (a teammate winning
-    costs you your shot), so coordination has nothing to buy at the baseline."""
+    that reached. The one change that actually moves the equilibrium: the episode ends
+    on the first success, so the per-agent bonus makes it a RACE (a teammate winning
+    costs you your shot) and coordination has nothing to buy at the baseline."""
     coverage_cell: float = 50.0
     """voxel edge (m) for the coverage/redundancy diagnostic; 0 disables the tracking."""
     target_mode: str = "random"
@@ -217,14 +217,6 @@ class Args:
     dynamic later"""
     success_steps_required: int = 1
     """consecutive in-zone steps required to count as success (arrive AND hold)"""
-    end_on_any_success: bool = True
-    """TRAINING termination: False = the episode runs until ALL agents reach the
-    target (or truncation), so BOTH agents get a full learning signal instead of
-    the partner being censored the moment the first one succeeds. Each success
-    latches (the frozen agent no-ops and its steps are masked from the loss).
-    The greedy eval always scores success-on-first-reached (success_any) regardless
-    of this flag — see greedy_eval and the eval_cfg override below."""
-
     # Algorithm specific arguments (IDENTICAL to ippo_oceananigans.py)
     total_timesteps: int = 10000000
     """total timesteps of the experiment (counts agent-env steps)"""
@@ -309,7 +301,7 @@ class Args:
 ENV_CFG_KEYS = (
     "xml_file", "netcdf_file", "k", "n_agents", "v_agent", "max_steps", "dt",
     "domain", "frame_skip", "gamma", "success_bonus", "static_frame",
-    "success_steps_required", "max_cached_loaders", "end_on_any_success",
+    "success_steps_required", "max_cached_loaders",
     "epsilon_salinity", "epsilon_turbidity", "sigma_s", "sigma_tau",
     "target_mode", "target_percentile", "reward_potential", "dead_reckoning",
     "communication", "comms_radius", "spawn_mode", "min_spawn_distance", "spawn_max_tries",
@@ -439,11 +431,6 @@ def train(args):
         eval_cfg = env_cfg(args)
         if args.eval_netcdf_file:
             eval_cfg["netcdf_file"] = args.eval_netcdf_file  # held-out split
-        # Eval keeps the deployment semantics: the episode ends on the FIRST
-        # agent reaching the target (success_any), independent of the training
-        # all-success termination. greedy_eval already stops polling an env on
-        # the first success, but set the flag so the env itself agrees.
-        eval_cfg["end_on_any_success"] = True
         episodes_per_worker = -(-args.eval_episodes // n_workers)  # ceil
         eval_cfg["max_cached_loaders"] = min(args.max_cached_loaders,
                                              max(2, episodes_per_worker))
@@ -571,14 +558,10 @@ def train(args):
     # Rolling stats over the last STATS_WINDOW finished episodes.
     ep_returns = deque(maxlen=STATS_WINDOW)   # per-agent mean return
     ep_lengths = deque(maxlen=STATS_WINDOW)
-    # success_any = at least one agent reached the zone this episode; success_all
-    # = every agent did. With all-success training termination the episode ends
-    # when both are done, so success_all is now a meaningful trained quantity
-    # (it was ~0 under end_on_any_success — the partner was censored mid-transit).
-    # Both are the STOCHASTIC policy; charts/greedy_success_rate is the honest
-    # deployment metric (success_any).
+    # An episode succeeds when ANY agent reaches the zone (which also ends it).
+    # This is the STOCHASTIC policy; charts/greedy_success_rate is the honest
+    # deployment metric.
     ep_success = deque(maxlen=STATS_WINDOW)
-    ep_success_all = deque(maxlen=STATS_WINDOW)
     # Coordination diagnostics (env-reported, see OceananigansEnv._episode_stats).
     # ep_ttfs holds ONLY successful episodes: a mean over all episodes would count
     # fast failures as fast successes.
@@ -597,7 +580,7 @@ def train(args):
     # charts/greedy_success_rate is unaffected: it runs complete fixed episodes.
     stats_warmup_steps = args.max_steps * args.num_envs * n_agents
     stats_ready = False
-    stats_deques = (ep_returns, ep_lengths, ep_success, ep_success_all,
+    stats_deques = (ep_returns, ep_lengths, ep_success,
                     ep_ttfs, ep_redundancy, ep_nn_dist)
 
     progress = Progress(
@@ -606,7 +589,7 @@ def train(args):
         BarColumn(),
         TextColumn(
             "ret={task.fields[ret]:>6.2f}  len={task.fields[len]:>5.1f}  "
-            "any={task.fields[succ]:>3.0f}%  all={task.fields[sall]:>3.0f}%  "
+            "succ={task.fields[succ]:>3.0f}%  "
             "eps={task.fields[eps]:>4d}  SPS={task.fields[sps]:>5d}"
         ),
         TextColumn("•"),
@@ -623,7 +606,6 @@ def train(args):
         ret=float("nan"),
         len=float("nan"),
         succ=0.0,
-        sall=0.0,
         eps=0,
         sps=0,
     )
@@ -700,15 +682,12 @@ def train(args):
                         trunc_flags[e] = np.logical_and(trunc, np.logical_not(term))
                     final_global[e] = info["global_state"]
                     succeeded = float(term.any())   # success_any: ANY agent reached the target
-                    succeeded_all = float(term.all())  # success_all: EVERY agent reached it
                     ep_returns.append(env_ep_return[e] / n_agents)
                     ep_lengths.append(float(env_ep_len[e]))
                     ep_success.append(succeeded)
-                    ep_success_all.append(succeeded_all)
                     writer.add_scalar("charts/episodic_return", env_ep_return[e] / n_agents, global_step)
                     writer.add_scalar("charts/episodic_length", float(env_ep_len[e]), global_step)
                     writer.add_scalar("charts/episode_success", succeeded, global_step)
-                    writer.add_scalar("charts/episode_success_all", succeeded_all, global_step)
                     ttfs = info.get("time_to_first_success", float("nan"))
                     if ttfs == ttfs:  # not NaN -> the episode actually succeeded
                         ep_ttfs.append(float(ttfs))
@@ -870,10 +849,9 @@ def train(args):
         sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/SPS", sps, global_step)
         if stats_ready and ep_success:
-            # Rolling success_any / success_all over the last STATS_WINDOW episodes
+            # Rolling success rate over the last STATS_WINDOW episodes
             # (success_rate matches the console bar).
             writer.add_scalar("charts/success_rate", float(np.mean(ep_success)), global_step)
-            writer.add_scalar("charts/success_all_rate", float(np.mean(ep_success_all)), global_step)
         # Rolling coordination metrics. team/time_to_first_success_mean is the
         # headline efficiency number for the swarm-vs-N-independent-agents question;
         # team/coverage_redundancy (1.0 = perfectly disjoint search, 1/N = everyone
@@ -904,7 +882,6 @@ def train(args):
             ret=(float(np.mean(ep_returns)) if ep_returns else float("nan")),
             len=(float(np.mean(ep_lengths)) if ep_lengths else float("nan")),
             succ=(100.0 * float(np.mean(ep_success)) if (stats_ready and ep_success) else 0.0),
-            sall=(100.0 * float(np.mean(ep_success_all)) if (stats_ready and ep_success_all) else 0.0),
             eps=len(ep_returns),
             sps=sps,
         )

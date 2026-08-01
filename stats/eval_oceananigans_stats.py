@@ -23,7 +23,7 @@ the checkpoint's obs normalization (obs_rms) is applied — identical to the plo
 script — so these numbers match training-time behavior. Handles single-agent
 PPO and multi-agent IPPO/MAPPO (policy class auto-detected from the checkpoint,
 same logic as the plot script); each agent-episode is one sample, and episode-
-level success_any / success_all are reported separately for the swarm case.
+level success (ANY agent reached the zone) is reported for the swarm case.
 
 Outputs (under --out-dir, default stats/out/<run>__iter<NN>/):
   * summary.json      — all aggregate metrics (machine-readable)
@@ -85,15 +85,6 @@ def parse_args():
     p.add_argument("--success-steps", type=int, default=1,
                    help="consecutive in-zone steps counted as success for THIS eval "
                         "(default 1 = 'reached the zone'; training often used 3)")
-    p.add_argument("--end-on-any-success", dest="end_on_any_success",
-                   default=None, action="store_true",
-                   help="force the episode to end on the FIRST agent's success "
-                        "(deployment / first-reach semantics). Default: inherit the "
-                        "checkpoint's flag. Use --no-end-on-any-success to force the "
-                        "all-success regime (episode runs until every agent arrives).")
-    p.add_argument("--no-end-on-any-success", dest="end_on_any_success",
-                   action="store_false",
-                   help="force the episode to run until ALL agents succeed")
     p.add_argument("--spawn-mode", type=str, default=None,
                    choices=["random", "origin", "max_dist"],
                    help="override where the agents start (default: the checkpoint's). "
@@ -146,7 +137,6 @@ def build_env(args):
         static_frame=getattr(args, "static_frame", True),
         success_steps_required=getattr(args, "eval_success_steps", 1),
         max_cached_loaders=getattr(args, "max_cached_loaders", 8),
-        end_on_any_success=getattr(args, "end_on_any_success", True),
         epsilon_salinity=getattr(args, "epsilon_salinity", 0.3),
         epsilon_turbidity=getattr(args, "epsilon_turbidity", 0.05),
         sigma_s=getattr(args, "sigma_s", 3.0),
@@ -424,19 +414,11 @@ def aggregate(per_agent, episode_success):
         spl_mean=float(np.mean([m["spl"] for m in per_agent])) if n else None,
         # episode-level swarm outcomes
         episode_success_any=float(np.mean([e["any"] for e in episode_success])) if episode_success else None,
-        episode_success_all=float(np.mean([e["all"] for e in episode_success])) if episode_success else None,
         # success_any within a step budget T — separates genuine navigation from
         # slow diffusive luck (a random walk keeps climbing with budget; a real
         # navigator saturates early). t_any = earliest success in the episode.
         success_at_budget={str(T): float(np.mean(
             [e["t_any"] is not None and e["t_any"] <= T for e in episode_success]))
-            for T in (100, 250, 500, 700, 1000, 1500, 2000, 3600)} if episode_success else None,
-        # success_all within a step budget T — every agent has reached the zone by
-        # step T. The high-N discriminator: unlike success_any (ceilings as N grows)
-        # this has headroom that GROWS with N, and coordinated search should push
-        # its whole curve earlier.
-        success_all_at_budget={str(T): float(np.mean(
-            [e["t_all"] is not None and e["t_all"] <= T for e in episode_success]))
             for T in (100, 250, 500, 700, 1000, 1500, 2000, 3600)} if episode_success else None,
         # timing / geometry
         steps_to_success=_stats([m["steps_to_success"] for m in succ_only]),
@@ -484,11 +466,8 @@ def print_table(results, header):
     line("episode success_any", lambda a: stat(a, "episode_success_any", None, pct=True))
     line("  success_any@700 steps", lambda a: (f"{a['success_at_budget']['700']*100:.1f}%"
          if a.get("success_at_budget") else "-"))
-    line("episode success_all", lambda a: stat(a, "episode_success_all", None, pct=True))
-    line("  success_all@700 steps", lambda a: (f"{a['success_all_at_budget']['700']*100:.1f}%"
-         if a.get("success_all_at_budget") else "-"))
-    line("  success_all@1500 steps", lambda a: (f"{a['success_all_at_budget']['1500']*100:.1f}%"
-         if a.get("success_all_at_budget") else "-"))
+    line("  success_any@1500 steps", lambda a: (f"{a['success_at_budget']['1500']*100:.1f}%"
+         if a.get("success_at_budget") else "-"))
     line("steps to success (med)", lambda a: stat(a, "steps_to_success"))
     line("time to success s (med)", lambda a: stat(a, "time_to_success_s"))
     line("path eff. success (med)", lambda a: stat(a, "path_efficiency_success"))
@@ -503,16 +482,14 @@ def print_table(results, header):
     print("=" * 74)
 
 
-def save_plots(fig_dir, curves, per_agent_by_mode, t_any_by_mode=None, max_steps=None,
-               t_all_by_mode=None):
+def save_plots(fig_dir, curves, per_agent_by_mode, t_any_by_mode=None, max_steps=None):
     os.makedirs(fig_dir, exist_ok=True)
     colors = {"greedy": "tab:blue", "stochastic": "tab:orange",
               "random": "tab:gray", "gradient": "tab:green"}
 
     # 0) success within a step budget (empirical CDF of the episode's success
     #    time) — a navigator saturates early, diffusion climbs forever, so the
-    #    SHAPE separates skill from luck. Solid = success_any (earliest agent);
-    #    dashed = success_all (latest agent, the high-N discriminator).
+    #    SHAPE separates skill from luck.
     if t_any_by_mode:
         plt.figure(figsize=(7, 5))
 
@@ -526,10 +503,7 @@ def save_plots(fig_dir, curves, per_agent_by_mode, t_any_by_mode=None, max_steps
                          linestyle=style)
 
         for mode, ts in t_any_by_mode.items():
-            _cdf(ts, "-", f"{mode} (any)")
-        if t_all_by_mode:
-            for mode, ts in t_all_by_mode.items():
-                _cdf(ts, "--", f"{mode} (all)")
+            _cdf(ts, "-", mode)
         plt.xlabel("step budget T"); plt.ylabel("episode success within T")
         plt.title("Success vs step budget"); plt.ylim(0, 1.02)
         if max_steps:
@@ -605,8 +579,6 @@ def main():
         args.max_steps = cli.max_steps
     if cli.netcdf_file is not None:
         args.netcdf_file = cli.netcdf_file
-    if cli.end_on_any_success is not None:
-        args.end_on_any_success = cli.end_on_any_success
     if cli.spawn_mode is not None:
         args.spawn_mode = cli.spawn_mode
         # the fixed modes place the agents deterministically; reject-sampling a
@@ -658,7 +630,7 @@ def main():
     else:
         mode_selectors = {"gradient": make_gradient_selector(env)}
 
-    results, curves, per_agent_by_mode, t_any_by_mode, t_all_by_mode = {}, {}, {}, {}, {}
+    results, curves, per_agent_by_mode, t_any_by_mode = {}, {}, {}, {}
     for mode, select_actions in mode_selectors.items():
         per_agent, traces_all, episode_success = [], [], []
         for ep in range(cli.episodes):
@@ -673,20 +645,15 @@ def main():
                 ep_succ.append(m["success"])
                 if m["success"]:
                     ep_ts.append(m["steps_to_success"])
-            # t_any = earliest agent success; t_all = LATEST agent success but
-            # only when EVERY agent succeeded (else all-success never happens →
-            # None, counted as a miss at every budget). t_all needs the
-            # all-success eval regime (end_on_any_success=False) to be meaningful:
-            # under first-reach the partners are censored, so all(ep_succ) is False.
+            # t_any = earliest agent success in the episode; the episode ends
+            # there, so it is also the episode's length.
             episode_success.append(dict(
-                any=any(ep_succ), all=all(ep_succ),
-                t_any=(min(ep_ts) if ep_ts else None),
-                t_all=(max(ep_ts) if (ep_ts and all(ep_succ)) else None)))
+                any=any(ep_succ),
+                t_any=(min(ep_ts) if ep_ts else None)))
         results[mode] = aggregate(per_agent, episode_success)
         curves[mode] = approach_curve(traces_all)
         per_agent_by_mode[mode] = per_agent
         t_any_by_mode[mode] = [e["t_any"] for e in episode_success]
-        t_all_by_mode[mode] = [e["t_all"] for e in episode_success]
         print(f"  [{mode}] done: success {results[mode]['success_rate']*100:.1f}%  "
               f"SPL {results[mode]['spl_mean']:.3f}")
 
@@ -707,7 +674,7 @@ def main():
         json.dump(summary, f, indent=2)
     write_csv(os.path.join(out_dir, "per_episode.csv"), per_agent_by_mode)
     save_plots(os.path.join(out_dir, "figures"), curves, per_agent_by_mode,
-               t_any_by_mode, args.max_steps, t_all_by_mode=t_all_by_mode)
+               t_any_by_mode, args.max_steps)
 
     print(f"\nWrote summary.json, per_episode.csv, figures/ -> {out_dir}")
     env.close()

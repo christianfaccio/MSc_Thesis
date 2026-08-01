@@ -154,12 +154,6 @@ def parse_args():
     p.add_argument("--mode", default="greedy", choices=["greedy", "stochastic"])
     p.add_argument("--no-random", dest="include_random", action="store_false",
                    default=True)
-    p.add_argument("--no-end-on-any-success", dest="end_on_any_success",
-                   action="store_false", default=True,
-                   help="swarm-truth lens for the WHOLE sweep: episodes run until "
-                        "every agent arrives, de-censoring success_all. Under the "
-                        "default first-reach lens success_any is best-of-N and "
-                        "success_all is ~0 by construction.")
     p.add_argument("--out-dir", type=str,
                    default=os.path.join(ROOT, "stats", "out", "sweep"))
     p.add_argument("--workers", type=int, default=1,
@@ -207,7 +201,7 @@ def scenario_cli(base, scenario, out_dir):
         min_spawn_distance=0.0, spawn_max_tries=base.spawn_max_tries,
         comms_radius=None, mode=base.mode,
         max_cached_loaders=base.max_cached_loaders,
-        end_on_any_success=base.end_on_any_success, out_dir=out_dir)
+        out_dir=out_dir)
     for key, val in scenario.items():
         if key == "name":
             continue
@@ -230,7 +224,6 @@ def _strip(name, scenario, elapsed, groups):
         groups={str(n): dict(labels=g["labels"], pol_labels=g["pol_labels"],
                              kinds=g["kinds"], ep_stats=g["ep_stats"],
                              any_by_label=g["any_by_label"],
-                             all_by_label=g["all_by_label"],
                              any_ts=g["any_ts"], out_dir=g["out_dir"],
                              spl={l: g["results"][l]["spl_mean"] for l in g["labels"]})
                 for n, g in groups.items()})
@@ -336,7 +329,7 @@ def matrix(results, n, baseline_label):
                 margin = cs.paired_diff_ci(g["any_by_label"][l],
                                            g["any_by_label"][base])
             cells[(l, r["name"])] = dict(
-                any_rate=st["any_rate"], all_rate=st["all_rate"],
+                any_rate=st["any_rate"],
                 t_any=cs.median_t_any(g["any_ts"][l]),
                 coverage_redundancy=st.get("coverage_redundancy"),
                 swarm_path=st.get("swarm_path"), spl=g["spl"][l],
@@ -377,7 +370,7 @@ def print_matrix(title, arms, names, cells, field, kind, note=""):
 
 
 def write_matrix_csv(path, arms, names, cells, n):
-    fields = ["any_rate", "all_rate", "t_any", "coverage_redundancy",
+    fields = ["any_rate", "t_any", "coverage_redundancy",
               "swarm_path", "spl"]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["n_agents", "arm", "scenario", "baseline",
@@ -504,7 +497,6 @@ def main():
     payload = dict(generated=datetime.now().isoformat(timespec="seconds"),
                    episodes=cli.episodes, base_seed=cli.seed, decode=cli.mode,
                    n_agents=ns, elapsed_min=total_min,
-                   end_on_any_success=cli.end_on_any_success,
                    spawn_modes=list(cli.spawn_modes),
                    target_modes=list(cli.target_modes),
                    comms_radii=[radius_tag(r) for r in radii],
@@ -525,10 +517,6 @@ def main():
         print_matrix(f"margin over '{base}' (percentage points, 95% CI)  N={n}",
                      arms, names, cells, "margin", "margin",
                      note="paired within each cell. A CI spanning 0 = no detectable edge.")
-        print_matrix(f"success_all (%)  N={n}", arms, names, cells,
-                     "all_rate", "pct",
-                     note="only meaningful in swarm-truth cells (lens preset); "
-                          "censored to ~0 under the first-reach lens")
         print_matrix(f"t_first_reach (median steps, successes only)  N={n}",
                      arms, names, cells, "t_any", "int",
                      note="trajectory efficiency; compare only between arms with "

@@ -20,8 +20,7 @@ def make_env(**kw):
     cfg = dict(xml_file=XML, netcdf_file=NC, k=0, n_agents=3, max_steps=12,
                dt=0.1, domain=(1000.0, 1000.0, 100.0), frame_skip=10,
                gamma=0.9997, success_bonus=20.0, epsilon_salinity=0.15,
-               epsilon_turbidity=0.05, reward_potential="distance",
-               end_on_any_success=False)
+               epsilon_turbidity=0.05, reward_potential="distance")
     cfg.update(kw)
     return OceananigansEnv(**cfg)
 
@@ -273,13 +272,12 @@ def test_min_spawn_distance_rejected_with_a_fixed_spawn_mode():
 
 
 def test_timeout_flag_distinguishes_team_terminal_from_time_limit():
-    '''Regression: under end_on_any_success the non-succeeding agents are flagged
-    `truncated`, but a teammate's success is TERMINAL for the team — bootstrapping
-    gamma*V(final) there while also paying the shared bonus double-counts it and
-    makes free-riding pay more than finding the target.'''
+    '''Regression: the non-succeeding agents are flagged `truncated`, but a
+    teammate's success is TERMINAL for the team — bootstrapping gamma*V(final)
+    there while also paying the shared bonus double-counts it and makes
+    free-riding pay more than finding the target.'''
     # (a) episode ends on a teammate's success -> NOT a timeout
-    env = make_env(max_steps=10_000, end_on_any_success=True,
-                   shared_success_bonus=True)
+    env = make_env(max_steps=10_000, shared_success_bonus=True)
     env.reset(seed=11)
     env.epsilon_salinity = 1e9      # everything is in-zone -> immediate success
     env.epsilon_turbidity = 1e9

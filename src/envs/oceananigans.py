@@ -52,7 +52,6 @@ class OceananigansEnv(gym.Env):
                  static_frame: bool = True,         # NetCDF: freeze one random snapshot per episode (no time evolution)
                  success_steps_required: int = 1,   # consecutive in-zone steps needed to terminate as success; >1 forces the agent to arrive AND hold (kills single-step luck crossings on turbulent fields)
                  max_cached_loaders: int = 8,       # LRU cap on cached FieldLoaders (~90 MB each) per env instance
-                 end_on_any_success: bool = True,   # multi-agent: end the episode on the first success
                  epsilon_salinity: float = 0.3,     # success tolerance on |S - S*| (PSU); size to ~3% of the field's per-snapshot span
                  epsilon_turbidity: float = 0.05,   # success tolerance on |τ - τ*|   TODO: try with epsilon turbidity bound to meters
                  sigma_s: float = 3.0,              # wide shaping-kernel width in S (PSU); size to ~0.3× the field span (3.0 for the ~10 PSU no_buoyancy fields, 1.5 for the ~5 PSU buoyancy_active ones)
@@ -99,7 +98,6 @@ class OceananigansEnv(gym.Env):
                 "debug baseline env; reset() always freezes one snapshot.")
         self.static_frame = static_frame
         self._success_steps_required = int(success_steps_required)
-        self.end_on_any_success = end_on_any_success
         if target_mode not in ("random", "tail"):
             raise NotImplementedError(
                 f"target_mode={target_mode!r} is not implemented in this env "
@@ -147,10 +145,10 @@ class OceananigansEnv(gym.Env):
         #         labour term: shadowing a teammate earns exactly zero.
         #   Φ_sep saturating nearest-neighbour separation — dense anti-redundancy.
         # shared_success_bonus is the one change that genuinely moves the
-        # equilibrium (a sparse bonus is not a potential): with end_on_any_success
-        # the default per-agent bonus makes the episode a RACE (if a teammate wins
-        # first, everyone else loses their shot), which is why coordination has
-        # nothing to buy at the baseline.
+        # equilibrium (a sparse bonus is not a potential): the episode ends on the
+        # first success, so the default per-agent bonus makes it a RACE (if a
+        # teammate wins first, everyone else loses their shot), which is why
+        # coordination has nothing to buy at the baseline.
         self.alpha_individual = float(alpha_individual)
         self.beta_difference = float(beta_difference)
         self.lambda_separation = float(lambda_separation)
@@ -516,7 +514,7 @@ class OceananigansEnv(gym.Env):
         '''(D, Φ_sep), each (N,) and each a function of the JOINT state.
 
         D_i = G(s) − G(s_-i), with G(s) = g(min_j d_j) the team objective implied
-        by end_on_any_success ("the closest agent is what matters"). The
+        by success_any semantics ("the closest agent is what matters"). The
         leave-one-out min of a scalar set is the runner-up for the current
         leader and the leader for everybody else, so D is ZERO for every agent
         except the closest one, for which it equals its margin over the
@@ -532,9 +530,9 @@ class OceananigansEnv(gym.Env):
         no more independent information to gain.
 
         Agents that have already succeeded are excluded from both terms: a frozen
-        agent sits at d≈0 and would otherwise be the permanent leader (zeroing
-        every other agent's D forever when end_on_any_success is False), and it
-        no longer samples the field, so it should not repel anyone either.
+        agent sits at d≈0 and would otherwise be the permanent leader, zeroing
+        every other agent's D, and it no longer samples the field, so it should
+        not repel anyone either.
         '''
         D = np.zeros(self.n_agents, dtype=np.float64)
         sep = np.zeros(self.n_agents, dtype=np.float64)
@@ -829,20 +827,27 @@ class OceananigansEnv(gym.Env):
 
         terminateds = self._success.copy()
         out_of_time = self.t_step >= self.max_steps
-        episode_over = out_of_time or (self.end_on_any_success and bool(terminateds.any()))
+        # SUCCESS_ANY is the only episode semantics: the episode ends on the FIRST
+        # arrival, because the swarm's job is to make SOMEONE reach the single
+        # target zone. The all-must-arrive variant was removed — it has no
+        # operational analogue (there is one zone, not N) and its reward is
+        # pathological for N >= 3: an agent freezes on arrival and is masked out
+        # of the loss, so finishing early forfeits every teammate bonus still to
+        # come and the optimal play is to stall until last.
+        episode_over = out_of_time or bool(terminateds.any())
         truncateds = np.full(self.n_agents, episode_over) & (~self._success)
 
         # TIME-LIMIT vs TEAM-TERMINAL. A trainer must bootstrap γV(s') for an agent
         # cut off by a time limit (the episode would have continued) but NOT for one
-        # whose episode genuinely ended. Under end_on_any_success the non-succeeding
-        # agents are flagged `truncated`, yet a teammate's success is a TERMINAL event
-        # for the whole team — there is no future to bootstrap. Bootstrapping it while
-        # also paying the shared success bonus double-counts the bonus and makes
-        # hanging back strictly more profitable than finding the target. Expose which
-        # kind of ending this is so the trainers can tell them apart.
+        # whose episode genuinely ended. The non-succeeding agents are flagged
+        # `truncated`, yet a teammate's success is a TERMINAL event for the whole
+        # team — there is no future to bootstrap. Bootstrapping it while also paying
+        # the shared success bonus double-counts the bonus and makes hanging back
+        # strictly more profitable than finding the target. Expose which kind of
+        # ending this is so the trainers can tell them apart.
         info = {"global_state": self._build_global_state(),
                 "timeout": bool(out_of_time and not terminateds.any())}
-        if episode_over or bool(terminateds.all()):
+        if episode_over:
             info.update(self._episode_stats())
         if self.n_agents == 1:
             return (obs[0], float(rewards[0]), bool(terminateds[0]),
@@ -853,8 +858,8 @@ class OceananigansEnv(gym.Env):
         '''Coordination diagnostics, emitted in `info` on the episode's last step.
 
         time_to_first_success is the headline efficiency metric for the swarm:
-        with end_on_any_success the team's job is to make SOMEONE arrive early,
-        and that is what N agents should buy over one. NaN on a failed episode,
+        the team's job is to make SOMEONE arrive early, and that is what N agents
+        should buy over one. NaN on a failed episode,
         so it must be aggregated over successful episodes only (a mean over all
         episodes would silently reward failing fast).
         '''

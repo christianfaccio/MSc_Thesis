@@ -20,10 +20,7 @@ committee cares about). This script makes that comparison HONEST:
   * the primary metric (episode success_any, first-reach lens) is reported with
     a Wilson 95% CI per arm AND a paired McNemar exact test for EVERY pair of
     arms, so "MAPPO > single-agent" is a statistical statement, not an eyeball;
-  * success_all / per-agent / SPL / success@T are reported too (use
-    --no-end-on-any-success for the swarm-truth lens where success_all is
-    meaningful — under the default first-reach lens the episode ends at the
-    first arrival, so success_all is censored).
+  * per-agent success / SPL / success@T are reported alongside it.
 
 The FIRST policy supplies the common task config (field, domain, target mode,
 epsilon, ...); every other arm is FORCED onto it, so a seed reproduces the same
@@ -34,19 +31,19 @@ layout it was trained on.
 Outputs (under --out-dir, default stats/out/compare__<labels>__N<N>_<mode>/):
   * summary.json          — every metric + the paired McNemar tests
   * per_episode.csv       — one row per agent-episode, arm in the 'mode' column
-  * paired_episodes.csv    — one row per seed: success_any/all for all arms
-  * figures/success_at_budget.png  — success vs step budget (any solid, all dashed)
+  * paired_episodes.csv    — one row per seed: success_any for all arms
+  * figures/success_at_budget.png  — success vs step budget
   * figures/approach_curve.png     — mean distance-to-zone vs normalized time
-  * figures/success_bars.png       — success_any / success_all / per-agent / SPL
+  * figures/success_bars.png       — success_any / per-agent / SPL
 
 Usage:
     # new multi-policy form (label optional; derived from the run name if omitted)
     python stats/compare_single_vs_multi.py \
         --policy ppo=runs/ppo_buoyancy_history/checkpoints/latest.pt \
-        --policy mappo=runs/mappo_buoyancy_history_success_all/checkpoints/iter_0720.pt \
-        --policy mappo_comm=runs/mappo_comms_success_all/checkpoints/iter_0720.pt \
+        --policy mappo=runs/mappo_buoyancy_history_2N/checkpoints/latest.pt \
+        --policy mappo_comm=runs/mappo_buoyancy_history_2N_comm/checkpoints/latest.pt \
         --netcdf-file data/oceananigans/buoyancy_active/test \
-        --episodes 200 --seed 0 --no-end-on-any-success
+        --episodes 200 --seed 0
 
     # legacy two-arm form still works
     python stats/compare_single_vs_multi.py \
@@ -85,7 +82,7 @@ BUDGETS = (100, 250, 500, 700, 1000, 1500, 2000, 3600)
 TASK_KEYS = ("netcdf_file", "domain", "target_mode", "target_percentile",
              "static_frame", "epsilon_salinity", "epsilon_turbidity",
              "v_agent", "dt", "frame_skip", "max_steps", "n_agents",
-             "end_on_any_success", "eval_success_steps",
+             "eval_success_steps",
              "spawn_mode", "min_spawn_distance", "spawn_max_tries",
              "max_cached_loaders")
 
@@ -184,14 +181,6 @@ def parse_args():
                         "asks whether the policy was ever using comms at all.")
     p.add_argument("--mode", default="greedy", choices=["greedy", "stochastic"],
                    help="decode for the trained policies (default greedy = deployment)")
-    p.add_argument("--end-on-any-success", dest="end_on_any_success",
-                   default=True, action="store_true",
-                   help="first-reach lens (episode ends at the first arrival); this is "
-                        "the deployment / success_any regime and the DEFAULT.")
-    p.add_argument("--no-end-on-any-success", dest="end_on_any_success",
-                   action="store_false",
-                   help="swarm-truth lens: episode runs until EVERY agent arrives, so "
-                        "success_all and per-agent success are de-censored.")
     p.add_argument("--out-dir", type=str, default=None,
                    help="output dir (default: stats/out/compare__<labels>__N<N>_<mode>/)")
     return p.parse_args()
@@ -405,9 +394,8 @@ def run_arm(env, selector, base_seed, episodes, max_steps, multi_agent, dt_s,
                 ep_ts.append(m["steps_to_success"])
         redundancy, nn = swarm_coverage(traces, coverage_cell)
         episode_success.append(dict(
-            any=any(ep_succ), all=all(ep_succ),
+            any=any(ep_succ),
             t_any=(min(ep_ts) if ep_ts else None),
-            t_all=(max(ep_ts) if (ep_ts and all(ep_succ)) else None),
             coverage_redundancy=redundancy, nn_distance=nn,
             swarm_path=float(sum(
                 np.linalg.norm(np.diff(np.asarray(tr["pos"]), axis=0), axis=1).sum()
@@ -446,7 +434,6 @@ def print_table(labels, results, ep_stats, header, any_ts=None):
     row("success_any (episode)", lambda l: (
         f"{ep_stats[l]['any_rate'] * 100:.1f}% "
         f"[{ep_stats[l]['any_ci'][0] * 100:.0f},{ep_stats[l]['any_ci'][1] * 100:.0f}]"))
-    row("success_all (episode)", lambda l: _fmt(ep_stats[l]["all_rate"], pct=True))
     row("per-agent success", lambda l: (
         f"{results[l]['success_rate'] * 100:.1f}% "
         f"[{results[l]['success_ci95'][0] * 100:.0f},{results[l]['success_ci95'][1] * 100:.0f}]"))
@@ -459,8 +446,6 @@ def print_table(labels, results, ep_stats, header, any_ts=None):
             lambda l: _fmt(median_t_any(any_ts[l])))
     row("success_any@700", lambda l: _fmt(results[l]["success_at_budget"]["700"], pct=True))
     row("success_any@1500", lambda l: _fmt(results[l]["success_at_budget"]["1500"], pct=True))
-    row("success_all@700", lambda l: _fmt(results[l]["success_all_at_budget"]["700"], pct=True))
-    row("success_all@1500", lambda l: _fmt(results[l]["success_all_at_budget"]["1500"], pct=True))
     row("steps to success (med)", lambda l: _stat(results[l], "steps_to_success"))
     row("path eff. success (med)", lambda l: _stat(results[l], "path_efficiency_success"))
     row("closer-each-step (med)", lambda l: _stat(results[l], "monotonic_frac"))
@@ -479,8 +464,7 @@ def print_table(labels, results, ep_stats, header, any_ts=None):
 def pairwise_mcnemar(labels, flags_by_label):
     """Exact McNemar for every unordered pair; returns list of dicts.
 
-    `flags_by_label` maps label -> per-episode 0/1 outcome, so the same routine
-    serves success_any and success_all."""
+    `flags_by_label` maps label -> per-episode 0/1 outcome."""
     out = []
     for i in range(len(labels)):
         for j in range(i + 1, len(labels)):
@@ -512,11 +496,11 @@ def print_mcnemar(labels, flags_by_label, metric="success_any"):
 
 
 # --------------------------------------------------------------------------- #
-def make_plots(fig_dir, labels, colors, results, curves, any_ts, all_ts, ep_stats,
+def make_plots(fig_dir, labels, colors, results, curves, any_ts, ep_stats,
                max_steps, n_agents, episodes):
     os.makedirs(fig_dir, exist_ok=True)
 
-    # 1) success vs step budget: any (solid) + all (dashed), one color per arm.
+    # 1) success vs step budget, one color per arm.
     plt.figure(figsize=(7.5, 5.5))
 
     def cdf(ts, color, style, label):
@@ -529,8 +513,7 @@ def make_plots(fig_dir, labels, colors, results, curves, any_ts, all_ts, ep_stat
 
     for l in labels:
         c = colors[l]
-        cdf(any_ts[l], c, "-", f"{l} (any)")
-        cdf(all_ts[l], c, "--", f"{l} (all)")
+        cdf(any_ts[l], c, "-", l)
     plt.xlabel("step budget T"); plt.ylabel("episode success within T")
     plt.title(f"Success vs step budget  (N={n_agents}, {episodes} eps)")
     plt.xlim(0, max_steps); plt.ylim(0, 1.02)
@@ -550,9 +533,9 @@ def make_plots(fig_dir, labels, colors, results, curves, any_ts, all_ts, ep_stat
     plt.tight_layout(); plt.savefig(os.path.join(fig_dir, "approach_curve.png"), dpi=150)
     plt.close()
 
-    # 3) grouped bars: success_any / success_all / per-agent / SPL.
-    metrics = ["success_any", "success_all", "per-agent", "SPL"]
-    vals = {l: [ep_stats[l]["any_rate"], ep_stats[l]["all_rate"],
+    # 3) grouped bars: success_any / per-agent / SPL.
+    metrics = ["success_any", "per-agent", "SPL"]
+    vals = {l: [ep_stats[l]["any_rate"],
                 results[l]["success_rate"], results[l]["spl_mean"]] for l in labels}
     x = np.arange(len(metrics))
     w = 0.8 / len(labels)
@@ -571,16 +554,15 @@ def make_plots(fig_dir, labels, colors, results, curves, any_ts, all_ts, ep_stat
     plt.close()
 
 
-def write_paired_csv(path, labels, any_by_label, all_by_label, episodes):
+def write_paired_csv(path, labels, any_by_label, episodes):
     with open(path, "w", newline="") as f:
-        cols = ["episode"] + [f"{l}_any" for l in labels] + [f"{l}_all" for l in labels]
+        cols = ["episode"] + [f"{l}_any" for l in labels]
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         for ep in range(episodes):
             row = {"episode": ep}
             for l in labels:
                 row[f"{l}_any"] = int(any_by_label[l][ep])
-                row[f"{l}_all"] = int(all_by_label[l][ep])
             w.writerow(row)
 
 
@@ -618,7 +600,6 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
     task.n_agents = N
     task.netcdf_file = cli.netcdf_file or task.netcdf_file
     task.max_steps = cli.max_steps or task.max_steps
-    task.end_on_any_success = cli.end_on_any_success
     task.eval_success_steps = cli.success_steps
     task.min_spawn_distance = cli.min_spawn_distance
     task.spawn_max_tries = cli.spawn_max_tries
@@ -695,7 +676,6 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
                else os.path.join(ROOT, "stats", "out", tag))
     os.makedirs(out_dir, exist_ok=True)
 
-    lens = "first-reach (success_any)" if cli.end_on_any_success else "all-success (swarm-truth)"
     print("\n" + "#" * 78)
     print(f"# GROUP N={N}")
     print("#" * 78)
@@ -716,12 +696,12 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
     if cli.min_spawn_distance > 0.0:
         print(f"Spawn        : >= {cli.min_spawn_distance:.0f} m from zone "
               f"(distant-start, {cli.spawn_max_tries} tries/agent)")
-    print(f"Lens         : {lens}   decode: {cli.mode}")
+    print(f"Decode       : {cli.mode}")
     print(f"Out          : {out_dir}")
 
     results, curves = {}, {}
-    per_agent_by_label, any_by_label, all_by_label, ep_stats = {}, {}, {}, {}
-    any_ts, all_ts = {}, {}
+    per_agent_by_label, any_by_label, ep_stats = {}, {}, {}
+    any_ts = {}
     for l in labels:
         env, selector = arms[l]
         key = cache_keys.get(l)
@@ -739,43 +719,28 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
         curves[l] = ev.approach_curve(traces_all)
         per_agent_by_label[l] = per_agent
         any_by_label[l] = [bool(e["any"]) for e in episode_success]
-        all_by_label[l] = [bool(e["all"]) for e in episode_success]
         any_ts[l] = [e["t_any"] for e in episode_success]
-        all_ts[l] = [e["t_all"] for e in episode_success]
         k_any = int(sum(any_by_label[l]))
-        k_all = int(sum(all_by_label[l]))
         n_ep = cli.episodes
         def _m(key):
             vals = [e[key] for e in episode_success if e.get(key) is not None]
             return float(np.mean(vals)) if vals else None
 
         ep_stats[l] = dict(
-            any_rate=k_any / n_ep, any_ci=list(ev.wilson_ci(k_any, n_ep)),
-            all_rate=k_all / n_ep, all_ci=list(ev.wilson_ci(k_all, n_ep)), n=n_ep,
+            any_rate=k_any / n_ep, any_ci=list(ev.wilson_ci(k_any, n_ep)), n=n_ep,
             coverage_redundancy=_m("coverage_redundancy"),
             nn_distance=_m("nn_distance"), swarm_path=_m("swarm_path"))
         print(f"  [{l:>16}] success_any {ep_stats[l]['any_rate']*100:5.1f}%  "
-              f"success_all {ep_stats[l]['all_rate']*100:5.1f}%  "
               f"per-agent {agg['success_rate']*100:5.1f}%  SPL {agg['spl_mean']:.3f}"
               f"{'   (reused: radius-invariant)' if reused else ''}")
 
     header = (f"{' vs '.join(labels)}   N={N}   "
-              f"{cli.episodes} paired episodes   [{lens}]")
+              f"{cli.episodes} paired episodes")
     print_table(labels, results, ep_stats, header, any_ts=any_ts)
     tests = print_mcnemar(labels, any_by_label, "success_any")
-    # success_all is the swarm-truth lens and the one where cooperation (comms,
-    # CTDE) can actually pay: success_any over N no-comms agents is best-of-N
-    # independent draws, so it cannot reward coordination by construction.
-    if cli.end_on_any_success:
-        print("\n  [success_all McNemar skipped: --end-on-any-success stops the "
-              "episode at first arrival, so success_all is censored. "
-              "Re-run with --no-end-on-any-success.]")
-        tests_all = []
-    else:
-        tests_all = print_mcnemar(labels, all_by_label, "success_all")
 
     make_plots(os.path.join(out_dir, "figures"), labels, colors, results, curves,
-               any_ts, all_ts, ep_stats, task.max_steps, N, cli.episodes)
+               any_ts, ep_stats, task.max_steps, N, cli.episodes)
 
     def _mcnemar_block(ts):
         return {f"{t['a']}_vs_{t['b']}": dict(
@@ -783,7 +748,6 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
             p_value=t["p_value"], lead=t["lead"]) for t in ts}
 
     mcnemar = _mcnemar_block(tests)
-    mcnemar_all = _mcnemar_block(tests_all)
 
     summary = dict(
         policies={l: dict(checkpoint=paths[l],
@@ -795,23 +759,22 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
         success_steps=cli.success_steps, netcdf_file=task.netcdf_file,
         target_mode=task.target_mode, target_percentile=task.target_percentile,
         spawn_mode=task.spawn_mode, min_spawn_distance=cli.min_spawn_distance,
-        end_on_any_success=cli.end_on_any_success, decode=cli.mode,
+        decode=cli.mode,
         generated=datetime.now().isoformat(timespec="seconds"),
         episode_stats=ep_stats, results=results, mcnemar_success_any=mcnemar,
-        mcnemar_success_all=mcnemar_all,
     )
     with open(os.path.join(out_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     ev.write_csv(os.path.join(out_dir, "per_episode.csv"), per_agent_by_label)
     write_paired_csv(os.path.join(out_dir, "paired_episodes.csv"),
-                     labels, any_by_label, all_by_label, cli.episodes)
+                     labels, any_by_label, cli.episodes)
 
     print(f"\nWrote summary.json, per_episode.csv, paired_episodes.csv, figures/ -> {out_dir}")
     for env in {id(arms[l][0]): arms[l][0] for l in labels}.values():
         env.close()
 
     return dict(n_agents=N, labels=labels, pol_labels=pol_labels, kinds=kinds,
-                any_by_label=any_by_label, all_by_label=all_by_label,
+                any_by_label=any_by_label,
                 any_ts=any_ts, ep_stats=ep_stats, results=results,
                 out_dir=out_dir, summary=summary)
 
@@ -958,7 +921,6 @@ def main():
         with open(path, "w") as f:
             json.dump(dict(n_agents=sorted(groups), base_seed=base_seed,
                            episodes=cli.episodes, decode=cli.mode,
-                           end_on_any_success=cli.end_on_any_success,
                            generated=datetime.now().isoformat(timespec="seconds"),
                            groups={str(n): g["summary"] for n, g in groups.items()},
                            **scaling), f, indent=2)

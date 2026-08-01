@@ -35,7 +35,6 @@ def make_raw_env_from_cfg(cfg: dict) -> OceananigansEnv:
         static_frame=cfg["static_frame"],
         success_steps_required=cfg["success_steps_required"],
         max_cached_loaders=cfg["max_cached_loaders"],
-        end_on_any_success=cfg.get("end_on_any_success", True),
         epsilon_salinity=cfg["epsilon_salinity"],
         epsilon_turbidity=cfg["epsilon_turbidity"],
         sigma_s=cfg["sigma_s"],
