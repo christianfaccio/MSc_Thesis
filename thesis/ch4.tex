@@ -1,0 +1,182 @@
+\chapter{Proposed Method}
+
+The task at hand can be described as target area search and navigation in an unknown environment. 
+This task is currently being addressed in the literature, even though there is not a specific
+area of research that focuses on it. In fact, different authors have considered using MARL solutions
+to target localization, path planning and source seeking problems. 
+
+TODO: mention other works and explain them.
+
+The novelty of this work, in fact,
+is the use of MARL algorithms to search a specific target area, specified by some parameters that in 
+this case are the turbidity and the salinity. To do so, IPPO \cite{dewitt2020ippo} and MAPPO \cite{yu2022mappo} have been 
+chosen as first approaches to solve the problem, given their popularity and effectiveness in multi-agent scenarios. The following sections will describe 
+them in detail. 
+
+\section{Agent State}
+
+\section{Reward Function}
+
+\section{IPPO}
+
+Independent Proximal Policy Optimization (IPPO) is the multi-agent version of the popular Proximal Policy Optimization (PPO) algorithm \cite{schulman2017ppo}, 
+an on-policy RL algorithm that uses a clipped surrogate objective to update the policy. In IPPO, each agent is used to learn a common policy, so the agents share
+its parameters. It is like having $N$ independent agents each with the same PPO-trained policy on a single-agent scenario,
+but the use of shared parameters helps having a more efficient sampling since in an episode multiple gradients are computed and used from different parts of the environment.
+
+In IPPO, a variant of the advantage function is used, where each agent learns a local observation based critic $V_{\phi}(z^a_t)$ parameterised by $\phi$ using \textit{Generalized Advantage Estimation (GAE)}. For each agent
+$a$, the relative advantage function is defined as:
+\begin{equation}
+    A^a_t = \sum_{l=0}^{h}(\gamma\lambda)^l\delta^a_{t+l}
+\end{equation}
+where $\delta^a_t = r^a_t + \gamma V_{\phi}(z^a_{t+1}) - V_{\phi}(z^a_t)$ is the temporal difference error, $\gamma$ is the discount factor and $\lambda$ is a hyperparameter that controls the bias-variance trade-off of the advantage estimates.
+The final policy loss for each agent is defined as:
+\begin{equation}
+    \mathcal{L}^a(\theta) = \mathbf{E}_{z^a_t,u^a_t}\left[\min\left(\frac{\pi_{\theta}(u^a_t|z^a_t)}{\pi_{\theta_{old}}(u^a_t|z^a_t)}A^a_t,\text{ clip }\left(\frac{\pi_{\theta}(u^a_t|z^a_t)}{\pi_{\theta_{old}}(u^a_t|z^a_t)},1-\epsilon,1+\epsilon\right)A^a_t\right)\right]
+\end{equation}
+
+The full procedure is summarized in Algorithm~\ref{alg:ippo}. Since the parameters are shared, the transitions collected
+by the $n$ agents are flattened into a single batch and treated as independent samples of the same policy: one iteration
+alternates a rollout phase, in which the behaviour policy $\pi_{\theta_{old}}$ is kept fixed, and an optimization phase,
+in which the same batch is reused for $K$ epochs over $M$ minibatches. A binary mask $m^a_t$ excludes from the loss the
+steps of agents that have already terminated their episode, so that frozen agents do not contribute spurious gradients.
+
+\begin{algorithm}[t]
+\caption{IPPO}
+\label{alg:ippo}
+\begin{algorithmic}[1]
+\Require actor parameters $\theta$, critic parameters $\phi$; $n$ agents; $E$ parallel environments; rollout length $T$;
+         epochs $K$; minibatches $M$; clipping parameter $\epsilon$; discount $\gamma$; GAE parameter $\lambda$;
+         coefficients $\lambda_{critic},\lambda_{entropy}$; KL threshold $\kappa$
+\Ensure trained policy $\pi_\theta$
+\State Initialize $\theta,\phi$ using Orthogonal initialization
+\While{$step\leq step_{max}$}
+    \State $\theta_{old} \gets \theta$, \quad $\phi_{old} \gets \phi$ \Comment{freeze the behaviour policy}
+    \For{$t = 0,\dots,T-1$} \Comment{rollout phase, no gradient tracking}
+        \ForAll{agents $a$ in each environment}
+            \State sample $u^a_t \sim \pi_{\theta_{old}}(\cdot\,|\,z^a_t)$ and store $\log\pi_{\theta_{old}}(u^a_t|z^a_t)$ and $V_{\phi_{old}}(z^a_t)$
+        \EndFor
+        \State step the environments and observe $r^a_t$, $z^a_{t+1}$ and the termination flags $d^a_{t+1}$
+        \State store the transition together with the mask $m^a_t = 1 - d^a_t$
+    \EndFor
+    \For{$t = T-1,\dots,0$} \Comment{GAE, bootstrapped from $V_{\phi_{old}}(z^a_T)$}
+        \State $\delta^a_t \gets r^a_t + \gamma\,(1-d^a_{t+1})\,V_{\phi_{old}}(z^a_{t+1}) - V_{\phi_{old}}(z^a_t)$
+        \State $A^a_t \gets \delta^a_t + \gamma\lambda\,(1-d^a_{t+1})\,A^a_{t+1}$, \quad $\hat{V}^a_t \gets A^a_t + V_{\phi_{old}}(z^a_t)$
+    \EndFor
+    \State flatten the $T\cdot E\cdot n$ agent-steps into a single batch $\mathcal{B}$
+    \For{epoch $k = 1,\dots,K$}
+        \ForAll{minibatches $b \subset \mathcal{B}$ of size $|\mathcal{B}|/M$}
+            \State normalize the advantages $A^a_t$ over $b$ to zero mean and unit variance
+            \State evaluate $\mathcal{L}(\theta,\phi)$ on $b$, averaging every term with the masks $m^a_t$
+            \State update $\theta,\phi$ by gradient ascent on $\mathcal{L}(\theta,\phi)$ (Adam, clipped gradient norm)
+        \EndFor
+        \If{$\widehat{\mathrm{KL}}\big(\pi_{\theta_{old}}\Vert\pi_{\theta}\big) > \kappa$}
+            \State \textbf{break} \Comment{early stopping on excessive policy change}
+        \EndIf
+    \EndFor
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\begin{table}[t]
+\caption{Default env parameters\label{tab:env_params}}\vspace{0.25em} % adds some additional space between caption and \toprule, if desired.
+\centering{%
+\tagpdfsetup{table/header-rows={1}}
+\begin{tabular*}{0.6\textwidth}{@{\hspace*{3.0em}}@{\extracolsep{\fill}}ccc!{\hspace*{3.0em}}ccc@{\hspace*{2.0em}}}
+\toprule
+Parameter &
+Value \\ \midrule
+$\epsilon_{S}$ & 0.15 \\
+$\epsilon_{\Tau}$ & 0.05 \\
+$\sigma_{S}$ & 1.5 \\
+$\sigma_{\Tau}$ & 0.3 \\
+n\_agents & 2 \\
+k & 12 \\
+v\_agent & 1.0 \\
+max\_steps & 1800 \\
+$\delta t$ & 0.1 \\
+frame\_skip & 10 \\
+success\_bonus & 20.0 \\
+\bottomrule
+\end{tabular*}
+}%
+\end{table}
+
+\begin{table}[t]
+\caption{IPPO parameters\label{tab:ippo_params}}\vspace{0.25em} % adds some additional space between caption and \toprule, if desired.
+\centering{%
+\tagpdfsetup{table/header-rows={1}}
+\begin{tabular*}{0.6\textwidth}{@{\hspace*{3.0em}}@{\extracolsep{\fill}}ccc!{\hspace*{3.0em}}ccc@{\hspace*{2.0em}}}
+\toprule
+Parameter &
+Value \\ \midrule
+total\_timesteps & 10M \\
+learning\_rate & 0.0003 \\
+num\_envs & 12 \\
+num\_steps & 512 \\
+anneal\_lr & False \\
+$\gamma$ & 0.9995 \\
+$\lambda_{GAE}$ & 0.95 \\
+$num\_minibatches$ & 24 \\
+update\_epochs & 10 \\
+norm\_adv & True \\
+clip\_coeff & 0.25 \\
+clip\_vloss & False \\
+entropy\_coef & 0.01 \\
+anneal\_entropy & True \\
+ent\_anneal\_frac & 0.5 \\
+ent\_coef\_final & 0.0 \\
+vf\_coef & 0.5 \\
+max\_grad\_norm & 0.5 \\
+target\_kl & 0.02 \\
+\bottomrule
+\end{tabular*}
+}%
+\end{table}
+
+\section{MAPPO}
+
+\begin{algorithm}[t]
+\caption{MAPPO}
+\label{alg:mappo}
+\begin{algorithmic}[1]
+\Require actor parameters $\theta$, critic parameters $\phi$; $n$ agents; $E$ parallel environments; rollout length $T$;
+         epochs $K$; minibatches $M$; clipping parameter $\epsilon$; discount $\gamma$; GAE parameter $\lambda$;
+         coefficients $\lambda_{critic},\lambda_{entropy}$; KL threshold $\kappa$
+\Ensure trained policy $\pi_\theta$
+\State Initialize $\theta,\phi$ using Orthogonal initialization
+\State Set learning rate $\alpha$ and decay schedule
+\While{$step\leq step_{max}$}
+    \State set data buffer $D = {}$
+    \For{$i = 1,\dots,\text{batch size}$} 
+        \State $\tau = []$
+        \State initialize $h^{(1)}_{0,\pi},\dots,h^{(n)}_{0,\pi}$ actor states
+        \State initialize $h^{(1)}_{0,V},\dots,h^{(n)}_{0,V}$ critic states
+        \For{$t = 1,\dots,T$}
+            \ForAll{agents $a$}
+                \State $p^{(a)}_t,h^{(a)}_{t,\pi} = \pi(o^{(a)}_t,h^{(a)}_{t+1,\pi};\theta)$
+                \State $u^{(a)}_t \sim p^{(a)}_t$
+                \State $v^{(a)}_t,h^{(a)}_{t,V} = V(o^{(a)}_t,h^{(a)}_{t+1,V};\phi)$
+            \EndFor
+            \State Execute actions $u_t$, observe $r_t,s_{t+1},o_{t+1}$
+            \State $\tau += \left[s_t,o_t,h_{t,V},u_t,r_t,s_{t+1},o_{t+1}\right]$
+        \EndFor
+    \EndFor
+    \For{$t = T-1,\dots,0$} \Comment{GAE, bootstrapped from $V$}
+        \State $\delta^a_t \gets r^a_t + \gamma\,(1-d^a_{t+1})\,V_{\phi_{old}}(z^a_{t+1}) - V_{\phi_{old}}(z^a_t)$
+        \State $A^a_t \gets \delta^a_t + \gamma\lambda\,(1-d^a_{t+1})\,A^a_{t+1}$, \quad $\hat{V}^a_t \gets A^a_t + V_{\phi_{old}}(z^a_t)$
+    \EndFor
+    \State flatten the $T\cdot E\cdot n$ agent-steps into a single batch $\mathcal{B}$
+    \For{epoch $k = 1,\dots,K$}
+        \ForAll{minibatches $b \subset \mathcal{B}$ of size $|\mathcal{B}|/M$}
+            \State normalize the advantages $A^a_t$ over $b$ to zero mean and unit variance
+            \State evaluate $\mathcal{L}(\theta,\phi)$ on $b$, averaging every term with the masks $m^a_t$
+            \State update $\theta,\phi$ by gradient ascent on $\mathcal{L}(\theta,\phi)$ (Adam, clipped gradient norm)
+        \EndFor
+        \If{$\widehat{\mathrm{KL}}\big(\pi_{\theta_{old}}\Vert\pi_{\theta}\big) > \kappa$}
+            \State \textbf{break} \Comment{early stopping on excessive policy change}
+        \EndIf
+    \EndFor
+\EndWhile
+\end{algorithmic}
+\end{algorithm}

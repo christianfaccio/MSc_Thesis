@@ -1,0 +1,713 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.2 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{none/global//global/global}
+    \entry{omerspahic2022brine}{article}{}
+      \name{author}{4}{}{%
+        {{hash=cf8d4b26381bd899c861ca52014d8ae3}{%
+           family={Omerspahic},
+           familyi={O\bibinitperiod},
+           given={Mustafa},
+           giveni={M\bibinitperiod}}}%
+        {{hash=e16de33340e080dfed6f840f7d15f01a}{%
+           family={Al-Jabri},
+           familyi={A\bibinithyphendelim J\bibinitperiod},
+           given={Hareb},
+           giveni={H\bibinitperiod}}}%
+        {{hash=a9e49f7c56a1ed8c9a3ed396f7caabf9}{%
+           family={Siddiqui},
+           familyi={S\bibinitperiod},
+           given={Simil\bibnamedelima Amir},
+           giveni={S\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+        {{hash=2d65eefcbc4db8fa02c277635e9ff47e}{%
+           family={Saadaoui},
+           familyi={S\bibinitperiod},
+           given={Imen},
+           giveni={I\bibinitperiod}}}%
+      }
+      \strng{namehash}{e3ab658001812b355f5215b76c780bef}
+      \strng{fullhash}{f3b1345c34ee873af62252e9eff9a365}
+      \strng{bibnamehash}{f3b1345c34ee873af62252e9eff9a365}
+      \strng{authorbibnamehash}{f3b1345c34ee873af62252e9eff9a365}
+      \strng{authornamehash}{e3ab658001812b355f5215b76c780bef}
+      \strng{authorfullhash}{f3b1345c34ee873af62252e9eff9a365}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Frontiers in Marine Science}
+      \field{title}{Characteristics of Desalination Brine and Its Impacts on Marine Chemistry and Health, with Emphasis on the {Persian/Arabian Gulf}: A Review}
+      \field{volume}{9}
+      \field{year}{2022}
+      \field{pages}{845113}
+      \range{pages}{1}
+      \verb{doi}
+      \verb 10.3389/fmars.2022.845113
+      \endverb
+    \endentry
+    \entry{cordes2016oilgas}{article}{}
+      \true{moreauthor}
+      \true{morelabelname}
+      \name{author}{10}{}{%
+        {{hash=0eddff69e215947d94b4a65d995f323b}{%
+           family={Cordes},
+           familyi={C\bibinitperiod},
+           given={Erik\bibnamedelima E.},
+           giveni={E\bibinitperiod\bibinitdelim E\bibinitperiod}}}%
+        {{hash=24314da75f63bf08531396dee0ee15dd}{%
+           family={Jones},
+           familyi={J\bibinitperiod},
+           given={Daniel\bibnamedelimb O.\bibnamedelimi B.},
+           giveni={D\bibinitperiod\bibinitdelim O\bibinitperiod\bibinitdelim B\bibinitperiod}}}%
+        {{hash=3ffb91e3b2931959b5e7a4f9cabaa20c}{%
+           family={Schlacher},
+           familyi={S\bibinitperiod},
+           given={Thomas\bibnamedelima A.},
+           giveni={T\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+        {{hash=e5368fd60435d60c03121994d0248d62}{%
+           family={Amon},
+           familyi={A\bibinitperiod},
+           given={Diva\bibnamedelima J.},
+           giveni={D\bibinitperiod\bibinitdelim J\bibinitperiod}}}%
+        {{hash=9952107984077cdfcf5c96d70d8411fc}{%
+           family={Bernardino},
+           familyi={B\bibinitperiod},
+           given={Angelo\bibnamedelima F.},
+           giveni={A\bibinitperiod\bibinitdelim F\bibinitperiod}}}%
+        {{hash=72bb14c622163d3ec0a353ce3da32346}{%
+           family={Brooke},
+           familyi={B\bibinitperiod},
+           given={Sandra},
+           giveni={S\bibinitperiod}}}%
+        {{hash=118e47660eb2cbeb8d883fd91369241c}{%
+           family={Carney},
+           familyi={C\bibinitperiod},
+           given={Robert},
+           giveni={R\bibinitperiod}}}%
+        {{hash=d7928718679d4c2f7a179a5f509b742c}{%
+           family={DeLeo},
+           familyi={D\bibinitperiod},
+           given={Danielle\bibnamedelima M.},
+           giveni={D\bibinitperiod\bibinitdelim M\bibinitperiod}}}%
+        {{hash=c497b873e926aeb8a95a1cda8b1ed252}{%
+           family={Dunlop},
+           familyi={D\bibinitperiod},
+           given={Katherine\bibnamedelima M.},
+           giveni={K\bibinitperiod\bibinitdelim M\bibinitperiod}}}%
+        {{hash=bc3763a7bfe0f32c9a4c2110bcfc3a66}{%
+           family={Escobar-Briones},
+           familyi={E\bibinithyphendelim B\bibinitperiod},
+           given={Elva\bibnamedelima G.},
+           giveni={E\bibinitperiod\bibinitdelim G\bibinitperiod}}}%
+      }
+      \strng{namehash}{e9b835cbb38a0f53b802a6e789bc048a}
+      \strng{fullhash}{16a77df7b7e0de689cd3d71412b37614}
+      \strng{bibnamehash}{16a77df7b7e0de689cd3d71412b37614}
+      \strng{authorbibnamehash}{16a77df7b7e0de689cd3d71412b37614}
+      \strng{authornamehash}{e9b835cbb38a0f53b802a6e789bc048a}
+      \strng{authorfullhash}{16a77df7b7e0de689cd3d71412b37614}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Frontiers in Environmental Science}
+      \field{note}{Quantified impact footprints: cuttings ~200--300 m from well-head, produced water 1--2 km.}
+      \field{title}{Environmental Impacts of the Deep-Water Oil and Gas Industry: A Review to Guide Management Strategies}
+      \field{volume}{4}
+      \field{year}{2016}
+      \field{pages}{58}
+      \range{pages}{1}
+      \verb{doi}
+      \verb 10.3389/fenvs.2016.00058
+      \endverb
+    \endentry
+    \entry{sheppard2010gulf}{article}{}
+      \true{moreauthor}
+      \true{morelabelname}
+      \name{author}{10}{}{%
+        {{hash=15557cacc6e84677a9cd4a5e58eeabe2}{%
+           family={Sheppard},
+           familyi={S\bibinitperiod},
+           given={Charles},
+           giveni={C\bibinitperiod}}}%
+        {{hash=57c8b9e8691e005d2f8015c3f145cc43}{%
+           family={Al-Husiani},
+           familyi={A\bibinithyphendelim H\bibinitperiod},
+           given={Mohsen},
+           giveni={M\bibinitperiod}}}%
+        {{hash=3847e9157969fb5db91ee175d66d8b05}{%
+           family={Al-Jamali},
+           familyi={A\bibinithyphendelim J\bibinitperiod},
+           given={Faiza},
+           giveni={F\bibinitperiod}}}%
+        {{hash=f706758a27e33259cf28316c0d3cc2c1}{%
+           family={Al-Yamani},
+           familyi={A\bibinithyphendelim Y\bibinitperiod},
+           given={Faiza},
+           giveni={F\bibinitperiod}}}%
+        {{hash=8c9b7500c295e827eb036a90352caa75}{%
+           family={Baldwin},
+           familyi={B\bibinitperiod},
+           given={Rob},
+           giveni={R\bibinitperiod}}}%
+        {{hash=0d21cc075454bcf52efadd8eaffdd925}{%
+           family={Bishop},
+           familyi={B\bibinitperiod},
+           given={James},
+           giveni={J\bibinitperiod}}}%
+        {{hash=64ec2079a755a3d6c5fb36b07572df9b}{%
+           family={Benzoni},
+           familyi={B\bibinitperiod},
+           given={Francesca},
+           giveni={F\bibinitperiod}}}%
+        {{hash=eefda9987fcf6a445e02a4e768da0d3c}{%
+           family={Dutrieux},
+           familyi={D\bibinitperiod},
+           given={Eric},
+           giveni={E\bibinitperiod}}}%
+        {{hash=b88c5d5a11ea18c331274f4082d93d63}{%
+           family={Dulvy},
+           familyi={D\bibinitperiod},
+           given={Nicholas\bibnamedelima K.},
+           giveni={N\bibinitperiod\bibinitdelim K\bibinitperiod}}}%
+        {{hash=f33102fffe0bae5d47ecfeed6a1e74a7}{%
+           family={Durvasula},
+           familyi={D\bibinitperiod},
+           given={Subba\bibnamedelimb Rao\bibnamedelima V.},
+           giveni={S\bibinitperiod\bibinitdelim R\bibinitperiod\bibinitdelim V\bibinitperiod}}}%
+      }
+      \strng{namehash}{0f80f38be6c70bf26300391a82061ed1}
+      \strng{fullhash}{c0291a710de5e207389337a74caf0477}
+      \strng{bibnamehash}{c0291a710de5e207389337a74caf0477}
+      \strng{authorbibnamehash}{c0291a710de5e207389337a74caf0477}
+      \strng{authornamehash}{0f80f38be6c70bf26300391a82061ed1}
+      \strng{authorfullhash}{c0291a710de5e207389337a74caf0477}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Marine Pollution Bulletin}
+      \field{note}{Standard reference for the Gulf's natural temperature/salinity extremes and its decline.}
+      \field{number}{1}
+      \field{title}{The {Gulf}: A Young Sea in Decline}
+      \field{volume}{60}
+      \field{year}{2010}
+      \field{pages}{13\bibrangedash 38}
+      \range{pages}{26}
+      \verb{doi}
+      \verb 10.1016/j.marpolbul.2009.10.017
+      \endverb
+    \endentry
+    \entry{mula2025restoration}{article}{}
+      \name{author}{6}{}{%
+        {{hash=df88e6a1bf0af17f905f75fd4f564284}{%
+           family={Mulà},
+           familyi={M\bibinitperiod},
+           given={Clelia},
+           giveni={C\bibinitperiod}}}%
+        {{hash=1cfcff74cf86a8ccc6093028aba4b43e}{%
+           family={Bradshaw},
+           familyi={B\bibinitperiod},
+           given={Corey\bibnamedelimb J.\bibnamedelimi A.},
+           giveni={C\bibinitperiod\bibinitdelim J\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+        {{hash=deb0d58fdc465bd672af7390dc034ad7}{%
+           family={Cabeza},
+           familyi={C\bibinitperiod},
+           given={Mar},
+           giveni={M\bibinitperiod}}}%
+        {{hash=3be8df5cf31917ec88f0f7608cd41c8f}{%
+           family={Manca},
+           familyi={M\bibinitperiod},
+           given={Federica},
+           giveni={F\bibinitperiod}}}%
+        {{hash=bfe57e1fba35b6d720a073f34800ab5f}{%
+           family={Montano},
+           familyi={M\bibinitperiod},
+           given={Simone},
+           giveni={S\bibinitperiod}}}%
+        {{hash=4a75efba23e72f357147a9c0d5e5c5eb}{%
+           family={Strona},
+           familyi={S\bibinitperiod},
+           given={Giovanni},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{namehash}{9f2002f46af0a57f625d6a32699743f5}
+      \strng{fullhash}{840ce052bff028d915545217845472a9}
+      \strng{bibnamehash}{840ce052bff028d915545217845472a9}
+      \strng{authorbibnamehash}{840ce052bff028d915545217845472a9}
+      \strng{authornamehash}{9f2002f46af0a57f625d6a32699743f5}
+      \strng{authorfullhash}{840ce052bff028d915545217845472a9}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Nature Ecology \& Evolution}
+      \field{note}{30--40\% of projects fail; site choice is driven by human proximity, not ecological suitability.}
+      \field{number}{5}
+      \field{title}{Restoration Cannot Be Scaled Up Globally to Save Reefs from Loss and Degradation}
+      \field{volume}{9}
+      \field{year}{2025}
+      \field{pages}{822\bibrangedash 832}
+      \range{pages}{11}
+      \verb{doi}
+      \verb 10.1038/s41559-025-02667-x
+      \endverb
+    \endentry
+    \entry{insaghi2025thesis}{thesis}{}
+      \name{author}{1}{}{%
+        {{hash=1658f9e0099ad71a8a2548bbbe646026}{%
+           family={Insaghi},
+           familyi={I\bibinitperiod},
+           given={Edoardo},
+           giveni={E\bibinitperiod}}}%
+      }
+      \list{institution}{2}{%
+        {University of Trieste, Department of Mathematics, Informatics}%
+        {Geosciences}%
+      }
+      \strng{namehash}{1658f9e0099ad71a8a2548bbbe646026}
+      \strng{fullhash}{1658f9e0099ad71a8a2548bbbe646026}
+      \strng{bibnamehash}{1658f9e0099ad71a8a2548bbbe646026}
+      \strng{authorbibnamehash}{1658f9e0099ad71a8a2548bbbe646026}
+      \strng{authornamehash}{1658f9e0099ad71a8a2548bbbe646026}
+      \strng{authorfullhash}{1658f9e0099ad71a8a2548bbbe646026}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{note}{Supervisors: A. Celani, G. De Masi. docs/Edoardo\_Thesis.pdf}
+      \field{title}{Adaptive Control of Underwater Artificial Swarm for Monitoring Marine Ecosystems}
+      \field{type}{Master's thesis}
+      \field{year}{2025}
+    \endentry
+    \entry{albrecht2024multi}{book}{}
+      \name{author}{3}{}{%
+        {{hash=9da4f3f413d514d731efe34067976909}{%
+           family={Albrecht},
+           familyi={A\bibinitperiod},
+           given={Stefano\bibnamedelima V},
+           giveni={S\bibinitperiod\bibinitdelim V\bibinitperiod}}}%
+        {{hash=f355421623a9ce0d54965817f05f6ad0}{%
+           family={Christianos},
+           familyi={C\bibinitperiod},
+           given={Filippos},
+           giveni={F\bibinitperiod}}}%
+        {{hash=c32fcecebc45af27f83fbcfea1c93b31}{%
+           family={Schäfer},
+           familyi={S\bibinitperiod},
+           given={Lukas},
+           giveni={L\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {MIT Press}%
+      }
+      \strng{namehash}{d9adbde549d4078b80f9846f86320d2e}
+      \strng{fullhash}{d9adbde549d4078b80f9846f86320d2e}
+      \strng{bibnamehash}{d9adbde549d4078b80f9846f86320d2e}
+      \strng{authorbibnamehash}{d9adbde549d4078b80f9846f86320d2e}
+      \strng{authornamehash}{d9adbde549d4078b80f9846f86320d2e}
+      \strng{authorfullhash}{d9adbde549d4078b80f9846f86320d2e}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Multi-agent reinforcement learning: Foundations and modern approaches}
+      \field{year}{2024}
+    \endentry
+    \entry{zhang2021multi}{article}{}
+      \name{author}{3}{}{%
+        {{hash=d2333c98ffcc26f61ae2f6f998292935}{%
+           family={Zhang},
+           familyi={Z\bibinitperiod},
+           given={Kaiqing},
+           giveni={K\bibinitperiod}}}%
+        {{hash=139d2f7faea343c7833a9d50880d87c8}{%
+           family={Yang},
+           familyi={Y\bibinitperiod},
+           given={Zhuoran},
+           giveni={Z\bibinitperiod}}}%
+        {{hash=70fa925cb5f5e3bd935b997f073ca47a}{%
+           family={Başar},
+           familyi={B\bibinitperiod},
+           given={Tamer},
+           giveni={T\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {Springer}%
+      }
+      \strng{namehash}{e05bfaed45551f26949d1f199143629d}
+      \strng{fullhash}{e05bfaed45551f26949d1f199143629d}
+      \strng{bibnamehash}{e05bfaed45551f26949d1f199143629d}
+      \strng{authorbibnamehash}{e05bfaed45551f26949d1f199143629d}
+      \strng{authornamehash}{e05bfaed45551f26949d1f199143629d}
+      \strng{authorfullhash}{e05bfaed45551f26949d1f199143629d}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Handbook of reinforcement learning and control}
+      \field{title}{Multi-agent reinforcement learning: A selective overview of theories and algorithms}
+      \field{year}{2021}
+      \field{pages}{321\bibrangedash 384}
+      \range{pages}{64}
+    \endentry
+    \entry{swim_simulator}{online}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{labeltitlesource}{title}
+      \field{title}{{SWIM}: Underwater {SW}arm s{IM}ulator}
+      \field{urlday}{2}
+      \field{urlmonth}{8}
+      \field{urlyear}{2026}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://github.com/aghilmort/swim
+      \endverb
+      \verb{url}
+      \verb https://github.com/aghilmort/swim
+      \endverb
+    \endentry
+    \entry{Oceananigans-overview-paper-2025}{article}{}
+      \name{author}{15}{}{%
+        {{hash=784660440a407627653fb20f28ae98c5}{%
+           family={Wagner},
+           familyi={W\bibinitperiod},
+           given={G.\bibnamedelimi L.},
+           giveni={G\bibinitperiod\bibinitdelim L\bibinitperiod}}}%
+        {{hash=6b7b4a1b1712b8f295fb02fcee4f319a}{%
+           family={Silvestri},
+           familyi={S\bibinitperiod},
+           given={S.},
+           giveni={S\bibinitperiod}}}%
+        {{hash=5297ceb1bdbfe4f58be6925eb7a2f643}{%
+           family={Constantinou},
+           familyi={C\bibinitperiod},
+           given={N.\bibnamedelimi C.},
+           giveni={N\bibinitperiod\bibinitdelim C\bibinitperiod}}}%
+        {{hash=5ee5f5256eaa308228b4536047746456}{%
+           family={Ramadhan},
+           familyi={R\bibinitperiod},
+           given={A.},
+           giveni={A\bibinitperiod}}}%
+        {{hash=8074395584f71aabb6625d6672757eab}{%
+           family={Campin},
+           familyi={C\bibinitperiod},
+           given={J.-M.},
+           giveni={J\bibinithyphendelim M\bibinitperiod}}}%
+        {{hash=016958264e6a827c3c744feb5ef9e005}{%
+           family={Hill},
+           familyi={H\bibinitperiod},
+           given={C.},
+           giveni={C\bibinitperiod}}}%
+        {{hash=d4a147e924d5bc3bd3be98ceda5152e4}{%
+           family={Chor},
+           familyi={C\bibinitperiod},
+           given={T.},
+           giveni={T\bibinitperiod}}}%
+        {{hash=15b9104e94e8fbe69ddf2f60bc1199c9}{%
+           family={Strong-Wright},
+           familyi={S\bibinithyphendelim W\bibinitperiod},
+           given={J.},
+           giveni={J\bibinitperiod}}}%
+        {{hash=c4672518c87a0347e550c5f8fa1b417c}{%
+           family={Lee},
+           familyi={L\bibinitperiod},
+           given={X.\bibnamedelimi K.},
+           giveni={X\bibinitperiod\bibinitdelim K\bibinitperiod}}}%
+        {{hash=11b7688f026b912508a7332399cf5a1d}{%
+           family={Poulin},
+           familyi={P\bibinitperiod},
+           given={F.},
+           giveni={F\bibinitperiod}}}%
+        {{hash=f7839fa218ba5cf8632b9a54fbf56b84}{%
+           family={Souza},
+           familyi={S\bibinitperiod},
+           given={A.},
+           giveni={A\bibinitperiod}}}%
+        {{hash=8c26a88da42a90094e8455f853d11780}{%
+           family={Burns},
+           familyi={B\bibinitperiod},
+           given={K.\bibnamedelimi J.},
+           giveni={K\bibinitperiod\bibinitdelim J\bibinitperiod}}}%
+        {{hash=e165155f22bacb9635d9543842fc8b5b}{%
+           family={Bishnu},
+           familyi={B\bibinitperiod},
+           given={S.},
+           giveni={S\bibinitperiod}}}%
+        {{hash=aa82c3e427355bb8a8add7fe2e69fe3f}{%
+           family={Marshall},
+           familyi={M\bibinitperiod},
+           given={J.},
+           giveni={J\bibinitperiod}}}%
+        {{hash=e67be4004e96e3a831034856690b2ff0}{%
+           family={Ferrari},
+           familyi={F\bibinitperiod},
+           given={R.},
+           giveni={R\bibinitperiod}}}%
+      }
+      \strng{namehash}{b9d5c73d98903b1f81b2e725e847de36}
+      \strng{fullhash}{ad833a951d13494b8b7e7d47f043203e}
+      \strng{bibnamehash}{b9d5c73d98903b1f81b2e725e847de36}
+      \strng{authorbibnamehash}{b9d5c73d98903b1f81b2e725e847de36}
+      \strng{authornamehash}{b9d5c73d98903b1f81b2e725e847de36}
+      \strng{authorfullhash}{ad833a951d13494b8b7e7d47f043203e}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{eprinttype}{arXiv}
+      \field{journaltitle}{arXiv preprint}
+      \field{title}{{High-level, high-resolution ocean modeling at all scales with Oceananigans}}
+      \field{year}{2025}
+      \verb{doi}
+      \verb 10.48550/arXiv.2502.14148
+      \endverb
+      \verb{eprint}
+      \verb 2502.14148
+      \endverb
+    \endentry
+    \entry{dewitt2020ippo}{misc}{}
+      \name{author}{7}{}{%
+        {{hash=edab48156868d6a118ab71661e525bae}{%
+           family={Schroeder\bibnamedelimb de\bibnamedelima Witt},
+           familyi={S\bibinitperiod\bibinitdelim d\bibinitperiod\bibinitdelim W\bibinitperiod},
+           given={Christian},
+           giveni={C\bibinitperiod}}}%
+        {{hash=1e5b7c791fc5dcf5799dff44cfa6705e}{%
+           family={Gupta},
+           familyi={G\bibinitperiod},
+           given={Tarun},
+           giveni={T\bibinitperiod}}}%
+        {{hash=600fffd871568e2c04c8fc864359604a}{%
+           family={Makoviichuk},
+           familyi={M\bibinitperiod},
+           given={Denys},
+           giveni={D\bibinitperiod}}}%
+        {{hash=b2920c1e5c13f9f9448bc7ad484b44ed}{%
+           family={Makoviychuk},
+           familyi={M\bibinitperiod},
+           given={Viktor},
+           giveni={V\bibinitperiod}}}%
+        {{hash=3269ee96fb4b61a52f4c01b02fc0751c}{%
+           family={Torr},
+           familyi={T\bibinitperiod},
+           given={Philip\bibnamedelimb H.\bibnamedelimi S.},
+           giveni={P\bibinitperiod\bibinitdelim H\bibinitperiod\bibinitdelim S\bibinitperiod}}}%
+        {{hash=709c3aa92386ace0c21c1eec7c2ab736}{%
+           family={Sun},
+           familyi={S\bibinitperiod},
+           given={Mingfei},
+           giveni={M\bibinitperiod}}}%
+        {{hash=0d05819cf2b4fe22ba972c9b2b5d8c9d}{%
+           family={Whiteson},
+           familyi={W\bibinitperiod},
+           given={Shimon},
+           giveni={S\bibinitperiod}}}%
+      }
+      \strng{namehash}{027464729e3627cd5fcaa616810b284a}
+      \strng{fullhash}{33eed1ea5a6839410fc3b0622f71b1bd}
+      \strng{bibnamehash}{33eed1ea5a6839410fc3b0622f71b1bd}
+      \strng{authorbibnamehash}{33eed1ea5a6839410fc3b0622f71b1bd}
+      \strng{authornamehash}{027464729e3627cd5fcaa616810b284a}
+      \strng{authorfullhash}{33eed1ea5a6839410fc3b0622f71b1bd}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{eprintclass}{cs.AI}
+      \field{eprinttype}{arXiv}
+      \field{note}{IPPO. docs/IPPO.pdf (= docs/independent-learning.pdf)}
+      \field{title}{Is Independent Learning All You Need in the {StarCraft} Multi-Agent Challenge?}
+      \field{year}{2020}
+      \verb{doi}
+      \verb 10.48550/arXiv.2011.09533
+      \endverb
+      \verb{eprint}
+      \verb 2011.09533
+      \endverb
+    \endentry
+    \entry{yu2022mappo}{inproceedings}{}
+      \name{author}{7}{}{%
+        {{hash=a10237d1d57fbf19311761320dafceb5}{%
+           family={Yu},
+           familyi={Y\bibinitperiod},
+           given={Chao},
+           giveni={C\bibinitperiod}}}%
+        {{hash=113762107382f1db1aebbc7a01ac3084}{%
+           family={Velu},
+           familyi={V\bibinitperiod},
+           given={Akash},
+           giveni={A\bibinitperiod}}}%
+        {{hash=c8a6a2cc029452189ac51ad8cb0d6d0b}{%
+           family={Vinitsky},
+           familyi={V\bibinitperiod},
+           given={Eugene},
+           giveni={E\bibinitperiod}}}%
+        {{hash=48e044f1d97f0e7b51746a59b87dbf49}{%
+           family={Gao},
+           familyi={G\bibinitperiod},
+           given={Jiaxuan},
+           giveni={J\bibinitperiod}}}%
+        {{hash=b2eccb185095fccfeb40fdffd8b2105f}{%
+           family={Wang},
+           familyi={W\bibinitperiod},
+           given={Yu},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=b294f0d3a2c6bab74ae96ed8c1a11b01}{%
+           family={Bayen},
+           familyi={B\bibinitperiod},
+           given={Alexandre},
+           giveni={A\bibinitperiod}}}%
+        {{hash=e2101a0f6a72a2fb022cd3e2d45461e1}{%
+           family={Wu},
+           familyi={W\bibinitperiod},
+           given={Yi},
+           giveni={Y\bibinitperiod}}}%
+      }
+      \strng{namehash}{e8e7ddbab774078659f78cda4aa60fe4}
+      \strng{fullhash}{606d06502f6751690748eb76e0b730b7}
+      \strng{bibnamehash}{606d06502f6751690748eb76e0b730b7}
+      \strng{authorbibnamehash}{606d06502f6751690748eb76e0b730b7}
+      \strng{authornamehash}{e8e7ddbab774078659f78cda4aa60fe4}
+      \strng{authorfullhash}{606d06502f6751690748eb76e0b730b7}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Advances in Neural Information Processing Systems 35 (NeurIPS), Datasets and Benchmarks Track}
+      \field{eprintclass}{cs.LG}
+      \field{eprinttype}{arXiv}
+      \field{note}{MAPPO. docs/MAPPO.pdf}
+      \field{title}{The Surprising Effectiveness of {PPO} in Cooperative Multi-Agent Games}
+      \field{year}{2022}
+      \verb{eprint}
+      \verb 2103.01955
+      \endverb
+    \endentry
+    \entry{schulman2017ppo}{misc}{}
+      \name{author}{5}{}{%
+        {{hash=3e09bd2a25d237ebdaed560a07c0451e}{%
+           family={Schulman},
+           familyi={S\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod}}}%
+        {{hash=674ede0b9cd02a2bf5fc662972efb9f0}{%
+           family={Wolski},
+           familyi={W\bibinitperiod},
+           given={Filip},
+           giveni={F\bibinitperiod}}}%
+        {{hash=4164e43d8cf919f5e3f8d80f5ea23f36}{%
+           family={Dhariwal},
+           familyi={D\bibinitperiod},
+           given={Prafulla},
+           giveni={P\bibinitperiod}}}%
+        {{hash=a812c46caad94fc8701be37871f303ba}{%
+           family={Radford},
+           familyi={R\bibinitperiod},
+           given={Alec},
+           giveni={A\bibinitperiod}}}%
+        {{hash=be38507da6ab98e7ac01ac2c6b7e13eb}{%
+           family={Klimov},
+           familyi={K\bibinitperiod},
+           given={Oleg},
+           giveni={O\bibinitperiod}}}%
+      }
+      \strng{namehash}{8d6613ae59595910252a86a61babf6c8}
+      \strng{fullhash}{a6c6ed5a5aeb74e536f16291276ae392}
+      \strng{bibnamehash}{a6c6ed5a5aeb74e536f16291276ae392}
+      \strng{authorbibnamehash}{a6c6ed5a5aeb74e536f16291276ae392}
+      \strng{authornamehash}{8d6613ae59595910252a86a61babf6c8}
+      \strng{authorfullhash}{a6c6ed5a5aeb74e536f16291276ae392}
+      \field{extraname}{1}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{eprintclass}{cs.LG}
+      \field{eprinttype}{arXiv}
+      \field{note}{docs/ppo.pdf}
+      \field{title}{Proximal Policy Optimization Algorithms}
+      \field{year}{2017}
+      \verb{doi}
+      \verb 10.48550/arXiv.1707.06347
+      \endverb
+      \verb{eprint}
+      \verb 1707.06347
+      \endverb
+    \endentry
+    \entry{schulman2015trpo}{inproceedings}{}
+      \name{author}{5}{}{%
+        {{hash=3e09bd2a25d237ebdaed560a07c0451e}{%
+           family={Schulman},
+           familyi={S\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod}}}%
+        {{hash=c9545da54b33744da25943cdf66eadac}{%
+           family={Levine},
+           familyi={L\bibinitperiod},
+           given={Sergey},
+           giveni={S\bibinitperiod}}}%
+        {{hash=a901fd78fe1108cfa7d11129644967c7}{%
+           family={Moritz},
+           familyi={M\bibinitperiod},
+           given={Philipp},
+           giveni={P\bibinitperiod}}}%
+        {{hash=8a36116840c7ee55901618c95fd08a58}{%
+           family={Jordan},
+           familyi={J\bibinitperiod},
+           given={Michael\bibnamedelima I.},
+           giveni={M\bibinitperiod\bibinitdelim I\bibinitperiod}}}%
+        {{hash=e28d4ee199593959d8c29980a64f1974}{%
+           family={Abbeel},
+           familyi={A\bibinitperiod},
+           given={Pieter},
+           giveni={P\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {PMLR}%
+      }
+      \strng{namehash}{8d6613ae59595910252a86a61babf6c8}
+      \strng{fullhash}{945251de1d41bc2767a541a8148f51da}
+      \strng{bibnamehash}{945251de1d41bc2767a541a8148f51da}
+      \strng{authorbibnamehash}{945251de1d41bc2767a541a8148f51da}
+      \strng{authornamehash}{8d6613ae59595910252a86a61babf6c8}
+      \strng{authorfullhash}{945251de1d41bc2767a541a8148f51da}
+      \field{extraname}{2}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 32nd International Conference on Machine Learning (ICML)}
+      \field{eprinttype}{arXiv}
+      \field{note}{docs/TRPO.pdf}
+      \field{series}{Proceedings of Machine Learning Research}
+      \field{title}{Trust Region Policy Optimization}
+      \field{volume}{37}
+      \field{year}{2015}
+      \field{pages}{1889\bibrangedash 1897}
+      \range{pages}{9}
+      \verb{eprint}
+      \verb 1502.05477
+      \endverb
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

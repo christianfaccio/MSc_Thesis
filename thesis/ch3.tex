@@ -1,0 +1,199 @@
+\chapter{Problem formulation}
+
+A previous thesis \cite{insaghi2025thesis} already developed and analyzed 
+a MARL algorithm suitable for this task. It used an environment made of
+gaussians, which defined the reward function. However, the real world is 
+more complex and made of currents. This thesis, thus, brings these contributions:
+\begin{itemize}
+    \item A new, more realistic environment, composed of currents, salinity and turbidity fields, created with Oceananigans;
+    \item Another dimension to the problem, so that it goes from 2D to 3D;
+    \item The use of a simulator, SwarmSwIM, to connect the environment with the agents and the MARL algorithm.
+\end{itemize}
+
+In the following sections, all those components are described in detail, 
+including the parameters used to create the environment with the solver
+and how agents are commanded via the simulator.
+
+\section{SwarmSwIM Simulator}
+
+SwarmSwIM \cite{swim_simulator} is a simulator developed to help researchers
+and pratictioners to evaluate and enhance the control systems and decision-making
+capabilities of underwater agents (AUVs). Completely Python-based, it provides
+tools for current modeling, agent control and visual representation, balancing 
+computational efficiency with sufficient environmental fidelity to facilitate large-scale
+swarm simulations. The low-level control of the agents is approximated by the 
+closed-loop control response of each agent, such as depth and heading keeping, in the 
+resolution of the agent motion. 
+
+Each member of the swarm is an \textit{agent} and is represented by a point
+in the 3D space defined by the domain of the environment. The main cycle of it 
+is made by simulation and agent ticks, where the former refers to the global update
+while the latter to the local update of each agent. 
+
+\section{Agent}
+
+An agent is a point in the 3D space and its state is determined by four DoF: the 3D
+position and the yaw angle. Roll and pitch are not considered, and yaw is fixed during 
+an episode for simplicity. Agent control is achieved by three schemes:
+\begin{enumerate}
+    \item \textit{Depth}: Set to heave, such that the vertical velocity is taken as input;
+    \begin{equation}
+        z_{t+1} = (v_z + \epsilon) \Delta t + z_t \quad \text{with } \epsilon \sim \mathcal{N}(0, 1)
+    \end{equation}
+    \item \textit{Heading}: Set to yawrate but the yaw is always fixed;
+    \begin{equation}
+        \psi_{t+1} = (v_\psi + \epsilon) \Delta t + \psi_t 
+    \end{equation}
+    \item \textit{Planar}: Set to local velocity, such that current position is updated based on a velocity input command expressed in the body-frame reference system.
+    \begin{equation}
+        \begin{bmatrix}
+            x_{t+1} \\
+            y_{t+1} 
+        \end{bmatrix} = 
+        \begin{bmatrix}
+            v_x + \epsilon \\
+            v_y + \epsilon
+        \end{bmatrix} \Delta t + 
+        \begin{bmatrix}
+            x_t \\
+            y_t
+        \end{bmatrix} 
+    \end{equation}
+\end{enumerate}
+
+\section{Environment}
+
+The environment is a 3D domain where the agents operate. To make it more realistic,
+I used Oceananigans.jl \cite{Oceananigans-overview-paper-2025}, which is a 
+fast, friendly and flexible software package for finite volume simulations of the 
+nonhydrostatic and hydrostatic Boussinesq equations on CPUs and GPUs. An environment 
+used in an episode is simply a snapshot of one of the different simulations
+I ran with Oceananigans. The environment is composed of three fields:
+\begin{itemize}
+    \item \textit{Currents}
+    \item \textit{Salinity}
+    \item \textit{Turbidity}
+\end{itemize}
+The first one is computed by the solver. The second one is computed using
+$N$ salinity sources, initialized randomly at "land" positions (i.e., south 
+and west walls in this case) and with a random strength. The field is constructed 
+by advecting the particles with the current field, corrected by a diffusion 
+term. The third is simply an analytical function of depth:
+\begin{equation}
+    T(z) = \frac{1}{1 + e^{-(z - z_0)}} \quad \text{with } z_0 = 0.5
+\end{equation}
+
+The domain is a cube of $1000 \times 1000 \times 100$ meters, discretized
+on a $128 \times 128 \times 64$ grid of cells, with topology (Periodic, Periodic, Bounded). The method chosen for the 
+simulation is the nonhydrostatic one, which assumes that the vertical
+acceleration is not negligible. This method is more accurate than the 
+hydrostatic one, but necessitates more computational resources. 30 simulations
+were carried out for training and 10 for testing, each one with a different random seed to ensure variability
+in the environment. Each simulation created a single NetCDF file, with a snapshot
+containing the fields every 12 minutes. The simulation was run for 18 hours,
+with the first 12 used as warmup time and so not recorded. 
+
+% Table with the parameters used for the simulation
+\begin{table}[t]
+\caption{Parameters used in the Oceananigans nonhydrostatic model\label{tab:1}}\vspace{0.25em} % adds some additional space between caption and \toprule, if desired.
+\centering{%
+\tagpdfsetup{table/header-rows={1}}
+\begin{tabular*}{\textwidth}{@{\hspace*{1.5em}}@{\extracolsep{\fill}}ccc!{\hspace*{1.5em}}ccc@{\hspace*{5.0em}}}
+\toprule
+Parameter &
+Value &
+Description \\ \midrule
+LX & 1000.0 & Domain (x) \\
+LY & 1000.0 & Domain (y) \\
+LZ & 100.0 & Domain (z) \\
+NX & 128 & Grid points (x) \\
+NY & 128 & Grid points (y) \\
+NZ & 64 & Grid points (z) \\
+$T_{surface}$ & 22.0 / 33.0 & Surface temperature (winter/summer) [°C]\\
+$T_{bottom}$ & 20.0 / 22.0 & Bottom temperature (winter/summer) [°C]\\
+$S_{baseline}$ & 40.0 / 42.0 & Baseline salinity (winter/summer) [PSU]\\
+$V_{wind}$ & 5.0 / 8.0 & Wind speed (winter/summer) \\
+$\rho_{air}$ & 1.225 & Air density [$kg/m^3$]\\
+$c_{drag}$ & $1.3e^{-3}$ & Drag coefficient \\
+$\rho_{water}$ & 1027.0 & Water density [$kg/m^3$]\\
+Latitude & 24.5 & Abu Dhabi latitude (degrees N)\\
+$\omega_{earth}$ & $7.292e^{-5}$ & Earth rotation rate [$rad/s$]\\
+$f_{coriolis}$ & $2\omega_{earth}\sin(\text{Latitude})$ & Coriolis parameter [$rad/s$]\\
+$\alpha_t$ & $1.67e^{-4}$ & Thermal expansion coefficient [$K^{-1}$]\\
+$\beta_s$ & $0$ & Salinity contraction coefficient [$psu^{-1}$]\\
+$\sigma_h$ & 300.0 & Salinity horizontal std [m]\\
+$\sigma_v$ & 40.0 & Salinity vertical std [m]\\
+Salinity excess & 10.0 & Excess over baseline [PSU]\\
+Salinity decay time & 1.0 & Time to relax the field to a gaussian\\
+Warmup time & 12.0 & Time to reach a steady state [h]\\
+Simulation time & 6.0 & Total simulation time [h]\\
+Output frequency & 12.0 & Frequency of output [min]\\
+\bottomrule
+\end{tabular*}
+}%
+\end{table}
+
+\subsection{Currents}
+
+Currents are composed by three components: the horizontal velocities ($u,v$),
+and the vertical one ($w$). They are prognostic variables integrated 
+forward in time by the nonhydrostatic Oceananigans model, which solves the rotating, 
+Boussinesq, nonhydrostatic Navier–Stokes equations with an LES subgrid closure. 
+The developed script only sets up the forcing, the boundary conditions, the rotation, 
+the stratification, and the time-stepping; the flow itself emerges from the solve.
+The model integrates the following equation:
+
+\begin{equation}
+\frac{\partial \mathbf{\vec{u}}}{\partial t} + \underbrace{(\mathbf{\vec{u}}\cdot\nabla)\mathbf{\vec{u}}}_{\text{advection}} + \underbrace{f \hat{z}\times\mathbf{\vec{u}}}_{\text{coriolis}} = -\underbrace{\nabla p}_{\text{pressure}} + \underbrace{b \hat{z}}_{\text{buoyancy}} + \underbrace{\nabla\cdot\boldsymbol{\tau}_{\rm sgs}}_{\text{subgrid stress}} + \underbrace{\mathbf{F}}_{\text{body force}}
+\end{equation}
+
+\begin{equation*}
+    \text{with } \nabla\cdot\mathbf{\vec{u}} = 0
+\end{equation*}
+
+The fourth term $(-\nabla p)$ is the pressure gradient force. It is a global 
+operator (i.e., modifies the entire domain) and essentially is a vector
+pointing in the direction of steepest increase in pressure. Because the model 
+is Boussinesq, $p$ here is the kinemaic pressure, already divided by $\rho_0 = 1027.0$. 
+Moreover, it has no equation of state, it is a Lagrange multiplier that enforces incompressibility, 
+and since there is the constraint $\nabla\cdot\mathbf{\vec{u}} = 0$, it is whatever force field 
+required to make that true. Mechanically, Oceananigans does thig with a projection
+method each timestep:
+\begin{itemize}
+    \item advances velocity ignoring pressure
+    \item solves a Poisson equation for pressure
+    \begin{equation}
+        \nabla^2 p = \nabla\cdot \mathbf{\vec{u}}^* / \Delta t
+    \end{equation}
+    \item corrects the velocity with the pressure gradient
+    \begin{equation}
+        \vec{u} = \vec{u}^* - \Delta t \cdot \nabla p
+    \end{equation}
+\end{itemize}
+The second step is an elliptic solve that uses an FFT along the periodi axis and transforms along the bounded axes.
+
+The fifth term ($b\hat{z}$) is the buoyancy force, TODO.
+
+The sixth term ($\nabla\cdot\boldsymbol{\tau}_{\rm sgs}$) is the subgrid stress, which is a closure for the unresolved scales of motion. 
+Essentially, LES applies a spatial filter (the grid) to the Navier-Stokes equations, splitting the velocity into a resolved and an unresolved part.
+Physically, $\tau_{\rm sgs}$ is the momentum flux carried by eddies smaller than a grid cell, since in the current model the grid cells cannot see them. 
+
+The last term ($\mathbf{F}$) embodies every forcing that is not in the standard list of fixed physics solved by Oceananigans.
+It is a body force, applied throughout the volume at every grid cell. 
+
+Wind speed enters whrough the bulk drag law:
+\begin{equation}
+\tau = \rho_{\rm air},C_d,U_{10}^2 \quad\Longrightarrow\quad \tau_{\rm kin} = \frac{\rho_{\rm air} C_d U_{10}^2}{\rho_{\rm water}}
+\end{equation}
+
+And that is applied as a flux boundary condition at the surface. Momentum enters through the surface and
+is transferred downward by turbulence. 
+Surface stress plus rotation gives the classical Ekman spiral: the current at the surface
+is deflected to the right of the wind (northern hemisphere) and rotates further right with depth while decaying. 
+
+Only temperature is buoyancy-active: salinity exerts zero feedback on momentum, it is advected and LES-mixed by the currents but never drives them.
+This is a simplification with respect to the real world, given the small amount of computational resources available.
+
+
+
+\subsection{Salinity Field}

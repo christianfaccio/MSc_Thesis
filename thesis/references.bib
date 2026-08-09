@@ -1,0 +1,1103 @@
+% ============================================================================
+%  references.bib -- MSc Thesis, Christian Faccio
+%  Underwater swarm search & navigation via multi-agent reinforcement learning
+%
+%  Part I  : entries for the PDFs collected in ../docs/
+%  Part II : entries for the curated web reading list in ../docs/references.md
+% ============================================================================
+
+
+% ============================================================================
+%  PART I -- PDFs in ../docs/
+% ============================================================================
+
+% ---------------------------------------------------------------------------
+%  1. Reinforcement learning: core algorithms and theory
+% ---------------------------------------------------------------------------
+
+@book{albrecht2024multi,
+  title={Multi-agent reinforcement learning: Foundations and modern approaches},
+  author={Albrecht, Stefano V and Christianos, Filippos and Sch{\"a}fer, Lukas},
+  year={2024},
+  publisher={MIT Press}
+}
+
+
+@misc{schulman2017ppo,
+  author       = {Schulman, John and Wolski, Filip and Dhariwal, Prafulla and Radford, Alec and Klimov, Oleg},
+  title        = {Proximal Policy Optimization Algorithms},
+  year         = {2017},
+  eprint       = {1707.06347},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.LG},
+  doi          = {10.48550/arXiv.1707.06347},
+  note         = {docs/ppo.pdf},
+}
+
+@inproceedings{schulman2015trpo,
+  author       = {Schulman, John and Levine, Sergey and Moritz, Philipp and Jordan, Michael I. and Abbeel, Pieter},
+  title        = {Trust Region Policy Optimization},
+  booktitle    = {Proceedings of the 32nd International Conference on Machine Learning (ICML)},
+  series       = {Proceedings of Machine Learning Research},
+  volume       = {37},
+  pages        = {1889--1897},
+  year         = {2015},
+  publisher    = {PMLR},
+  eprint       = {1502.05477},
+  eprinttype   = {arXiv},
+  note         = {docs/TRPO.pdf},
+}
+
+@inproceedings{schulman2016gae,
+  author       = {Schulman, John and Moritz, Philipp and Levine, Sergey and Jordan, Michael I. and Abbeel, Pieter},
+  title        = {High-Dimensional Continuous Control Using Generalized Advantage Estimation},
+  booktitle    = {4th International Conference on Learning Representations (ICLR)},
+  year         = {2016},
+  eprint       = {1506.02438},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.LG},
+  note         = {docs/GAE.pdf},
+}
+
+@inproceedings{andrychowicz2021matters,
+  author       = {Andrychowicz, Marcin and Raichuk, Anton and Sta{\'n}czyk, Piotr and Orsini, Manu and Girgin, Sertan
+                  and Marinier, Rapha{\"e}l and Hussenot, L{\'e}onard and Geist, Matthieu and Pietquin, Olivier
+                  and Michalski, Marcin and Gelly, Sylvain and Bachem, Olivier},
+  title        = {What Matters for On-Policy Reinforcement Learning? A Large-Scale Empirical Study},
+  booktitle    = {9th International Conference on Learning Representations (ICLR)},
+  year         = {2021},
+  eprint       = {2006.05990},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.LG},
+  note         = {docs/Andrychowicz et al. 2021.pdf},
+}
+
+@inproceedings{saxe2014exact,
+  author       = {Saxe, Andrew M. and McClelland, James L. and Ganguli, Surya},
+  title        = {Exact Solutions to the Nonlinear Dynamics of Learning in Deep Linear Neural Networks},
+  booktitle    = {2nd International Conference on Learning Representations (ICLR)},
+  year         = {2014},
+  eprint       = {1312.6120},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.NE},
+  note         = {Orthogonal weight initialization. docs/orthogonal\_init.pdf},
+}
+
+@misc{duan2016rl2,
+  author       = {Duan, Yan and Schulman, John and Chen, Xi and Bartlett, Peter L. and Sutskever, Ilya and Abbeel, Pieter},
+  title        = {{RL}$^2$: Fast Reinforcement Learning via Slow Reinforcement Learning},
+  year         = {2016},
+  eprint       = {1611.02779},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.AI},
+  doi          = {10.48550/arXiv.1611.02779},
+  note         = {docs/1611.02779v2.pdf},
+}
+
+% ---------------------------------------------------------------------------
+%  2. Multi-agent reinforcement learning
+% ---------------------------------------------------------------------------
+
+@article{zhang2021multi,
+  title={Multi-agent reinforcement learning: A selective overview of theories and algorithms},
+  author={Zhang, Kaiqing and Yang, Zhuoran and Ba{\c{s}}ar, Tamer},
+  journal={Handbook of reinforcement learning and control},
+  pages={321--384},
+  year={2021},
+  publisher={Springer}
+}
+
+
+@inproceedings{littman1994markov,
+  author       = {Littman, Michael L.},
+  title        = {Markov Games as a Framework for Multi-Agent Reinforcement Learning},
+  booktitle    = {Proceedings of the 11th International Conference on Machine Learning (ICML)},
+  pages        = {157--163},
+  year         = {1994},
+  publisher    = {Morgan Kaufmann},
+  note         = {docs/markov-games.pdf},
+}
+
+@inproceedings{claus1998dynamics,
+  author       = {Claus, Caroline and Boutilier, Craig},
+  title        = {The Dynamics of Reinforcement Learning in Cooperative Multiagent Systems},
+  booktitle    = {Proceedings of the 15th National Conference on Artificial Intelligence (AAAI-98)},
+  pages        = {746--752},
+  year         = {1998},
+  publisher    = {AAAI Press},
+  note         = {docs/dynamics\_of\_rl\_in\_mas.pdf},
+}
+
+@book{oliehoek2016decpomdp,
+  author       = {Oliehoek, Frans A. and Amato, Christopher},
+  title        = {A Concise Introduction to Decentralized {POMDPs}},
+  series       = {SpringerBriefs in Intelligent Systems},
+  year         = {2016},
+  publisher    = {Springer},
+  address      = {Cham},
+  isbn         = {978-3-319-28927-4},
+  doi          = {10.1007/978-3-319-28929-8},
+  note         = {docs/Dec-POMDP.pdf},
+}
+
+@misc{dewitt2020ippo,
+  author       = {Schroeder de Witt, Christian and Gupta, Tarun and Makoviichuk, Denys and Makoviychuk, Viktor
+                  and Torr, Philip H. S. and Sun, Mingfei and Whiteson, Shimon},
+  title        = {Is Independent Learning All You Need in the {StarCraft} Multi-Agent Challenge?},
+  year         = {2020},
+  eprint       = {2011.09533},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.AI},
+  doi          = {10.48550/arXiv.2011.09533},
+  note         = {IPPO. docs/IPPO.pdf (= docs/independent-learning.pdf)},
+}
+
+@inproceedings{yu2022mappo,
+  author       = {Yu, Chao and Velu, Akash and Vinitsky, Eugene and Gao, Jiaxuan and Wang, Yu and Bayen, Alexandre and Wu, Yi},
+  title        = {The Surprising Effectiveness of {PPO} in Cooperative Multi-Agent Games},
+  booktitle    = {Advances in Neural Information Processing Systems 35 (NeurIPS), Datasets and Benchmarks Track},
+  year         = {2022},
+  eprint       = {2103.01955},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.LG},
+  note         = {MAPPO. docs/MAPPO.pdf},
+}
+
+@misc{ye2025tadppo,
+  author       = {Ye, Jianing and Li, Chenghao and Dou, Yongqiang and Wang, Jianhao and Yang, Guangwen and Zhang, Chongjie},
+  title        = {Towards Global Optimality in Cooperative {MARL} with the Transformation and Distillation Framework},
+  year         = {2025},
+  eprint       = {2207.11143},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.MA},
+  doi          = {10.48550/arXiv.2207.11143},
+  note         = {TAD-PPO. docs/TAD-PPO.pdf},
+}
+
+@article{gronauer2022madrl,
+  author       = {Gronauer, Sven and Diepold, Klaus},
+  title        = {Multi-Agent Deep Reinforcement Learning: A Survey},
+  journal      = {Artificial Intelligence Review},
+  volume       = {55},
+  number       = {2},
+  pages        = {895--943},
+  year         = {2022},
+  doi          = {10.1007/s10462-021-09996-w},
+  note         = {docs/madrl\_survey.pdf},
+}
+
+@article{ozdemir2026mappobte,
+  author       = {Ozdemir, Koray and Tuncer, Adem},
+  title        = {Multi-Agent Proximal Policy Optimization Supported Dynamic Behavior Tree Evolution for Multi-Agent Systems},
+  journal      = {Engineering Applications of Artificial Intelligence},
+  volume       = {167},
+  pages        = {113841},
+  year         = {2026},
+  doi          = {10.1016/j.engappai.2026.113841},
+  note         = {docs/MAPPO-BTE.pdf},
+}
+
+% ---------------------------------------------------------------------------
+%  3. Source seeking, plume tracing and olfactory search
+% ---------------------------------------------------------------------------
+
+@article{loisy2022infotaxis,
+  author       = {Loisy, Aurore and Eloy, Christophe},
+  title        = {Searching for a Source without Gradients: How Good Is Infotaxis and How to Beat It},
+  journal      = {Proceedings of the Royal Society A},
+  volume       = {478},
+  number       = {2262},
+  pages        = {20220118},
+  year         = {2022},
+  doi          = {10.1098/rspa.2022.0118},
+  note         = {docs/rspa.2022.0118.pdf},
+}
+
+@article{loisy2023olfactory,
+  author       = {Loisy, Aurore and Heinonen, Robin A.},
+  title        = {Deep Reinforcement Learning for the Olfactory Search {POMDP}: A Quantitative Benchmark},
+  journal      = {The European Physical Journal E},
+  volume       = {46},
+  number       = {3},
+  pages        = {17},
+  year         = {2023},
+  doi          = {10.1140/epje/s10189-023-00277-8},
+  note         = {docs/s10189-023-00277-8.pdf},
+}
+
+@inproceedings{mecanna2024navigation,
+  author       = {Mecanna, Selim and Loisy, Aurore and Eloy, Christophe},
+  title        = {Applying Reinforcement Learning to Navigation in Partially Observable Flows},
+  booktitle    = {17th European Workshop on Reinforcement Learning (EWRL)},
+  year         = {2024},
+  note         = {docs/Mecanna2024\_EWRL\_rl-pomdp-navigation.pdf},
+}
+
+@article{wang2023plumetracing,
+  author       = {Wang, Lingxiao and Pang, Shuo},
+  title        = {Autonomous Underwater Vehicle Based Chemical Plume Tracing via Deep Reinforcement Learning Methods},
+  journal      = {Journal of Marine Science and Engineering},
+  volume       = {11},
+  number       = {2},
+  pages        = {366},
+  year         = {2023},
+  doi          = {10.3390/jmse11020366},
+  note         = {docs/jmse-11-00366-v2.pdf},
+}
+
+@misc{granadeno2025multisource,
+  author       = {Alarcon Granadeno, Pedro Antonio and Chambers, Theodore and Cleland-Huang, Jane},
+  title        = {Multi-Source Plume Tracing via Multi-Agent Reinforcement Learning},
+  year         = {2025},
+  eprint       = {2505.08825},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.MA},
+  doi          = {10.48550/arXiv.2505.08825},
+  note         = {docs/2505.08825v1.pdf},
+}
+
+@article{zhao2022sourcelocalization,
+  author       = {Zhao, Yong and Chen, Bin and Wang, XiangHan and Zhu, Zhengqiu and Wang, Yiduo and Cheng, Guangquan
+                  and Wang, Rui and Wang, Rongxiao and He, Ming and Liu, Yu},
+  title        = {A Deep Reinforcement Learning Based Searching Method for Source Localization},
+  journal      = {Information Sciences},
+  volume       = {588},
+  pages        = {67--81},
+  year         = {2022},
+  doi          = {10.1016/j.ins.2021.12.041},
+  note         = {docs/1-s2.0-S0020025521012615-main.pdf},
+}
+
+@article{stockie2011gaussianplume,
+  author       = {Stockie, John M.},
+  title        = {The Mathematics of Atmospheric Dispersion Modeling},
+  journal      = {SIAM Review},
+  volume       = {53},
+  number       = {2},
+  pages        = {349--372},
+  year         = {2011},
+  doi          = {10.1137/10080991X},
+  note         = {Gaussian plume solution with advection. docs/GaussianPlumeWithAdvection.pdf},
+}
+
+% ---------------------------------------------------------------------------
+%  4. AUV / UAV path planning and cooperative search with RL
+% ---------------------------------------------------------------------------
+
+@article{li2024multiauvsearch,
+  author       = {Li, Yueming and Ma, Mingquan and Cao, Jian and Luo, Guobin and Wang, Depeng and Chen, Weiqiang},
+  title        = {A Method for Multi-{AUV} Cooperative Area Search in Unknown Environment Based on Reinforcement Learning},
+  journal      = {Journal of Marine Science and Engineering},
+  volume       = {12},
+  number       = {7},
+  pages        = {1194},
+  year         = {2024},
+  doi          = {10.3390/jmse12071194},
+  note         = {docs/A Method for Multi-AUV Cooperative Area Search in Unknown Environment Based on Reinforcement Learning.pdf},
+}
+
+@article{li2025multiauvmoving,
+  author       = {Li, Le and An, Ruiqi and Guo, Zhaozhi and Gao, Jian},
+  title        = {Multi-{AUV} Cooperative Search for Moving Targets Based on Multi-Agent Reinforcement Learning},
+  journal      = {Journal of Marine Science and Engineering},
+  volume       = {13},
+  number       = {11},
+  pages        = {2072},
+  year         = {2025},
+  doi          = {10.3390/jmse13112072},
+  note         = {docs/Multi-AUV Cooperative Target Search Based on Reinforcement Learning and Bio-Inspired Algorithms..pdf},
+}
+
+@article{hou2024uavswarmsearch,
+  author       = {Hou, Yukai and Zhao, Jin and Zhang, Rongqing and Cheng, Xiang and Yang, Liuqing},
+  title        = {{UAV} Swarm Cooperative Target Search: A Multi-Agent Reinforcement Learning Approach},
+  journal      = {IEEE Transactions on Intelligent Vehicles},
+  volume       = {9},
+  number       = {1},
+  pages        = {568--578},
+  year         = {2024},
+  doi          = {10.1109/TIV.2023.3316196},
+  note         = {docs/UAV\_Swarm\_Cooperative\_Target\_Search\_A\_Multi-Agent\_Reinforcement\_Learning\_Approach.pdf},
+}
+
+@article{zhang2024auvpathplanning,
+  author       = {Zhang, An and Wang, Weixiang and Bi, Wenhao and Huang, Zhanjun},
+  title        = {A Path Planning Method Based on Deep Reinforcement Learning for {AUV} in Complex Marine Environment},
+  journal      = {Ocean Engineering},
+  volume       = {313},
+  pages        = {119354},
+  year         = {2024},
+  doi          = {10.1016/j.oceaneng.2024.119354},
+  note         = {docs/1-s2.0-S0029801824026921-main.pdf},
+}
+
+@article{xi2022comprehensiveocean,
+  author       = {Xi, Meng and Yang, Jiachen and Wen, Jiabao and Liu, Hankai and Li, Yang and Song, Houbing Herbert},
+  title        = {Comprehensive Ocean Information-Enabled {AUV} Path Planning via Reinforcement Learning},
+  journal      = {IEEE Internet of Things Journal},
+  volume       = {9},
+  number       = {18},
+  pages        = {17440--17451},
+  year         = {2022},
+  doi          = {10.1109/JIOT.2022.3155697},
+  note         = {docs/Comprehensive\_Ocean\_Information-Enabled\_AUV\_Path\_Planning\_Via\_Reinforcement\_Learning.pdf},
+}
+
+% ---------------------------------------------------------------------------
+%  5. Hybrid RL + metaheuristic path planning (Q-learning / PSO / GA / A*)
+% ---------------------------------------------------------------------------
+
+@inproceedings{meerza2019qpso,
+  author       = {Meerza, Syed Irfan Ali and Islam, Moinul and Uzzal, Md. Mohiuddin},
+  title        = {{Q}-Learning Based Particle Swarm Optimization Algorithm for Optimal Path Planning of Swarm of Mobile Robots},
+  booktitle    = {2019 1st International Conference on Advances in Science, Engineering and Robotics Technology (ICASERT)},
+  pages        = {1--5},
+  year         = {2019},
+  publisher    = {IEEE},
+  doi          = {10.1109/ICASERT.2019.8934450},
+  note         = {docs/Q-Learning\_Based\_Particle\_Swarm\_Optimization\_Algorithm\_for\_Optimal\_Path\_Planning\_of\_Swarm\_of\_Mobile\_Robots.pdf},
+}
+
+@inproceedings{ma2024improvedqpso,
+  author       = {Ma, Zhiyao and Liu, Zhongxin},
+  title        = {An Improved {Q}-Learning Algorithm with Particle Swarm Optimization for Path Planning},
+  booktitle    = {2024 6th International Conference on Frontier Technologies of Information and Computer (ICFTIC)},
+  pages        = {1662--1667},
+  year         = {2024},
+  publisher    = {IEEE},
+  doi          = {10.1109/ICFTIC64248.2024.10913234},
+  note         = {docs/An\_Improved\_Q-Learning\_Algorithm\_with\_Particle\_Swarm\_Optimization\_for\_Path\_Planning.pdf},
+}
+
+@article{tan2024adaptiveqpso,
+  author       = {Tan, Li and Zhang, Hongtao and Liu, Yuzhao and Yuan, Tianli and Jiang, Xujie and Shang, Ziliang},
+  title        = {An Adaptive {Q}-Learning Based Particle Swarm Optimization for Multi-{UAV} Path Planning},
+  journal      = {Soft Computing},
+  volume       = {28},
+  pages        = {7931--7946},
+  year         = {2024},
+  doi          = {10.1007/s00500-024-09691-2},
+  note         = {docs/An adaptoive Q learning based Partcile Swarm Optimization.pdf},
+}
+
+@article{li2025qlmopso,
+  author       = {Li, Wuke and Xiong, Ying and Xiong, Qi},
+  title        = {Reinforcement Learning-Guided Particle Swarm Optimization for Multi-Objective Unmanned Aerial Vehicle Path Planning},
+  journal      = {Symmetry},
+  volume       = {17},
+  number       = {8},
+  pages        = {1292},
+  year         = {2025},
+  doi          = {10.3390/sym17081292},
+  note         = {docs/Reinforcement Learning-Guided Particle Swarm Optimization.pdf},
+}
+
+@article{li2022qualityoriented,
+  author       = {Li, Dongcheng and Yin, Wangping and Wong, W. Eric and Jian, Mingyong and Chau, Matthew},
+  title        = {Quality-Oriented Hybrid Path Planning Based on {A}$^*$ and {Q}-Learning for Unmanned Aerial Vehicle},
+  journal      = {IEEE Access},
+  volume       = {10},
+  pages        = {7664--7674},
+  year         = {2022},
+  doi          = {10.1109/ACCESS.2021.3139534},
+  note         = {docs/Quality-Oriented\_Hybrid\_Path\_Planning\_Based\_on\_A\_and\_Q-Learning\_for\_Unmanned\_Aerial\_Vehicle.pdf},
+}
+
+@article{saeed2024energyefficient,
+  author       = {Saeed, Rashid A. and Ali, Elmustafa Sayed and Abdelhaq, Maha and Alsaqour, Raed
+                  and Ahmed, Fatima Rayan Awad and Saad, Asma Mohammed Elbashir},
+  title        = {Energy Efficient Path Planning Scheme for Unmanned Aerial Vehicle Using Hybrid Generic Algorithm-Based {Q}-Learning Optimization},
+  journal      = {IEEE Access},
+  volume       = {12},
+  pages        = {13400--13417},
+  year         = {2024},
+  doi          = {10.1109/ACCESS.2023.3344455},
+  note         = {docs/Energy\_Efficient\_Path\_Planning\_Scheme\_for\_Unmanned\_Aerial\_Vehicle\_Using\_Hybrid\_Generic\_Algorithm-Based\_Q-Learning\_Optimization.pdf},
+}
+
+% ---------------------------------------------------------------------------
+%  6. Simulators, ocean modelling and underwater communication
+% ---------------------------------------------------------------------------
+
+@inproceedings{iacoponi2025swarmswim,
+  author       = {Iacoponi, Saverio and Infanti, Andrea and El Hanbaly, Mohammed and De Masi, Giulia and Renda, Federico},
+  title        = {{SwarmSwIM}: A Simulator for Underwater Swarms of Robots},
+  booktitle    = {OCEANS 2025 -- Brest},
+  year         = {2025},
+  publisher    = {IEEE},
+  doi          = {10.1109/OCEANS58557.2025.11104732},
+  note         = {docs/SwarmSwIM\_A\_Simulator\_for\_Underwater\_Swarms\_of\_Robots.pdf},
+}
+
+@misc{demasi2025whynewsimulator,
+  author       = {De Masi, Giulia and Iacoponi, Saverio},
+  title        = {Why a New Simulator?},
+  howpublished = {Presentation, OCEANS 2025 -- Brest},
+  year         = {2025},
+  note         = {docs/Oceans2025\_Simulator\_SwarmSwim.pdf},
+}
+
+@misc{chu2025marinegym,
+  author       = {Chu, Shuguang and Huang, Zebin and Li, Yutong and Lin, Mingwei and Li, Dejun
+                  and Carlucho, Ignacio and Petillot, Yvan R. and Yang, Canjun},
+  title        = {{MarineGym}: A High-Performance Reinforcement Learning Platform for Underwater Robotics},
+  year         = {2025},
+  eprint       = {2503.09203},
+  eprinttype   = {arXiv},
+  eprintclass  = {cs.RO},
+  doi          = {10.48550/arXiv.2503.09203},
+  note         = {docs/MarineGym.pdf},
+}
+
+@article{wen20243docm,
+  author       = {Wen, Yicheng and Li, Xingfei and Li, Hongyu and Zou, Yanchao and Yang, Yiguang and Xu, Jiayi},
+  title        = {Modeling of Three-Dimensional Ocean Current Based on Ocean Current Big Data for Underwater Vehicles},
+  journal      = {Journal of Marine Science and Engineering},
+  volume       = {12},
+  number       = {12},
+  pages        = {2219},
+  year         = {2024},
+  doi          = {10.3390/jmse12122219},
+  note         = {docs/jmse-12-02219.pdf},
+}
+
+@article{talebi2026blueme,
+  author       = {Talebi, Mehron and Mahmud, Sultan and Khalifa, Adam and Islam, Md Jahidul},
+  title        = {{BlueME}: Robust Underwater Robot-to-Robot Communication Using Compact Magnetoelectric Antennas},
+  journal      = {IEEE Journal of Oceanic Engineering},
+  year         = {2026},
+  doi          = {10.1109/JOE.2026.3675822},
+  note         = {Early access. docs/BlueME.pdf},
+}
+
+@article{Oceananigans-overview-paper-2025,
+  title = {{High-level, high-resolution ocean modeling at all scales with Oceananigans}},
+  author = {G. L. Wagner and S. Silvestri and N. C. Constantinou and A. Ramadhan and J.-M. Campin and C. Hill and T. Chor and J. Strong-Wright and X. K. Lee and F. Poulin and A. Souza and K. J. Burns and S. Bishnu and J. Marshall and R. Ferrari},
+  journal = {arXiv preprint},
+  year = {2025},
+  archivePrefix = {arXiv},
+  eprint = {2502.14148},
+  doi = {10.48550/arXiv.2502.14148},
+  notes = {submitted to the Journal of Advances in Modeling Earth Systems},
+}
+
+% ---------------------------------------------------------------------------
+%  7. Local / unpublished documents
+% ---------------------------------------------------------------------------
+
+@thesis{insaghi2025thesis,
+  author       = {Insaghi, Edoardo},
+  title        = {Adaptive Control of Underwater Artificial Swarm for Monitoring Marine Ecosystems},
+  type         = {Master's thesis},
+  institution  = {University of Trieste, Department of Mathematics, Informatics and Geosciences},
+  year         = {2025},
+  note         = {Supervisors: A. Celani, G. De Masi. docs/Edoardo\_Thesis.pdf},
+}
+
+@unpublished{faccio2026proposal,
+  author       = {Faccio, Christian},
+  title        = {Underwater Search and Navigation in Underwater Realistic Environment},
+  note         = {Master's thesis proposal, University of Trieste. docs/proposal.pdf},
+  year         = {2026},
+}
+
+
+% ============================================================================
+%  PART III -- Introduction / motivation literature
+%  (why swarms are deployed for this problem; gathered 2026-08-02)
+% ============================================================================
+
+% ---------------------------------------------------------------------------
+%  Coral reef restoration and the site-selection problem
+%  (this is the task the swarm survey serves)
+% ---------------------------------------------------------------------------
+
+@article{mula2025restoration,
+  author       = {Mul{\`a}, Clelia and Bradshaw, Corey J. A. and Cabeza, Mar and Manca, Federica
+                  and Montano, Simone and Strona, Giovanni},
+  title        = {Restoration Cannot Be Scaled Up Globally to Save Reefs from Loss and Degradation},
+  journal      = {Nature Ecology \& Evolution},
+  volume       = {9},
+  number       = {5},
+  pages        = {822--832},
+  year         = {2025},
+  doi          = {10.1038/s41559-025-02667-x},
+  note         = {30--40\% of projects fail; site choice is driven by human proximity, not ecological suitability.},
+}
+
+@article{burdett2024restoration,
+  author       = {Burdett, Heidi L. and Albright, Rebecca and Foster, Gavin L. and Mass, Tali and Page, Tessa M.
+                  and Rinkevich, Buki and Schoepf, Verena and Silverman, Jacob and Kamenos, Nicholas A.},
+  title        = {Including Environmental and Climatic Considerations for Sustainable Coral Reef Restoration},
+  journal      = {PLOS Biology},
+  volume       = {22},
+  number       = {3},
+  pages        = {e3002542},
+  year         = {2024},
+  doi          = {10.1371/journal.pbio.3002542},
+  note         = {55\% of restoration studies report no environmental parameters; calls for characterizing the
+                  environmental seascape before restoring.},
+}
+
+@article{guan2015suitable,
+  author       = {Guan, Yi and Hohn, S{\"o}nke and Merico, Agostino},
+  title        = {Suitable Environmental Ranges for Potential Coral Reef Habitats in the Tropical Ocean},
+  journal      = {PLOS ONE},
+  volume       = {10},
+  number       = {6},
+  pages        = {e0128831},
+  year         = {2015},
+  doi          = {10.1371/journal.pone.0128831},
+  note         = {Tolerance windows: salinity 28.7--40.4 psu, temperature 21.7--29.6 degC,
+                  light >= 450 umol photons m^-2 s^-1. Basis for treating habitat suitability as a target band.},
+}
+
+@article{schill2021siteselection,
+  author       = {Schill, Steven R. and Asner, Gregory P. and McNulty, Valerie P. and Pollock, F. Joseph
+                  and Croquer, Aldo and Vaughn, Nicholas R. and Escovar-Fadul, Ximena and Raber, George and Shaver, Elizabeth},
+  title        = {Site Selection for Coral Reef Restoration Using Airborne Imaging Spectroscopy},
+  journal      = {Frontiers in Marine Science},
+  volume       = {8},
+  pages        = {698004},
+  year         = {2021},
+  doi          = {10.3389/fmars.2021.698004},
+  note         = {Remote sensing narrows the search but cannot replace in situ assessment.},
+}
+
+@article{nasseridoust2024artificialreef,
+  author       = {Nasseri Doust, Shadan and Abbasian, Mehrnoosh and Haghshenas, S. Abbas
+                  and Risk, Michael J. and Downs, Craig A.},
+  title        = {Integrating Hydrodynamic Modeling with Ecological Risk Assessment for Selecting Sites for
+                  Artificial Reef Deployment: Avoiding Coastal Pollution Risks in {Kish Island}, {Persian Gulf}},
+  journal      = {Oceans},
+  volume       = {5},
+  number       = {4},
+  pages        = {889--905},
+  year         = {2024},
+  doi          = {10.3390/oceans5040051},
+  note         = {Same sea, same criterion as this thesis: place reefs away from discharge sources.},
+}
+
+% ---------------------------------------------------------------------------
+%  The Gulf as an extreme, stressed marine environment
+% ---------------------------------------------------------------------------
+
+@article{sheppard2010gulf,
+  author       = {Sheppard, Charles and Al-Husiani, Mohsen and Al-Jamali, Faiza and Al-Yamani, Faiza
+                  and Baldwin, Rob and Bishop, James and Benzoni, Francesca and Dutrieux, Eric
+                  and Dulvy, Nicholas K. and Durvasula, Subba Rao V. and others},
+  title        = {The {Gulf}: A Young Sea in Decline},
+  journal      = {Marine Pollution Bulletin},
+  volume       = {60},
+  number       = {1},
+  pages        = {13--38},
+  year         = {2010},
+  doi          = {10.1016/j.marpolbul.2009.10.017},
+  note         = {Standard reference for the Gulf's natural temperature/salinity extremes and its decline.},
+}
+
+@article{paparella2022salinity,
+  author       = {Paparella, Francesco and D'Agostino, Daniele and Burt, John A.},
+  title        = {Long-Term, Basin-Scale Salinity Impacts from Desalination in the {Arabian/Persian Gulf}},
+  journal      = {Scientific Reports},
+  volume       = {12},
+  pages        = {20549},
+  year         = {2022},
+  doi          = {10.1038/s41598-022-25167-5},
+  note         = {Basin-scale salinity rise stays below ~0.5 psu; the impact is regional and nearshore, not basin-wide.},
+}
+
+@article{omerspahic2022brine,
+  author       = {Omerspahic, Mustafa and Al-Jabri, Hareb and Siddiqui, Simil Amir and Saadaoui, Imen},
+  title        = {Characteristics of Desalination Brine and Its Impacts on Marine Chemistry and Health,
+                  with Emphasis on the {Persian/Arabian Gulf}: A Review},
+  journal      = {Frontiers in Marine Science},
+  volume       = {9},
+  pages        = {845113},
+  year         = {2022},
+  doi          = {10.3389/fmars.2022.845113},
+}
+
+@article{hadjhammou2025bleaching,
+  author       = {Hadj-Hammou, Jeneen and Bartholomew, Aaron and Bento, Rita C. and Mohamed, Fatima A.
+                  and Cavalcante, Ge{\'o}rgenes H. and Burt, John A.},
+  title        = {Bleaching Impacts on the Last Remaining {Acropora}-Dominated Reefs in the {United Arab Emirates}},
+  journal      = {Diversity},
+  volume       = {17},
+  number       = {9},
+  pages        = {610},
+  year         = {2025},
+  doi          = {10.3390/d17090610},
+}
+
+% ---------------------------------------------------------------------------
+%  Offshore and coastal industrial activity: the exclusion criteria
+% ---------------------------------------------------------------------------
+
+@article{sale2011gulf,
+  author       = {Sale, Peter F. and Feary, David A. and Burt, John A. and Bauman, Andrew G.
+                  and Cavalcante, Ge{\'o}rgenes H. and Drouillard, Kenneth G. and Kjerfve, Bj{\"o}rn
+                  and Marquis, Elise and Trick, Charles G. and Usseglio, Paolo and Van Lavieren, Hanneke},
+  title        = {The Growing Need for Sustainable Ecological Management of Marine Communities of the {Persian Gulf}},
+  journal      = {Ambio},
+  volume       = {40},
+  number       = {1},
+  pages        = {4--17},
+  year         = {2011},
+  doi          = {10.1007/s13280-010-0092-6},
+  note         = {Umbrella reference: coastal construction is the single largest anthropogenic stressor;
+                  ~60\% of global seaborne oil transport; Gulf states produce ~45\% of desalinated water.},
+}
+
+@article{burt2014urbanization,
+  author       = {Burt, John A.},
+  title        = {The Environmental Costs of Coastal Urbanization in the {Arabian Gulf}},
+  journal      = {City},
+  volume       = {18},
+  number       = {6},
+  pages        = {760--770},
+  year         = {2014},
+  doi          = {10.1080/13604813.2014.962889},
+}
+
+@article{zainal2012reclamation,
+  author       = {Zainal, Khadija and Al-Madany, Ismail and Al-Sayed, Hashim and Khamis, Ahmed
+                  and Al Shuhaby, Sabah and Al Hisaby, Ahmed and Elhoussiny, Wael and Khalaf, Ebrahim},
+  title        = {The Cumulative Impacts of Reclamation and Dredging on the Marine Ecology and Land-Use
+                  in the {Kingdom of Bahrain}},
+  journal      = {Marine Pollution Bulletin},
+  volume       = {64},
+  number       = {7},
+  pages        = {1452--1458},
+  year         = {2012},
+}
+
+@article{cordes2016oilgas,
+  author       = {Cordes, Erik E. and Jones, Daniel O. B. and Schlacher, Thomas A. and Amon, Diva J.
+                  and Bernardino, Angelo F. and Brooke, Sandra and Carney, Robert and DeLeo, Danielle M.
+                  and Dunlop, Katherine M. and Escobar-Briones, Elva G. and others},
+  title        = {Environmental Impacts of the Deep-Water Oil and Gas Industry: A Review to Guide Management Strategies},
+  journal      = {Frontiers in Environmental Science},
+  volume       = {4},
+  pages        = {58},
+  year         = {2016},
+  doi          = {10.3389/fenvs.2016.00058},
+  note         = {Quantified impact footprints: cuttings ~200--300 m from well-head, produced water 1--2 km.},
+}
+
+% ---------------------------------------------------------------------------
+%  Why swarms: the coverage / observability argument
+% ---------------------------------------------------------------------------
+
+@inproceedings{duarte2016swarm,
+  author       = {Duarte, Miguel and Gomes, Jorge and Costa, Vasco and Rodrigues, Tiago and Silva, Fernando
+                  and Lobo, Victor and Marques, Mario Monteiro and Oliveira, Sancho Moura and Christensen, Anders Lyhne},
+  title        = {Application of Swarm Robotics Systems to Marine Environmental Monitoring},
+  booktitle    = {OCEANS 2016 -- Shanghai},
+  year         = {2016},
+  publisher    = {IEEE},
+  doi          = {10.1109/OCEANSAP.2016.7485429},
+  note         = {Canonical "many cheap robots, decentralized control, local communication" argument.},
+}
+
+@article{couceiro2026paradigm,
+  author       = {Couceiro, Micael S. and Mazloum, Faisal and Ara{\'u}jo, Andr{\'e} G. and Rocha, Rui P.
+                  and Bio, Ana and Ferreira, Gon{\c c}alo},
+  title        = {A New Paradigm for Marine Ecological Monitoring through Swarm Intelligence,
+                  Digital Twins, and Human--Swarm Interaction},
+  journal      = {Frontiers in Robotics and AI},
+  volume       = {13},
+  pages        = {1809951},
+  year         = {2026},
+  doi          = {10.3389/frobt.2026.1809951},
+}
+
+% ---------------------------------------------------------------------------
+%  Adaptive sampling and source seeking: the task class
+% ---------------------------------------------------------------------------
+
+@article{berild2024adaptive,
+  author       = {Berild, Martin Outzen and Ge, Yaolin and Eidsvik, Jo and Fuglstad, Geir-Arne and Ellingsen, Ingrid},
+  title        = {Efficient 3{D} Real-Time Adaptive {AUV} Sampling of a River Plume Front},
+  journal      = {Frontiers in Marine Science},
+  volume       = {10},
+  pages        = {1319719},
+  year         = {2024},
+  doi          = {10.3389/fmars.2023.1319719},
+  note         = {Adaptive AUV sampling of a salinity front; preplanning is impossible when the feature location is unknown.},
+}
+
+@article{stankiewicz2021adaptive,
+  author       = {Stankiewicz, Paul and Tan, Yew Teck and Kobilarov, Marin},
+  title        = {Adaptive Sampling with an Autonomous Underwater Vehicle in Static Marine Environments},
+  journal      = {Journal of Field Robotics},
+  volume       = {38},
+  number       = {4},
+  pages        = {572--597},
+  year         = {2021},
+  doi          = {10.1002/rob.22005},
+}
+
+@article{farrell2005cpt,
+  author       = {Farrell, Jay A. and Pang, Shuo and Li, Wei},
+  title        = {Chemical Plume Tracing via an Autonomous Underwater Vehicle},
+  journal      = {IEEE Journal of Oceanic Engineering},
+  volume       = {30},
+  number       = {2},
+  pages        = {428--442},
+  year         = {2005},
+  doi          = {10.1109/JOE.2005.850284},
+}
+
+% ---------------------------------------------------------------------------
+%  MARL for underwater multi-robot systems
+% ---------------------------------------------------------------------------
+
+@article{luvisutto2025marl,
+  author       = {Luvisutto, Alberto and Celani, Antonio and Renda, Federico and Stefanini, Cesare and De Masi, Giulia},
+  title        = {Enhancing Collaboration in Uncertain Environment: Multi-Agent Reinforcement Learning for Underwater Monitoring},
+  journal      = {Expert Systems with Applications},
+  volume       = {277},
+  pages        = {127256},
+  year         = {2025},
+  doi          = {10.1016/j.eswa.2025.127256},
+  note         = {Same group/supervisors as this thesis; nearest prior work.},
+}
+
+@article{marlsurvey2025multiauv,
+  title        = {A Survey of Multi-Agent Reinforcement Learning for Cooperative Control in Multi-{AUV} Systems},
+  journal      = {IEEE Access},
+  year         = {2025},
+  doi          = {10.1109/ACCESS.2025.3609457},
+  note         = {TODO: author list not retrievable (IEEE Xplore blocked); corresponding author Byung Moo Lee, Sejong University.},
+}
+
+
+% ============================================================================
+%  PART II -- Curated web reading list (../docs/references.md)
+% ============================================================================
+
+% ---------------------------------------------------------------------------
+%  Underwater swarm robotics: surveys and foundations
+% ---------------------------------------------------------------------------
+
+@online{survey_shallowocean,
+  title        = {A Swarm of Unmanned Vehicles in the Shallow Ocean: A Survey},
+  journaltitle = {Neurocomputing},
+  year         = {2023},
+  url          = {https://www.sciencedirect.com/science/article/abs/pii/S0925231223001601},
+  urldate      = {2026-08-02},
+}
+
+@online{survey_cooperativeai,
+  title        = {Cooperative Artificial Intelligence for Underwater Robotic Swarm},
+  journaltitle = {Robotics and Autonomous Systems},
+  year         = {2023},
+  url          = {https://www.sciencedirect.com/science/article/abs/pii/S0921889023000490},
+  urldate      = {2026-08-02},
+}
+
+@online{survey_auvformation,
+  title        = {A Survey of Autonomous Underwater Vehicle Formation: Performance, Formation Control and Communication Capability},
+  url          = {https://yangxiao.cs.ua.edu/A_Survey_of_Autonomous_Underwater_Vehicle_Formation_Performance_Formation_Control_and_Communication_Capability.pdf},
+  urldate      = {2026-08-02},
+}
+
+@online{survey_formationreview,
+  title        = {Formation Control of Multiple Autonomous Underwater Vehicles: A Review},
+  journaltitle = {Intelligence \& Robotics},
+  year         = {2023},
+  url          = {https://www.oaepublish.com/articles/ir.2023.01},
+  urldate      = {2026-08-02},
+}
+
+@online{quattrinili2022communication,
+  author       = {Quattrini Li, Alberto},
+  title        = {Communication for Underwater Robots: Recent Trends},
+  year         = {2022},
+  url          = {https://rlab.cs.dartmouth.edu/publications/quattrinili2022current.pdf},
+  urldate      = {2026-08-02},
+}
+
+@online{survey_underwaterswarm_arxiv,
+  title        = {Underwater Swarm Robotics: A Survey},
+  year         = {2026},
+  eprint       = {2601.12244},
+  eprinttype   = {arXiv},
+  url          = {https://arxiv.org/html/2601.12244},
+  urldate      = {2026-08-02},
+}
+
+% ---------------------------------------------------------------------------
+%  Bio-inspired / fish-school swarms
+% ---------------------------------------------------------------------------
+
+@article{berlinger2021blueswarm,
+  author       = {Berlinger, Florian and Gauci, Melvin and Nagpal, Radhika},
+  title        = {Implicit Coordination for 3{D} Underwater Collective Behaviors in a Fish-Inspired Robot Swarm},
+  journal      = {Science Robotics},
+  volume       = {6},
+  number       = {50},
+  pages        = {eabd8668},
+  year         = {2021},
+  doi          = {10.1126/scirobotics.abd8668},
+  url          = {https://www.science.org/doi/10.1126/scirobotics.abd8668},
+}
+
+@online{hydrodynamics_fishschools,
+  title        = {Hydrodynamics in Collective Motions of Fish Schools and Bioinspired Robots},
+  journaltitle = {Journal of the Royal Society Interface},
+  year         = {2023},
+  doi          = {10.1098/rsif.2023.0357},
+  url          = {https://royalsocietypublishing.org/doi/10.1098/rsif.2023.0357},
+  urldate      = {2026-08-02},
+}
+
+@online{bioinspired_swarmexploration,
+  title        = {A Model for Bio-Inspired Underwater Swarm Robotic Exploration},
+  journaltitle = {IFAC-PapersOnLine},
+  url          = {https://www.sciencedirect.com/science/article/pii/S2405896318300703},
+  urldate      = {2026-08-02},
+}
+
+@online{leaderfollower3d2024,
+  title        = {Leader--Follower 3{D} Formation for Underwater Robots},
+  year         = {2024},
+  publisher    = {Springer},
+  url          = {https://link.springer.com/chapter/10.1007/978-3-032-04584-3_17},
+  urldate      = {2026-08-02},
+}
+
+% ---------------------------------------------------------------------------
+%  Multi-AUV formation control under ocean currents
+% ---------------------------------------------------------------------------
+
+@online{formation_reconfiguration2023,
+  title        = {Multi-{AUV} Formation Reconfiguration and Obstacle Avoidance under Current Disturbance},
+  year         = {2023},
+  publisher    = {IEEE},
+  url          = {https://ieeexplore.ieee.org/document/10233039/},
+  urldate      = {2026-08-02},
+}
+
+@online{fixedtime_slidingmode2025,
+  title        = {Fixed-Time Event-Triggered Sliding Mode Consensus for Multi-{AUV} Formation},
+  journaltitle = {Journal of Marine Science and Engineering},
+  volume       = {13},
+  number       = {12},
+  pages        = {2294},
+  year         = {2025},
+  url          = {https://www.mdpi.com/2077-1312/13/12/2294},
+  urldate      = {2026-08-02},
+}
+
+@online{fixedtime_actuatorfaults2022,
+  title        = {Fixed-Time Formation Control for {AUVs} with Actuator Faults},
+  journaltitle = {Ocean Engineering},
+  year         = {2022},
+  url          = {https://www.sciencedirect.com/science/article/abs/pii/S0029801822027780},
+  urldate      = {2026-08-02},
+}
+
+@online{adaptive_formationlearning2025,
+  title        = {Adaptive Formation Learning Control for Cooperative {AUVs} under Uncertainty},
+  year         = {2025},
+  url          = {https://pmc.ncbi.nlm.nih.gov/articles/PMC11868763/},
+  urldate      = {2026-08-02},
+}
+
+@online{eventtriggered_rbfobserver,
+  title        = {Event-Triggered Formation Control with Fixed-Time {RBF} Disturbance Observer},
+  journaltitle = {Applied Ocean Research},
+  url          = {https://www.sciencedirect.com/science/article/abs/pii/S0141118721001152},
+  urldate      = {2026-08-02},
+}
+
+@online{backstepping_pathfollowing,
+  title        = {Backstepping Sliding Mode Path Following of Underactuated {AUV} in Currents},
+  url          = {https://www.researchgate.net/publication/388297999},
+  urldate      = {2026-08-02},
+}
+
+% ---------------------------------------------------------------------------
+%  Reinforcement learning for AUV navigation in currents
+% ---------------------------------------------------------------------------
+
+@online{adaptiveauv_envaware2025,
+  title        = {Make Your {AUV} Adaptive: An Environment-Aware Reinforcement Learning Framework},
+  year         = {2025},
+  eprint       = {2506.15082},
+  eprinttype   = {arXiv},
+  url          = {https://arxiv.org/html/2506.15082},
+  urldate      = {2026-08-02},
+}
+
+@online{learningoceanmodels,
+  title        = {Towards Learning Ocean Models for Long-Term Navigation},
+  url          = {https://par.nsf.gov/servlets/purl/10344694},
+  urldate      = {2026-08-02},
+}
+
+@online{drl_adaptivepath2022,
+  title        = {Deep Reinforcement Learning for Adaptive Path Planning and Control of an Autonomous Underwater Vehicle},
+  journaltitle = {Applied Ocean Research},
+  year         = {2022},
+  url          = {https://uhra.herts.ac.uk/id/eprint/10051/1/APOR_2022.pdf},
+  urldate      = {2026-08-02},
+}
+
+@online{auv_pathfollowing_icdsp2021,
+  title        = {{AUV} Path Following Using Deep Reinforcement Learning under Ocean Currents},
+  booktitle    = {International Conference on Digital Signal Processing (ICDSP)},
+  year         = {2021},
+  doi          = {10.1145/3458380.3459041},
+  url          = {https://dl.acm.org/doi/10.1145/3458380.3459041},
+  urldate      = {2026-08-02},
+}
+
+@online{noisyduelingdqn2024,
+  title        = {Noisy Dueling Double Deep {Q}-Network for {AUV} Path Planning},
+  year         = {2024},
+  url          = {https://pmc.ncbi.nlm.nih.gov/articles/PMC11513341/},
+  urldate      = {2026-08-02},
+}
+
+@online{multiauv_targettracking2024,
+  title        = {Multi-{AUV} Cooperative Multi-Target Tracking via Multi-Agent Reinforcement Learning},
+  year         = {2024},
+  eprint       = {2404.13654},
+  eprinttype   = {arXiv},
+  url          = {https://arxiv.org/html/2404.13654v1},
+  urldate      = {2026-08-02},
+}
+
+% ---------------------------------------------------------------------------
+%  Ocean current models: Ekman and wind-driven circulation
+% ---------------------------------------------------------------------------
+
+@article{price1987ekman,
+  author       = {Price, James F. and Weller, Robert A. and Schudlich, Rebecca R.},
+  title        = {Wind-Driven Ocean Currents and {Ekman} Transport},
+  journal      = {Science},
+  volume       = {238},
+  number       = {4833},
+  pages        = {1534--1538},
+  year         = {1987},
+  doi          = {10.1126/science.238.4833.1534},
+  url          = {https://www.science.org/doi/10.1126/science.238.4833.1534},
+}
+
+@online{ekman_revisited2024,
+  title        = {{Ekman} Revisited: Surface Currents to the Left of the Winds in the Northern Hemisphere},
+  year         = {2024},
+  url          = {https://pmc.ncbi.nlm.nih.gov/articles/PMC11559616/},
+  urldate      = {2026-08-02},
+}
+
+@online{stull_ekman,
+  author       = {Stull, Roland},
+  title        = {{Ekman} Spiral of Ocean Currents},
+  booktitle    = {Practical Meteorology: An Algebra-Based Survey of Atmospheric Science},
+  url          = {https://geo.libretexts.org/Bookshelves/Meteorology_and_Climate_Science/Practical_Meteorology_(Stull)/11:_General_Circulation/11.13:_Ekman_Spiral_of_Ocean_Currents},
+  urldate      = {2026-08-02},
+}
+
+@online{wikipedia_ekmanspiral,
+  title        = {{Ekman} Spiral},
+  organization = {Wikipedia},
+  url          = {https://en.wikipedia.org/wiki/Ekman_spiral},
+  urldate      = {2026-08-02},
+}
+
+% ---------------------------------------------------------------------------
+%  CMEMS / Copernicus Marine data
+% ---------------------------------------------------------------------------
+
+@online{cmems_datastore,
+  title        = {Copernicus Marine Data Store},
+  organization = {Copernicus Marine Service},
+  url          = {https://data.marine.copernicus.eu/},
+  urldate      = {2026-08-02},
+}
+
+@online{oceanscience_cmems_si,
+  title        = {Special Issue: Advances in Ocean Monitoring and Forecasting from the {Copernicus} Marine Service},
+  journaltitle = {Ocean Science},
+  url          = {https://os.copernicus.org/articles/special_issue962.html},
+  urldate      = {2026-08-02},
+}
+
+@online{opendrift_cmems,
+  title        = {{OpenDrift} Example: Long Simulation with {CMEMS} Data},
+  organization = {OpenDrift},
+  url          = {https://opendrift.github.io/gallery/example_long_cmems.html},
+  urldate      = {2026-08-02},
+}
+
+% ---------------------------------------------------------------------------
+%  Acoustic communication, localization and Doppler
+% ---------------------------------------------------------------------------
+
+@online{acoustic_localization_review2024,
+  title        = {Low-Cost Underwater Swarm Acoustic Localization: A Review},
+  year         = {2024},
+  url          = {https://www.researchgate.net/publication/377610093},
+  urldate      = {2026-08-02},
+}
+
+@online{auvswarm_localization_oceans2020,
+  title        = {Low-Cost {AUV} Swarm Localization via Multimodal Acoustic Networks},
+  booktitle    = {OCEANS 2020},
+  year         = {2020},
+  url          = {https://signet.dei.unipd.it/wp-content/uploads/2020/10/Oceans2020_kalman.pdf},
+  urldate      = {2026-08-02},
+}
+
+@online{acousticlinks_comet2021,
+  title        = {Optimization of Acoustic Links for a Swarm of {AUVs}: {COMET} and {NEMOSENS}},
+  journaltitle = {Applied Sciences},
+  volume       = {11},
+  number       = {17},
+  pages        = {8200},
+  year         = {2021},
+  url          = {https://www.mdpi.com/2076-3417/11/17/8200},
+  urldate      = {2026-08-02},
+}
+
+@online{doppler_localization_comm,
+  title        = {Doppler-Shift for Simultaneous Underwater Acoustic Localization and Communication},
+  url          = {https://www.researchgate.net/publication/336560166},
+  urldate      = {2026-08-02},
+}
+
+@online{selflocalization_noisecorrelations2018,
+  title        = {Self-Localization of a Mobile Swarm Using Noise Correlations},
+  journaltitle = {The Journal of the Acoustical Society of America},
+  volume       = {144},
+  number       = {5},
+  pages        = {2811},
+  year         = {2018},
+  url          = {https://pubs.aip.org/asa/jasa/article/144/5/2811/646277},
+  urldate      = {2026-08-02},
+}
+
+% ---------------------------------------------------------------------------
+%  Other underwater swarm simulators
+% ---------------------------------------------------------------------------
+
+@online{swim_simulator,
+  title        = {{SWIM}: Underwater {SW}arm s{IM}ulator},
+  url          = {https://github.com/aghilmort/swim},
+  urldate      = {2026-08-02},
+}
+
+@online{auvswarm_diffusion2020,
+  title        = {Simulation of {AUV} Swarm Diffusion},
+  journaltitle = {Sensors},
+  volume       = {20},
+  number       = {17},
+  pages        = {4950},
+  year         = {2020},
+  url          = {https://www.mdpi.com/1424-8220/20/17/4950},
+  urldate      = {2026-08-02},
+}

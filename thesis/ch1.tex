@@ -1,0 +1,53 @@
+\chapter{Introduction}
+
+Coastal regions are home to a significant portion of the global population,
+and they are increasingly affected by human activities. Desalination processes \cite{omerspahic2022brine} have
+become the main solution to provide freshwater to many of these regions, and even though
+more efficient techniques have been developed, the accompanying environmental issues have 
+been overlooked, in particular the consequences of the discharge of desalination 
+by-products, such as the effects of concentrate effluent on the marine coastal ecosystem. 
+Moreover, other industrial activities, such as offshore oil and gas operations \cite{cordes2016oilgas}, 
+have been shown to have a significant impact on the marine environment, including the
+release of pollutants and the disruption of marine habitats. 
+Therefore, the preservation and monitoring of marine environments is a strategic priority for coastal regions, 
+especially in the Arabian Gulf, where the combination of high salinity, warm temperatures, and human activities 
+poses a significant threat to marine ecosystems \cite{sheppard2010gulf}.
+
+Coral reefs provide an existential habitat for a wide range of marine species,
+offering shelter, food and breeding grounds. However, they are highly sensitive
+to environmental changes, and their degradation could have severe consequences for the 
+environment and the economy. Coral restoration is advocated as a promising tool to reduce coral
+loss and restore damaged reefs. Many restoration techniques have been developed and many 
+studies have been conducted to evaluate their effectiveness, but the success of these methods
+is still limited \cite{mula2025restoration}. $30-40\%$ of projects fail due to poor planning, 
+unrealistic objectives, inadequate regular maintenance and persistent anthropogenic pressures. 
+Moreover, restoration sites are often clustered around human settlements, which are not always 
+the most suitable locations for coral growth, but limits human hazards and encourages safety 
+for divers, while also reducing costs. Finally, the search areas for suitable restoration sites
+are enormous, limiting the possibility search and monitoring due to low availability of divers,
+autonomy and time.
+
+For these reasons, the use of autonomous underwater vehicles (AUVs) has been proposed as a solution
+to overcome the limitations of human divers and to increase safety and efficiency in the search task. 
+Moreover, given the unknown and complex nature of the marine environment, AUVs need to be equipped with
+advanced sensors and algorithms to navigate and map the environment. To this end, Multi-agent 
+Reinforcement Learning (MARL) algorithms have been recently proposed and increasingly used to overcome
+this task, enhancing the capabilities of Reinforcement Learning (RL) algorithms with swarm and cooperation 
+capabilities, so that multiple agents can work together to achieve a common goal. A previous thesis \cite{insaghi2025thesis}
+developed and analyzed a PPO-PSO algorithm to efficiently use swarm capabilities to overcome 
+local optima and improve the performance of the PPO algorithm. The results showed that the PPO-PSO 
+algorithm outperformed the standard PPO algorithm in terms of convergence speed and final performance, 
+demonstrating the potential of MARL algorithms for complex tasks in unknown environments. However,
+the environment used in the previous thesis was a simplified simulation, and the necessity to test 
+the algorithm in a more realistic environment is the main motivation for this thesis. Therefore,
+the main objective of this thesis is to evaluate the performance of a suitable MARL algorithm in a 
+more realistic environment, where the agents are required to navigate and search for suitable 
+coral restoration sites in a complex and unknown environment.
+
+This thesis is organized as follows: Chapter 2 provides a comprehensive theoretical background on the 
+Reinforcement Learning algorithms, including the multi-agent extension and general problem formulation. Chapter 3 
+describes the problem more specifically, including the assumptions, constraints and tools used. Chapter 4 
+introduces the proposed MARL algorithm, including its architecture, hyperparameters and implementation details.
+Chapter 5 presents the experimental setup, where multiple scenarios are created to test the capabilities 
+of the obtained policy and its generalization capabilities. Finally, Chapter 6 concludes the thesis,
+summarizing the main findings, discussing the limitations and proposing future research directions.
