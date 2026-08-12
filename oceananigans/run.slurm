@@ -26,9 +26,25 @@ export JULIA_NUM_THREADS=8
 
 # SINGLE VALIDATION RUN. Check the currents with
 #   python scripts/plot_oceananigans_currents.py --netcdf <the .nc>
-# before generating the rest — expect mean |u,v| ~0.1-0.15 m/s and a `umean`
-# trace in the .out file that has FLATTENED by the end of the warmup. If it is
-# still climbing, raise --warmup-minutes. Then bump --n-runs for the full set.
+# before generating the rest.
+#
+# ACCEPTANCE TEST = does the `umean` trace in the .out file FLATTEN by the end
+# of the warmup? If it is still climbing, raise --warmup-minutes. Judge it on
+# that, NOT on hitting a target speed: there is no reliable prior for the
+# magnitude here. The "3% of wind speed" rule (~0.15 m/s) assumes a frictional
+# sink, but the walls and bottom are free-slip, so the only momentum sink is
+# LES dissipation; and the 2026-08-06 topology change closed the basin, which
+# removes the endless along-shore jet a periodic channel could sustain. Both
+# push the expected speed DOWN, plausibly to a few cm/s. Anything well above
+# the old 0.004 m/s with a flat trace is a good result — record what you get.
+#
+# Also worth a look, both consequences of the closed basin: current pile-up
+# against the east (x=LX) and north (y=LY) walls, which are open ocean in
+# reality; and whether the salinity span is still ~10 PSU with corr(first,
+# last snapshot) well below the old pinned-field value of 0.9993. If it is
+# still near that, S_DECAY_TIME wants raising.
+#
+# Then bump --n-runs for the full set.
 #
 # Add --tide-amplitude 0.2 for a barotropic M2 tide (off by default; it is the
 # largest remaining physical omission for a Gulf setting, but validate the

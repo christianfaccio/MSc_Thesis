@@ -7,18 +7,97 @@ salinity field built from coastal pollution/brine plumes relaxed toward a
 Gaussian target — tuned to realise a ~10 PSU salinity span for the RL homing
 task.
 
-SPIN-UP IS THE BINDING CONSTRAINT ON THE CURRENTS (fixed 2026-08-05).
-The wind-driven flow equilibrates on the Ekman timescale 1/f = 4.6 h (inertial
+GEOMETRY: STRAIGHT N-S COAST, ALONG-SHORE PERIODIC (changed 2026-08-06b).
+Land occupies the west (x=0) border only. x is Bounded (coast at x=0, open
+ocean at x=LX); y is the ALONG-SHORE axis and is Periodic. z is Bounded.
+
+    History of this line, because it has now moved twice and the current
+    setting is a considered compromise, not a default:
+      * originally  (Periodic, Bounded, Bounded) — L-shaped coast, west+south
+        land, x wrapping. Water flowed through the west coast and back in from
+        the east, and half the sources sat on the x=0/x=LX seam where S_target
+        jumped by the full 10 PSU anomaly at the same physical point.
+      * then        (Bounded, Bounded, Bounded) — L-shaped coast, all walls.
+        Fixed the seam and the through-flow, but a CLOSED basin with a rigid
+        lid forces the domain-integrated horizontal transport to be identically
+        zero: ∫∫u dy dz = 0 through every x-section, and likewise for v. No
+        sustained current of ANY kind is possible, only closed overturning
+        cells — downwind at the surface, return flow underneath. That is a
+        model of an embayment, not of a 1 km patch of open shelf.
+      * now         (Bounded, Periodic, Bounded) — straight coast, along-shore
+        wrap. A mean along-shore current is possible again (this is the
+        standard periodic-channel shelf configuration), the tide works (see
+        below), and there is NO seam in S_target because the plume kernel uses
+        the wrapped y-distance and every source sits at x=0, away from the only
+        remaining boundary pair.
+
+    Residual approximation: x=LX is open ocean but is modelled as a wall, so
+    cross-shore transport reflects instead of leaving. A sponge layer over the
+    last ~150 m would fix it; deliberately NOT added, to keep the configuration
+    free of extra tuning knobs. Watch for pile-up against the east face,
+    especially with the tide on.
+
+    Do NOT compare current statistics across either topology change.
+
+    NOTE for the reader side: the staggered-grid face counts have changed.
+    Bounded x  -> `u` written with NX+1 faces (unchanged since 2026-08-06).
+    Periodic y -> `v` written with NY faces, NOT NY+1 as in the all-bounded
+    files. SwarmSwIM's FieldLoader already sniffs the `u` convention; it needs
+    the same treatment for `v`. The sidecar JSON carries "topology" and
+    "periodic_axes" so the reader can branch on those rather than on shapes.
+
+    NOTE for anything that RECONSTRUCTS the salinity target from the sidecar
+    sources (e.g. src/utils/sources.load_sources + a Python re-evaluation of the
+    Gaussian sum): it MUST use the wrapped y-distance
+    dy = min(|y-y0|, LY-|y-y0|) to match plume_excess below. A naive Euclidean
+    distance disagrees with the simulated field by up to the full anomaly near
+    the y=0/y=LY wrap.
+
+SPIN-UP: READ THIS BEFORE BURNING GPU HOURS (updated 2026-08-06b).
+The wind-driven flow adjusts on the Ekman timescale 1/f = 4.6 h (inertial
 period 2π/f = 28.9 h). The original 30 min warmup + 60 min recording stopped the
 runs at 0.05 inertial periods: measured currents reached only ~2.5% of their
-equilibrium value (mean |u,v| ≈ 0.004 m/s) and were still rising ~2× per hour
-when recording ended. Since the RL agent swims at 1 m/s, that produced an
-essentially motionless ocean, AND left the passive tracer unstirred — advected
-just 11 m in an hour (4% of a plume width), so the sensed field was frozen at
-the analytic Gaussian target (corr 0.999 between first and last snapshot).
-Warmup is now 12 h (≈2.6/f) so the flow equilibrates to the ~3%-of-wind-speed
-rule of thumb, i.e. ~0.15 m/s for a 5 m/s wind — realistic for the southern
-Gulf shelf and a comfortable 6× below the vehicle's own speed.
+value and were still rising ~2× per hour when recording ended. Warmup is now
+12 h (≈2.6/f), which is also comfortably past 2·S_DECAY_TIME so the plumes are
+saturated.
+
+    *** THERE IS NO BOTTOM DRAG IN THIS CONFIGURATION, AND WITH y PERIODIC
+    THE ALONG-SHORE FLOW THEREFORE DOES NOT EQUILIBRATE. ***
+    Depth-integrating the along-shore momentum equation in a periodic channel
+    with a cross-shore wall gives, in the absence of drag, dV/dt = τ_y/H with no
+    sink: V ramps roughly LINEARLY forever. At τ = 3.9e-5 m²/s² (5 m/s wind) and
+    H = 100 m that is 1.4 cm/s per hour of depth-mean acceleration, so 12 h of
+    warmup gives ~1.7 cm/s depth-mean and nothing is converging. `umean` in the
+    progress callback will ramp, not flatten — the "watch it flatten" diagnostic
+    from the all-bounded version no longer has anything to detect.
+
+    Fix, one line, strongly recommended before generating a production dataset
+    (this is item (b) and is now effectively mandatory rather than optional):
+        drag(x, y, t, u, v, Cd) = -Cd * u * sqrt(u^2 + v^2)   # and v-analogue
+        u_bcs = FieldBoundaryConditions(
+            top    = FluxBoundaryCondition(tau_x_top),
+            bottom = FluxBoundaryCondition(drag, field_dependencies = (:u, :v),
+                                           parameters = 2.5e-3))
+    With C_d = 2.5e-3 the equilibrium depth-mean is √(τ/C_d) ≈ 0.125 m/s — right
+    in the target band — but the approach timescale is H/(C_d·V) ≈ 89 h, so the
+    12 h warmup still will not reach it.
+
+    The arithmetic that constrains all of this: wind stress injects momentum at
+    τ/H, so reaching a depth-mean V takes t = V·H/τ REGARDLESS of the drag law.
+    V = 0.15 m/s needs ~107 h of spin-up. Wind forcing alone cannot produce
+    tens-of-cm/s depth-mean flow on an affordable timescale. It CAN produce
+    5–15 cm/s in the wind-mixed surface layer within 12 h, because the momentum
+    is concentrated in the top ~10–20 m; the depth-mean stays ~1–2 cm/s.
+    If you want realistic shelf currents cheaply, USE THE TIDE (--tide-amplitude
+    0.2): it is imposed rather than spun up, so it is at full amplitude
+    immediately, and it supplies the oscillating cross-shore shear that actually
+    strains the tracer into filaments.
+
+Recording is 6 h at 12 min intervals: long enough that consecutive snapshots
+decorrelate (the advective timescale across a plume is σ_H/U), while keeping the
+snapshot count and file size (~650 MB) where they were. The env draws a random
+frozen snapshot per episode, so decorrelated frames are what buys
+episode-to-episode variety.
 
 DO NOT "FIX" WEAK CURRENTS BY MAKING SALINITY BUOYANT. Setting BETA_S = 7.8e-4
 with the 10 PSU anomaly gives a reduced gravity g' = g·β_S·ΔS = 0.077 m/s², a
@@ -26,27 +105,28 @@ gravity-current velocity scale √(g'·σ_V) ≈ 1.75 m/s, and measured currents
 stronger than the passive case — faster than the vehicle over 12% of the domain.
 It also HALVES the salinity span (9.9 → 4.8 PSU) and halves the vertical
 gradient, because the convection mixes the column. That was the state of the
-`buoyancy_active` dataset; keep S passive and lengthen the spin-up instead.
+`buoyancy_active` dataset; keep S passive and use the tide instead.
 
 WHY NON-HYDROSTATIC AT 1 km (vs. the hydrostatic 5 km script):
 a 1 km box is smaller than the baroclinic deformation radius (Rd = N·H/f ≈ 2 km),
 so the front-driven mesoscale-eddy mechanism the hydrostatic script relies on
 CANNOT operate here. Instead the spatial structure in this domain comes from
-(a) the localized brine plumes themselves and (b) wind-driven boundary-layer
-turbulence stirring them into filaments — both of which need the full 3-D
-pressure solve. At 1000×1000×100 m with ~8 m horizontal / ~1.6 m vertical cells
-the aspect ratio (~5) is mild enough for a non-hydrostatic LES to stay stable,
-unlike the 39×0.85 m hydrostatic cells. Use THIS script for the 1 km × 100 m
-turbulence-resolving training domain.
+(a) the localized brine plumes themselves and (b) wind- and tide-driven
+boundary-layer turbulence stirring them into filaments — both of which need the
+full 3-D pressure solve. At 1000×1000×100 m with ~8 m horizontal / ~1.6 m
+vertical cells the aspect ratio (~5) is mild enough for a non-hydrostatic LES to
+stay stable, unlike the 39×0.85 m hydrostatic cells. Use THIS script for the
+1 km × 100 m turbulence-resolving training domain.
 
 MULTI-RUN DATASET GENERATION (mirrors hydrostatic.jl):
 runs N independent simulations in one Julia session (amortizing compile time),
 each with per-run randomized — but Abu-Dhabi-plausible — parameters: sources
-(number, position, depth, Q), wind speed/direction around the seasonal shamal,
-and a seeded IC temperature perturbation so identical parameters still diverge.
+(number, along-shore position, depth, Q), wind speed/direction around the
+seasonal shamal, and a seeded IC temperature perturbation so identical
+parameters still diverge.
 
     julia --project=oceananigans oceananigans/non_hydrostatic.jl \\
-        --n-runs 4 --season winter --seed 1337
+        --n-runs 4 --season winter --seed 1337 --tide-amplitude 0.2
 
 Output → <output-dir>/nonhydro_<season>_run<NNN>.nc
         (u, v, w, T, S snapshots) plus a sidecar nonhydro_<season>_run<NNN>.json
@@ -89,8 +169,12 @@ const ARCH = USE_GPU ? GPU(CUDABackend()) : CPU()
 # ─────────────────────────────────────────────────────────────────────────────
 # Domain size — 1 km × 1 km × 100 m turbulence-resolving coastal patch
 # ─────────────────────────────────────────────────────────────────────────────
-const LX    = 1000.0   # along-shore extent [m]
-const LY    = 1000.0   # cross-shore extent [m]
+# The coastline is STRAIGHT and runs north-south: LAND on the west (x=0) border,
+# open ocean to the east. x is therefore the CROSS-SHORE axis (Bounded) and y is
+# the ALONG-SHORE axis (Periodic). See the header for why.
+const LX    = 1000.0   # cross-shore extent [m]; x=0 is the coast, x=LX offshore
+const LY    = 1000.0   # along-shore extent [m]; PERIODIC — y=0 and y=LY are the
+                       # same physical location
 const DEPTH = 100.0    # water column depth [m]
 
 # Grid resolution (overridable so a local CPU smoke test can shrink it).
@@ -137,18 +221,30 @@ const f_coriolis   = 2 * Ω_EARTH * sind(LATITUDE_DEG)
 # current statistics with scripts/plot_oceananigans_currents.py.
 const G_GRAV  = 9.81
 const ALPHA_T = 1.67e-4    # thermal expansion  [1/°C]
-const BETA_S  = 0.0        # haline contraction [1/PSU]; 0 = passive S (see header)
+const BETA_S  = 6.0e-5     # haline contraction [1/PSU]; 0 = passive S 
 
 # M2 principal lunar semidiurnal tide, 12.4206 h. The Arabian Gulf is tidally
-# energetic and wind-only forcing is the largest physical omission here, but the
-# tide is OFF by default (--tide-amplitude 0) so the wind-driven spin-up baseline
-# stays isolated and reproducible. Enable it once that baseline is validated.
+# energetic and the tide is the cheapest route to realistic current speeds (see
+# the spin-up section of the header), but it is still OFF by default
+# (--tide-amplitude 0) so the wind-only baseline stays isolated and
+# reproducible. Turn it on once that baseline is validated.
 const M2_PERIOD = 12.4206 * 3600      # [s]
 const M2_OMEGA  = 2π / M2_PERIOD      # [rad/s]
 
-# Barotropic tidal body force. du/dt = F·cos(ωt) integrates to u = (F/ω)·sin(ωt),
-# so F = U_tide·ω sets the tidal current AMPLITUDE directly. Only u is forced;
-# Coriolis turns the rectilinear forcing into the observed rotary ellipse.
+# Barotropic tidal body force. dv/dt = F·cos(ωt) integrates to v = (F/ω)·sin(ωt),
+# so F = U_tide·ω sets the tidal current AMPLITUDE directly. Coriolis turns the
+# rectilinear forcing into the observed rotary ellipse (f/ω = 0.43 here, so the
+# ellipse is distinctly non-degenerate).
+#
+# *** FORCED ON v, NOT u (changed 2026-08-06b). *** A spatially uniform body
+# force on the CROSS-SHORE component would be almost exactly cancelled by the
+# pressure gradient that develops between the two x-walls: the tide would be
+# silently inert and the run would still complete cleanly. It must be applied
+# along the PERIODIC axis, which is also where shelf tidal currents actually run
+# (the coast blocks cross-shore tidal flow). This is why the topology change and
+# the tide are coupled — under the previous all-bounded topology no axis could
+# carry it.
+#
 # Top-level (not a closure) so it stays GPU-capturable.
 @inline tide_forcing(x, y, z, t, p) = p.F * cos(p.ω * t)
 
@@ -164,57 +260,72 @@ const M2_OMEGA  = 2π / M2_PERIOD      # [rad/s]
 #
 # σ_H is sized so overlapping coastal plumes fill the domain with a navigable
 # gradient rather than leaving 90 %+ of it flat at baseline. The first 1 km run
-# used σ_H = 80 m (~8 % of the box) and left only ~6 % of cells above baseline —
-# an agent in the interior saw a gradient-free field. Widened to 300 m (~30 % of
-# the box) and the source count raised (see sample_params) so the plumes overlap
-# into a domain-scale slope. σ_V spans the upper column.
+# used σ_H = 80 m (~8 % of the box) and left only ~6 % of cells above baseline.
+# Widened to 300 m, then to 400 m on 2026-08-06b: with the L-shaped coast the
+# domain was covered from TWO walls, and dropping the south wall halved the
+# coverage. At σ_H = 300 the offshore corner sat at 0.4 % of peak (0.04 PSU
+# above baseline, gradient ~4e-4 PSU/m — under any realistic sensor noise
+# floor); at σ_H = 400 it is 4.4 % of peak with a ~2.7e-3 PSU/m gradient. RAISE
+# THIS FURTHER if the offshore third still reads as flat. σ_V spans the upper
+# column.
 #
 # The relaxation brings the field to S_SOURCE_ANOMALY·(normalised plume) on the
-# timescale S_DECAY_TIME as (1 − e^{−t/τ}); τ short (15 min) so a ~30 min warmup
-# (= 2τ) saturates before recording. The plume sum is normalised by its domain max
-# (see build_and_run) so the realised core peak is EXACTLY S_SOURCE_ANOMALY above
-# baseline regardless of how many wide sources overlap — span is set solely by the
-# anomaly and stays put when σ_H or the source count change. So span ≈ 10 PSU here.
-const SIGMA_H          = 300.0     # plume horizontal std [m]
+# timescale S_DECAY_TIME as (1 − e^{−t/τ}). The plume sum is normalised by its
+# domain max (see build_and_run) so the realised core peak is EXACTLY
+# S_SOURCE_ANOMALY above baseline regardless of how many wide sources overlap —
+# span is set solely by the anomaly and stays put when σ_H or the source count
+# change. So span ≈ 10 PSU here.
+const SIGMA_H          = 400.0     # plume horizontal std [m]
 const SIGMA_V          = 40.0      # plume vertical std [m]
 const S_SOURCE_ANOMALY = 10.0      # core salinity excess above baseline [PSU] = the span
 # Relaxation timescale. RAISED 15 min -> 1 h (2026-08-05): the relaxation and
 # advection compete to set the field, and at 15 min the forcing won by ~80×, so
 # the tracer stayed pinned to the smooth analytic target no matter how well the
-# flow was stirred. With an equilibrated ~0.15 m/s flow the advective timescale
-# across a plume is σ_H/U ≈ 2000 s, so a 1 h relaxation lets stirring actually
-# fold the field into filaments while still holding the span up against mixing.
-# This is the knob to check first if the smoke test comes out too smooth (raise
-# it) or if the span has collapsed below ~8 PSU (lower it).
+# flow was stirred.
+#
+# The competition is γ_S⁻¹ vs. σ_H/U. At the wind-only depth-mean speed
+# (~0.02 m/s) σ_H/U ≈ 20,000 s and the 1 h relaxation still wins by ~6×: expect
+# a field close to the smooth analytic target. With the tide on at 0.2 m/s,
+# σ_H/U ≈ 2000 s and stirring wins by ~2×, which is the regime where filaments
+# can actually form. THIS IS THE KNOB TO CHECK FIRST if the smoke test comes out
+# too smooth (raise it) or if the span has collapsed below ~8 PSU (lower it).
+#
+# Structural caveat: relaxation toward a fixed Eulerian target is a low-pass
+# filter — it erases advected structure everywhere on the γ_S⁻¹ timescale, so a
+# filament survives only ~U·γ_S⁻¹ of downstream extent. If filaments remain
+# elusive after turning the tide on, the real fix is to make γ_S spatially
+# varying (full strength within ~1σ_H of the source cores, zero in the
+# interior), which keeps the span guarantee while freeing the far field.
 const S_DECAY_TIME     = 1hour
 const γ_S              = 1 / S_DECAY_TIME
 
 # Q-weighted sum of source Gaussians (the un-normalised plume shape). Top-level
 # (not a closure) so it stays type-stable / GPU-capturable when called from the
 # S_target closure; srcs is passed as an isbits Tuple.
+#
+# y is PERIODIC, so the along-shore separation is the MINIMUM-IMAGE distance,
+# min(|Δy|, LY-|Δy|). Without this the target field is discontinuous across the
+# y=0/y=LY seam — the same physical point would be assigned two different
+# salinities, which is exactly the pathology the 2026-08-06 change removed from
+# the x axis. Any code outside this file that rebuilds the target from the
+# sidecar sources must apply the same wrap.
 @inline function plume_excess(x, y, z, srcs, qmax)
     e = 0.0
     for src in srcs
-        e += (src.Q / qmax) * exp(-((x - src.x0)^2 + (y - src.y0)^2) / (2 * SIGMA_H^2)
+        dy_raw = abs(y - src.y0)
+        dy     = min(dy_raw, LY - dy_raw)          # minimum image in periodic y
+        e += (src.Q / qmax) * exp(-((x - src.x0)^2 + dy^2) / (2 * SIGMA_H^2)
                                   - (z - src.z0)^2 / (2 * SIGMA_V^2))
     end
     return e
 end
 
-# Durations. Wind-driven boundary-layer turbulence spins up in ~10–20 min; the
-# plumes saturate in ~2·S_DECAY_TIME. Warmup default 30 min (=2τ) so the span is
-# built before recording; record long enough for a few decorrelated snapshots.
-# Warmup 12 h ≈ 2.6 Ekman timescales (1/f = 4.6 h) so the wind-driven flow
-# EQUILIBRATES — see the header; the old 30 min stopped it at 2.5% of its final
-# speed. Also comfortably past 2·S_DECAY_TIME, so the plumes are saturated.
-# Recording 6 h at 12 min intervals keeps the snapshot count (and so the file
-# size, ~650 MB) where it was while spreading the frames over a window long
-# enough that consecutive snapshots decorrelate: the advective timescale across
-# a plume is σ_H/U ≈ 33 min at the equilibrated speed, so 2 min frames were
-# heavily redundant. The env draws a random frozen snapshot per episode, so
-# decorrelated frames are what buys episode-to-episode variety.
-const DEFAULT_WARMUP_MINUTES          = 720.0
-const DEFAULT_RECORDING_MINUTES       = 360.0
+# Durations. See the spin-up section of the header — 12 h ≈ 2.6 Ekman timescales
+# and past 2·S_DECAY_TIME, but with no bottom drag the along-shore flow is still
+# ramping when recording starts. Recording 6 h at 12 min intervals so
+# consecutive snapshots decorrelate.
+const DEFAULT_WARMUP_MINUTES          = 240.0
+const DEFAULT_RECORDING_MINUTES       = 240.0
 const DEFAULT_OUTPUT_INTERVAL_MINUTES = 12.0
 # --debug is a plumbing smoke test ONLY (does it run, does it write a file). It
 # is FAR too short to say anything about spin-up or the current statistics.
@@ -247,25 +358,35 @@ function sample_params(season::Symbol, run_index::Int, base_seed::Int, tide_amp:
     rng = Xoshiro(run_seed)
     sp = SEASON_PARAMS[season]
 
-    # Wind around the seasonal shamal (NW = 315°)
+    # Wind around the seasonal shamal (NW = 315°). With the coast at x=0 this
+    # always has an offshore/onshore component, so expect coastal Ekman
+    # convergence or divergence at the west wall depending on the sampled
+    # direction, plus an along-shore component that the periodic y axis can now
+    # actually sustain.
     wind_speed   = unif(rng, sp.wind_speed - 2.5, sp.wind_speed + 2.5)
     wind_dir_deg = unif(rng, 275.0, 355.0)
     tau_mag      = RHO_AIR * C_DRAG * wind_speed^2 / RHO_WATER
 
-    # Sources: border-anchored like src/utils/sources.py random_sources —
-    # half on the y=0 coast, half on the periodic x edge. Depths shallow
-    # (coastal outfalls), so structure lives in the upper column. Count raised
-    # 3:6 → 6:10 so the wider (σ_H=300) plumes overlap into domain-wide coverage.
+    # Sources: ALL on the x=0 west coast, at random along-shore positions
+    # (2026-08-06b — previously split 50/50 between a west and a south wall,
+    # matching the old L-shaped geometry). y is periodic so y0 may sit anywhere
+    # in [0, LY) without creating a seam; plume_excess wraps.
+    #
+    # NOTE: the per-source RNG draw sequence changed (the coin flip that chose a
+    # wall is gone), so a given (seed, run_index) samples DIFFERENT sources than
+    # it did before this date. Runs are not reproducible across the change; the
+    # topology change already made them incomparable anyway.
+    #
+    # Depths shallow (coastal outfalls), so structure lives in the upper column.
+    # The count is high so the wide (σ_H=400) plumes overlap into along-shore
+    # coverage.
     n_sources = rand(rng, 10:30)
     sources = SourceSpec[]
     for _ in 1:n_sources
         Q     = unif(rng, 2.0, 10.0)
         depth = unif(rng, 0.0, 0.7*DEPTH)
-        if rand(rng) < 0.5
-            x0, y0 = unif(rng, 0.0, LX), 0.0
-        else
-            x0, y0 = 0.0, unif(rng, 0.0, LY)
-        end
+        x0    = 0.0                      # the coast
+        y0    = unif(rng, 0.0, LY)       # anywhere along it
         push!(sources, (Q = Q, x0 = x0, y0 = y0, z0 = -depth))
     end
 
@@ -278,9 +399,11 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Progress callback
 # ─────────────────────────────────────────────────────────────────────────────
-# `umean` is the spin-up diagnostic: with the wind-driven flow equilibrating on
-# 1/f = 4.6 h, this is the number to watch flatten out. If it is still climbing
-# when the warmup ends, the run is too short (that was the original bug).
+# `umean` was the spin-up diagnostic under the all-bounded topology, where the
+# flow equilibrated and the number was expected to flatten. With y periodic and
+# no bottom drag it RAMPS instead (see the header), and with the tide on it
+# OSCILLATES at 12.42 h on top of that ramp. Read it as "is the flow the
+# magnitude I expect", not as a convergence test.
 function progress(simulation)
     u, v, w = simulation.model.velocities
     msg = @sprintf("i: %04d, t: %s, Δt: %s, umean = %.3e, umax = (%.1e, %.1e, %.1e) m/s, wall: %s\n",
@@ -306,7 +429,10 @@ function build_and_run(arch, params::RunParams, output_path::AbstractString;
     sp = SEASON_PARAMS[params.season]
 
     # Wind stress: a negative kinematic top-flux drives the matching velocity
-    # component in the +axis direction.
+    # component in the +axis direction. Sanity check with the NW shamal (315°):
+    # the (θ-270) offset is 45°, giving tau_x_top = -0.707τ (drives +x, offshore)
+    # and tau_y_top = +0.707τ (drives -y, along-shore southward) — a wind out of
+    # the northwest pushing surface water to the southeast. Correct.
     tau_x_top = -params.tau_mag * cosd(params.wind_dir_deg - 270)
     tau_y_top = +params.tau_mag * sind(params.wind_dir_deg - 270)
 
@@ -320,9 +446,11 @@ function build_and_run(arch, params::RunParams, output_path::AbstractString;
     # Normalise the plume sum by its domain max so the realised core peak is
     # exactly S_SOURCE_ANOMALY above baseline no matter how many wide (σ_H) sources
     # overlap — decouples the salinity SPAN (the anomaly) from spatial COVERAGE
-    # (σ_H, source count). Without it, N overlapping σ_H=300 plumes drive the sum
-    # past 1 and the span balloons (8 sources ⇒ ~20 PSU). The global max of a sum
-    # of Gaussians sits at a source core, so scan the centres plus a coarse grid.
+    # (σ_H, source count). Without it, N overlapping σ_H=400 plumes drive the sum
+    # past 1 and the span balloons. The global max of a sum of Gaussians sits at a
+    # source core, so scan the centres plus a coarse grid. (With every source on
+    # x=0 the max is guaranteed to be on the x=0 face, which the source scan
+    # covers exactly; the grid scan is belt-and-braces.)
     # Single assignment — reassigning a captured local boxes it (Core.Box) and
     # breaks the isbits/GPU-capture check below.
     excess_max = max(
@@ -345,26 +473,46 @@ function build_and_run(arch, params::RunParams, output_path::AbstractString;
     # Fail fast if any closure captured a non-isbits value (cryptic GPU error).
     @assert isbits(S_target) && isbits(T_init) "closures must capture only isbits values"
 
-    # Grid: Periodic along-shore (x), Bounded cross-shore (y, coast at y=0),
-    # Bounded in z. ~7.8 m × 1.6 m cells at the default 128×128×64.
+    # Grid: BOUNDED CROSS-SHORE (x), PERIODIC ALONG-SHORE (y), BOUNDED (z).
+    # Changed 2026-08-06b from all-Bounded; see the header for the full history
+    # and for why the all-Bounded version could not sustain any mean current.
+    #
+    # Land is the west wall (x=0). x=LX is open ocean approximated as a wall —
+    # a sponge over the last ~150 m would fix it, deliberately omitted to avoid
+    # another tuning knob. Watch for pile-up against the east face.
+    #
+    # Numerically free: the FFT pressure solver uses a real FFT in the periodic
+    # direction and a cosine transform in the bounded ones (same
+    # FFTBasedPoissonSolver, no slowdown).
+    #
+    # NOTE for the reader side: bounded x makes Oceananigans write `u` with
+    # NX+1 faces; PERIODIC y makes it write `v` with NY faces (the all-bounded
+    # files had NY+1). SwarmSwIM's FieldLoader must branch on the sidecar's
+    # "topology"/"periodic_axes" fields, not just sniff `u`.
+    #
+    # ~7.8 m × 1.6 m cells at the default 128×128×64.
     grid = RectilinearGrid(arch;
         size     = (NX, NY, NZ),
         x        = (0, LX),
         y        = (0, LY),
         z        = (-DEPTH, 0),              # z negative downward, surface at 0
-        topology = (Periodic, Bounded, Bounded),
+        topology = (Bounded, Periodic, Bounded),
     )
 
+    # Surface wind stress only. There is NO bottom drag — see the header; this
+    # is the single most consequential omission now that y is periodic, because
+    # it leaves the along-shore flow with no momentum sink.
     u_bcs = FieldBoundaryConditions(top = FluxBoundaryCondition(tau_x_top))
     v_bcs = FieldBoundaryConditions(top = FluxBoundaryCondition(tau_y_top))
 
     # Forcing: always the Gaussian brine relaxation on S; optionally a barotropic
-    # M2 tide as a body force on u. Built as a NamedTuple so the tide-free case
-    # is byte-identical to the pre-tide behaviour.
+    # M2 tide as a body force on v (the ALONG-SHORE, periodic component — see the
+    # comment at tide_forcing for why it cannot go on u). Built as a NamedTuple
+    # so the tide-free case is byte-identical to the pre-tide behaviour.
     S_forcing = Relaxation(rate = γ_S, target = S_target)
     forcing = params.tide_amp > 0 ?
         (S = S_forcing,
-         u = Forcing(tide_forcing,
+         v = Forcing(tide_forcing,
                      parameters = (F = params.tide_amp * M2_OMEGA, ω = M2_OMEGA))) :
         (S = S_forcing,)
 
@@ -382,13 +530,22 @@ function build_and_run(arch, params::RunParams, output_path::AbstractString;
         forcing             = forcing,
     )
 
-    # Small random kicks on u/w concentrated in the upper few metres to seed
-    # boundary-layer turbulence; T stratification + S baseline.
+    # Small random kicks on u/v/w concentrated in the upper few metres to seed
+    # boundary-layer turbulence; T stratification + S baseline. v is now
+    # perturbed too (it was not before): it is the free, periodic direction and
+    # the one the along-shore current develops in.
+    #
+    # KNOWN GAP: these use the global RNG, not params.run_seed, so the kicks are
+    # not reproducible run-to-run. Seeding them would require capturing an RNG
+    # inside a function passed to set!, which breaks isbits/GPU capture. The
+    # seeded T noise below is what makes identical parameters diverge
+    # deliberately; this is unintended non-determinism on top of it.
     u★ = sqrt(params.tau_mag)
     Ξ(z) = randn() * exp(z / 4)
     uᵢ(x, y, z) = u★ * 1e-1 * Ξ(z)
+    vᵢ(x, y, z) = u★ * 1e-1 * Ξ(z)
     wᵢ(x, y, z) = u★ * 1e-1 * Ξ(z)
-    set!(model, u = uᵢ, w = wᵢ, T = T_init, S = S_init)
+    set!(model, u = uᵢ, v = vᵢ, w = wᵢ, T = T_init, S = S_init)
 
     # Seeded IC temperature noise so identical parameters still diverge.
     noise_rng = Xoshiro(params.run_seed + 1)
@@ -402,8 +559,8 @@ function build_and_run(arch, params::RunParams, output_path::AbstractString;
     # vertical cell make the CFL condition itself pick ~1.1 s and the cap never
     # binds. With S passive the velocities are ~100× smaller, so the cap became
     # the binding constraint and made the now-12× longer run needlessly
-    # expensive. At the expected ~0.15 m/s over 7.8 m cells, Δt = 10 s is CFL
-    # 0.19 — the wizard still governs, this only stops it capping too early.
+    # expensive. At 0.2 m/s (tide on) over 7.8 m cells, Δt = 10 s is CFL 0.26 —
+    # the wizard still governs, this only stops it capping too early.
     simulation = Simulation(model, Δt = 0.5, stop_time = warmup)
     simulation.callbacks[:progress] = Callback(progress, IterationInterval(50))
     wizard = TimeStepWizard(cfl = 0.7, max_change = 1.1, max_Δt = 10.0)
@@ -436,6 +593,10 @@ end
 # Metadata sidecar: sampled parameters, sources in config/sources.json schema
 # ({name, x, y, depth, Q}, depth positive-down) so src/utils/sources.load_sources
 # reads it directly. Hand-rolled JSON to keep the Julia env dependency-free.
+#
+# "topology" / "periodic_axes" / "domain" are what the reader needs to (a) pick
+# the right staggered-face convention for u and v and (b) apply the minimum-image
+# wrap in y when rebuilding the salinity target from these sources.
 # ─────────────────────────────────────────────────────────────────────────────
 function write_metadata(path::AbstractString, params::RunParams, base_seed::Int;
                         warmup, recording, output_interval, debug::Bool=false)
@@ -452,13 +613,23 @@ function write_metadata(path::AbstractString, params::RunParams, base_seed::Int;
           "debug": $(debug),
           "domain": { "LX": $(LX), "LY": $(LY), "DEPTH": $(DEPTH) },
           "grid": { "NX": $(NX), "NY": $(NY), "NZ": $(NZ) },
+          "topology": "bounded_periodic_bounded",
+          "periodic_axes": ["y"],
+          "land_borders": ["west"],
+          "open_borders_modelled_as_walls": ["east"],
+          "u_faces": $(NX + 1),
+          "v_faces": $(NY),
+          "w_faces": $(NZ + 1),
+          "plume_distance_metric": "minimum_image_in_y",
           "wind_speed": $(params.wind_speed),
           "wind_dir_deg": $(params.wind_dir_deg),
           "tau_mag": $(params.tau_mag),
+          "bottom_drag": null,
           "t_noise_amp": $(params.t_noise_amp),
           "alpha_t": $(ALPHA_T),
           "beta_s": $(BETA_S),
           "tide_amplitude": $(params.tide_amp),
+          "tide_forced_component": "v",
           "tide_period_seconds": $(M2_PERIOD),
           "max_dt_seconds": 10.0,
           "warmup_seconds": $(Float64(warmup)),
@@ -487,16 +658,21 @@ Usage: julia --project=oceananigans non_hydrostatic.jl [options]
   --start-index N         index of the first run (default 1)
   --output-dir DIR        output directory (default data/oceananigans)
   --warmup-minutes M      spin-up before recording (default $(DEFAULT_WARMUP_MINUTES))
-                          NOTE: the wind-driven flow needs ~1/f = 4.6 h to
-                          equilibrate; anything under ~6 h gives a near-motionless
-                          ocean (see the header).
+                          NOTE: with y periodic and NO bottom drag the along-shore
+                          flow ramps rather than equilibrating — longer warmup
+                          means a faster current, without limit. 12 h gives
+                          ~1.7 cm/s depth-mean at a 5 m/s wind. See the header.
   --recording-minutes M   recorded span per run (default $(DEFAULT_RECORDING_MINUTES))
   --output-interval-minutes M  snapshot spacing (default $(DEFAULT_OUTPUT_INTERVAL_MINUTES)).
                           Must be <= --recording-minutes or NO snapshots are written.
   --tide-amplitude U      M2 barotropic tidal current amplitude [m/s], 0 = off
                           (default 0). ~0.2 is representative of the southern
-                          Gulf shelf. Off by default so the wind-only spin-up
-                          baseline stays isolated.
+                          Gulf shelf and is the CHEAPEST route to realistic
+                          current speeds, since it is imposed rather than spun
+                          up. Applied to the along-shore (v) component; it would
+                          be cancelled by the pressure gradient on the bounded x
+                          axis. Off by default so the wind-only baseline stays
+                          isolated.
   --debug                 2 min warmup + 5 min recording. PLUMBING SMOKE TEST
                           ONLY — far too short to judge spin-up or currents.
 Env: OCEAN_ARCH=GPU|CPU, OCEAN_NX/NY/NZ override grid resolution.
@@ -564,6 +740,10 @@ function main(cli)
     recording >= output_interval || error(
         "--recording-minutes ($(recording/60)) must be >= --output-interval-minutes " *
         "($(output_interval/60)), otherwise no snapshots are written at all.")
+    cli.tide_amplitude == 0 && @warn(
+        "Tide is OFF. With wind forcing alone the depth-mean current is set by " *
+        "τ·t/H ≈ 1.4 cm/s per hour of warmup and the salinity field will stay " *
+        "close to the smooth analytic target. Consider --tide-amplitude 0.2.")
     last_index = cli.start_index + cli.n_runs - 1
     for run_index in cli.start_index:last_index
         tag       = lpad(run_index, 3, '0')
@@ -575,7 +755,7 @@ function main(cli)
             continue
         end
         params = sample_params(cli.season, run_index, cli.seed, cli.tide_amplitude)
-        @info @sprintf("Run %d/%d: wind %.2f m/s from %.0f°, tide %.2f m/s, β_S %.1e, %d sources, grid %d×%d×%d",
+        @info @sprintf("Run %d/%d: wind %.2f m/s from %.0f°, tide %.2f m/s (on v), β_S %.1e, %d sources on x=0, grid %d×%d×%d",
                        run_index, last_index, params.wind_speed, params.wind_dir_deg,
                        params.tide_amp, BETA_S, length(params.sources), NX, NY, NZ)
         build_and_run(ARCH, params, nc_path; warmup, recording, output_interval)

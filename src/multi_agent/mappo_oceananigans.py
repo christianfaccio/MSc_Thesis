@@ -106,7 +106,7 @@ class Args:
     """wide shaping-kernel width in S (PSU), ~0.3x the field span"""
     sigma_tau: float = 0.3
     """wide shaping-kernel width in τ (depth parity, see reward_func)"""
-    max_cached_loaders: int = 8
+    max_cached_loaders: int = 6
     """per-env LRU cap on cached FieldLoaders (~90 MB each). Memory ≈
     (num_envs + 1 eval env) · max_cached_loaders · 90 MB (7·8 ≈ 5 GB)."""
     n_agents: int = 2
@@ -148,7 +148,7 @@ class Args:
     it starts at least this many METRES from the nearest success-zone cell (0 = the
     original uniform spawn). Pair with target_mode='tail' for the hard regime; keep
     it identical to the single-agent PPO baseline so the comparison stays fair."""
-    spawn_max_tries: int = 200
+    spawn_max_tries: int = 100
     """rejection budget per agent for min_spawn_distance; the farthest candidate
     found is used if none clears the threshold (so a too-large distance can't hang)."""
     alpha_individual: float = 1.0

@@ -112,13 +112,16 @@ class Args:
     programmatically, any <agents> block in the XML is ignored)"""
     n_agents: int = 2
     """number of agents in the swarm (parameter-shared policy)"""
-    k: int = 12
+    k: int = 0
     """history buffer length (kept for parity; the base obs carries no history)"""
     v_agent: float = 1.0
     """agent commanded speed (m/s)"""
     z_scale: float = 1.0
-    """vertical (heave) speed multiplier; <1 gives finer depth control"""
-    max_steps: int = 5120
+    """vertical (heave) speed multiplier; <1 gives finer depth control. Keep at 1.0:
+    with eps_tau=0.05 passed into reward_func the sharp kernel already spans 17-27 m
+    of depth, while lowering it makes the mean 26 m spawn->band descent cost ~264
+    steps instead of ~26"""
+    max_steps: int = 3600
     """maximum env steps per episode before truncation"""
     dt: float = 0.1
     """simulator timestep (s) per sim sub-step"""
@@ -132,15 +135,21 @@ class Args:
     """vortex eddy radius [m]"""
     salinity_sigma_h: float = 450.0
     """salinity Gaussian horizontal std [m] (domain-scale -> navigable gradient; widened
-    300->450 so border-anchored plumes overlap and the NE far-field keeps a usable slope)"""
+    300->450 so border-anchored plumes overlap and the NE far-field keeps a usable slope).
+    Measured 2026-08-07 at mid-depth, 1200 m from the SW corner: sigma_h=300 leaves
+    S=0.25 PSU of a 10 PSU span with |grad_xy|=0.0021 — BELOW min_band_grad, i.e. no
+    directional signal for a purely local observer — while 450 keeps S=1.48 and 0.0071.
+    Domain-wide, the fraction below min_band_grad is 20.1% at 300 vs 11.7% at 450. The
+    trade is real: 300 is sharper in the near field (0.0132 vs 0.0105 at 700 m), it just
+    goes dead far out."""
     salinity_sigma_v: float = 40.0
     """salinity Gaussian vertical std [m]"""
     salinity_span: float = 10.0
     """salinity field span [PSU] across the domain"""
-    n_sources: int = 10
+    n_sources: int = 30
     """per episode a random min_sources..n_sources land-anchored pollution sources (raised
     4->10 to match ppo_plumes: 2..4 sources left a large flat far-field -> unlearnable targets)"""
-    min_sources: int = 6
+    min_sources: int = 10
     """lower bound on the per-episode source count (more sources shrink the flat far-field)"""
     field_grid_n: int = 32
     """grid resolution used to normalize the field to span"""
@@ -165,7 +174,7 @@ class Args:
     """the number of parallel environments"""
     num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks. On by default
     to freeze the policy near its converged point and prevent late-training drift."""
     gamma: float = 0.999
@@ -189,6 +198,8 @@ class Args:
     anneal_ent: bool = True
     """Linearly anneal ent_coef → ent_coef_final over training. Removes the constant
     late-stage push toward randomness that fights the saturating policy gradient."""
+    ent_anneal_frac: float = 0.5
+    """fraction of training over which ent_coef anneals; after that it HOLDS"""
     ent_coef_final: float = 0.0
     """the entropy coefficient at the end of training when anneal_ent is on"""
     vf_coef: float = 0.5
@@ -201,7 +212,7 @@ class Args:
     # Checkpointing
     save_model: bool = True
     """if toggled, periodically save model + optimizer + RNG + normalization state"""
-    save_every_iterations: int = 20
+    save_every_iterations: int = 50
     """save a checkpoint every N PPO iterations (and always on the final iteration)"""
     checkpoint_dir: str = "runs"
     """parent directory for checkpoints; full path is <checkpoint_dir>/<run_name>/checkpoints/"""
@@ -407,10 +418,17 @@ def train(args):
         if args.anneal_lr:
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
-        ent_coef_now = (
-            args.ent_coef_final + frac * (args.ent_coef - args.ent_coef_final)
-            if args.anneal_ent else args.ent_coef
-        )
+        if args.anneal_ent:
+            # Anneal ent_coef -> ent_coef_final over the first ent_anneal_frac of
+            # training, then HOLD the floor (explore early, commit late). The old
+            # form used `frac` and so annealed over the WHOLE run, ignoring
+            # ent_anneal_frac entirely: at 6% of training the coefficient was
+            # still 0.0095 of an initial 0.01.
+            train_frac = (iteration - 1.0) / args.num_iterations
+            a = min(train_frac / max(args.ent_anneal_frac, 1e-8), 1.0)
+            ent_coef_now = args.ent_coef + a * (args.ent_coef_final - args.ent_coef)
+        else:
+            ent_coef_now = args.ent_coef
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs * n_agents
@@ -431,8 +449,18 @@ def train(args):
             raw_next_obs = np.zeros((args.num_envs, n_agents, local_dim), dtype=np.float32)
             raw_reward = np.zeros((args.num_envs, n_agents), dtype=np.float32)
             done_after = np.zeros((args.num_envs, n_agents), dtype=np.float32)
+            # Truncation is not termination: the potential-based shaping relies on
+            # bootstrapping from the truncated state's value (the env keeps the real
+            # Φ(s') there). The envs don't auto-reset, so the local obs returned on
+            # the ending step IS the true final obs — record it per AGENT and fold
+            # γ·V(final_obs) into the truncated agents' normalized reward below.
+            # Without this, every time-limit ending (the large majority at
+            # max_steps=1800) teaches the critic V(s_final)=0 and the advantage
+            # signal collapses.
+            trunc_flags = np.zeros((args.num_envs, n_agents), dtype=bool)
+            final_obs = np.zeros((args.num_envs, n_agents, local_dim), dtype=np.float32)
             for e, env in enumerate(envs):
-                o, r, term, trunc, _ = env.step(act_np[e])
+                o, r, term, trunc, info = env.step(act_np[e])
                 d = np.logical_or(term, trunc)
                 raw_next_obs[e] = o
                 raw_reward[e] = r
@@ -443,6 +471,12 @@ def train(args):
                 # The env does not auto-reset: when all its agents are done, log
                 # the episode and reset it.
                 if d.all():
+                    # Bootstrap ONLY on a genuine time limit. When the episode ended
+                    # because a teammate succeeded, that is terminal for the whole
+                    # team and adding γ·V(final) on top double-counts the ending.
+                    if info.get("timeout", True):
+                        trunc_flags[e] = np.logical_and(trunc, np.logical_not(term))
+                    final_obs[e] = o  # obs at the boundary, BEFORE reset overwrites raw_next_obs
                     succeeded = float(term.any())   # success = ANY agent reached the target
                     ep_returns.append(env_ep_return[e] / n_agents)
                     ep_lengths.append(float(env_ep_len[e]))
@@ -456,7 +490,17 @@ def train(args):
                     raw_next_obs[e] = o
                     done_after[e] = 0.0  # fresh episode: next state is not terminal
 
-            rewards[step] = torch.tensor(normalize_reward(raw_reward, done_after)).to(device)
+            norm_reward = normalize_reward(raw_reward, done_after)
+            if trunc_flags.any():
+                # V(final_obs) per truncated AGENT (local critic). update=False so
+                # the boundary states don't skew the running obs statistics.
+                fin_norm = normalize_obs(final_obs[trunc_flags], update=False)
+                with torch.no_grad():
+                    final_v = agent.get_value(
+                        torch.tensor(fin_norm, device=device)).view(-1).cpu().numpy()
+                norm_reward[trunc_flags] += args.gamma * final_v.astype(np.float32)
+
+            rewards[step] = torch.tensor(norm_reward).to(device)
             next_obs = torch.tensor(normalize_obs(raw_next_obs)).to(device)
             next_done = torch.tensor(done_after).to(device)
 

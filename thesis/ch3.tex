@@ -61,6 +61,17 @@ an episode for simplicity. Agent control is achieved by three schemes:
     \end{equation}
 \end{enumerate}
 
+In this work, the action space is a discrete set of 27 actions, which corresponds to the 26 neighbors of a cell in a 3D grid plus the "stay" action. 
+Thus, each action corresponds to a movement in the continuous space that is discretized by the grid, and is splitted into the three components 
+as described above. The total magnitude of the velocity is fixed to $1 m/s$, which is a reasonable value for an AUV. It follows that, given the total velocity and the angle of the action in the horizontal and vertial 
+dimensions, the three components of the velocity are computed as follows:
+\begin{equation}
+    v_x = v \cos(\theta) \cos(\phi) \quad\quad
+    v_y = v \cos(\theta) \sin(\phi) \quad\quad
+    v_z = v \sin(\theta)
+\end{equation}
+where $\theta$ is the angle in the vertical plane and $\phi$ is the angle in the horizontal plane. The angles are computed based on the action index, which is a number between 0 and 26. 
+
 \section{Environment}
 
 The environment is a 3D domain where the agents operate. To make it more realistic,
@@ -151,13 +162,19 @@ The model integrates the following equation:
     \text{with } \nabla\cdot\mathbf{\vec{u}} = 0
 \end{equation*}
 
+The second term $((\mathbf{\vec{u}}\cdot\nabla)\mathbf{\vec{u}})$ is the advection term. It is not a force, but refers to the velocity at a fixed grid cell. 
+This is the term that makes the Navier-Stokes equations nonlinear, and it is responsible for the transfer of energy from large to small scales, which is the essence of turbulence. 
+In other words, it is the term that makes the flow chaotic and unpredictable.
+
+The third term $(f \hat{z}\times\mathbf{\vec{u}})$ is the Coriolis force. It is a global operator (i.e., modifies the entire domain) and is a vector perpendicular to the velocity, with magnitude proportional to it.
+
 The fourth term $(-\nabla p)$ is the pressure gradient force. It is a global 
-operator (i.e., modifies the entire domain) and essentially is a vector
+operator either and essentially is a vector
 pointing in the direction of steepest increase in pressure. Because the model 
-is Boussinesq, $p$ here is the kinemaic pressure, already divided by $\rho_0 = 1027.0$. 
+is Boussinesq, $p$ here is the kinematic pressure, already divided by $\rho_0 = 1027.0$. 
 Moreover, it has no equation of state, it is a Lagrange multiplier that enforces incompressibility, 
 and since there is the constraint $\nabla\cdot\mathbf{\vec{u}} = 0$, it is whatever force field 
-required to make that true. Mechanically, Oceananigans does thig with a projection
+required to make that true. Mechanically, Oceananigans does this with a projection
 method each timestep:
 \begin{itemize}
     \item advances velocity ignoring pressure
@@ -172,7 +189,11 @@ method each timestep:
 \end{itemize}
 The second step is an elliptic solve that uses an FFT along the periodi axis and transforms along the bounded axes.
 
-The fifth term ($b\hat{z}$) is the buoyancy force, TODO.
+The fifth term ($b\hat{z}$) is the buoyancy force, which a vertical force per unit of mass. It is a function of the density anomaly $\rho' = \rho - \rho_0$, where $\rho_0$ is the reference density.
+\begin{equation}
+    b = -g\frac{\rho'}{\rho_0} = g\left(\alpha(T-T_0) - \beta(S-S_0)\right)
+\end{equation}
+since $\rho'$ is supplied as a linear function of temperature and salinity.
 
 The sixth term ($\nabla\cdot\boldsymbol{\tau}_{\rm sgs}$) is the subgrid stress, which is a closure for the unresolved scales of motion. 
 Essentially, LES applies a spatial filter (the grid) to the Navier-Stokes equations, splitting the velocity into a resolved and an unresolved part.
@@ -191,9 +212,9 @@ is transferred downward by turbulence.
 Surface stress plus rotation gives the classical Ekman spiral: the current at the surface
 is deflected to the right of the wind (northern hemisphere) and rotates further right with depth while decaying. 
 
-Only temperature is buoyancy-active: salinity exerts zero feedback on momentum, it is advected and LES-mixed by the currents but never drives them.
-This is a simplification with respect to the real world, given the small amount of computational resources available.
-
-
-
 \subsection{Salinity Field}
+
+Salinity is the second field of the environment, and it is the variable that alongside the turbidity defines the target zone for the agents.
+In this work it is computed by advecting $N$ salinity sources, initialized randomly at south and west walls at surface and with a random strength.
+At each timestep, the sources emit salinity particles, which are advected by the currents and corrected by a diffusion term that bounds the PSU 
+range to 10 PSU. That was a choice made either to have a navigable field with computable gradients and to resemble the realistic salinity range of the Gulf.

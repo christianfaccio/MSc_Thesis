@@ -18,7 +18,7 @@ class PlumesEnv(gym.Env):
                  xml_file: str,
                  k: int = 12,
                  v_agent: float = 1.0,
-                 max_steps: int = 7200,             # 2 hours
+                 max_steps: int = 3600,            
                  dt: float = 0.1,
                  frame_skip: int = 10,
                  domain = (1000.0, 1000.0, 100.0),
@@ -28,10 +28,10 @@ class PlumesEnv(gym.Env):
                  salinity_sigma_h: float = 300.0,   # field horizontal std [m] (domain-scale -> navigable gradient)
                  salinity_sigma_v: float = 40.0,    # field vertical std [m] (< the 40 m column -> vertical gradient)
                  salinity_span: float = 10.0,       # field span [PSU] across the domain (max - min)
-                 n_sources: int = 10,               # per episode a random min_sources..n_sources land-anchored sources
-                 min_sources: int = 6,              # lower bound on the per-episode source count (fills the flat far-field)
+                 n_sources: int = 30,               # per episode a random min_sources..n_sources land-anchored sources
+                 min_sources: int = 10,              # lower bound on the per-episode source count (fills the flat far-field)
                  field_grid_n: int = 32,            # grid resolution used to normalize the field to span
-                 min_band_grad: float = 0.004,      # reject targets whose success band is ~flat (PSU/m); <=0 disables     
+                 min_band_grad: float = 0.004,      # reject targets whose success band is ~flat (PSU/m); <=0 disables
                  ):
         self.xml_file = xml_file
         self.k = k
@@ -66,7 +66,8 @@ class PlumesEnv(gym.Env):
         self._prev_potential = 0.0
 
         self.action_space = gym.spaces.Discrete(27)
-        obs_dim = 9
+        # obs = 9 baseline sensor frame + 5k history (same layout as OceananigansEnv)
+        obs_dim = 9 + 5 * self.k
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         self._action_to_direction = self._build_action_table()
 
@@ -218,30 +219,43 @@ class PlumesEnv(gym.Env):
         Returns the observation and the proximity potential Φ(s) = reward_func(...).
         The caller turns Φ into the shaped reward.
 
-        obs_mode="minimal" (9,):
+        When an `action` index is given (a step, not a reset) the history is
+        advanced first, so the newest row holds that action's direction together
+        with the errors measured AFTER it — i.e. the last history row always
+        mirrors the (S - S*, τ - τ*) pair in the frame part.
+
+        Observation layout (9 + 5k,):
             (3)     -> body-frame currents (u, v, w)
             (3)     -> body-frame salinity gradient (gu, gv, gw)
             (2)     -> target errors (S - S*, τ - τ*)
             (1)     -> depth
+            (5k)    -> history, oldest->newest rows of (dx, dy, dz, S-S*, τ-τ*)
         '''
         # Salinity, turbidity, body-frame currents and gradient come from _measure
         # (single source of truth, shared with the in-zone check / external tooling).
         new_salinity, new_turbidity, u, v, w, gu, gv, gw = self._measure(agent)
 
-        potential = reward_func(new_salinity, new_turbidity, self.target_salinity, self.target_turbidity)
+        potential = self._potential_at(agent, new_salinity, new_turbidity)
 
         self.current_salinity = new_salinity
         self.current_turbidity = new_turbidity
 
-        agent_depth = agent.pos[2]
+        dS = new_salinity - self.target_salinity
+        dT = new_turbidity - self.target_turbidity
+        if action is not None and self.k > 0:
+            self._hist = np.roll(self._hist, -1, axis=0)
+            self._hist[-1, :3] = self._action_to_direction[action]
+            self._hist[-1, 3] = dS
+            self._hist[-1, 4] = dT
 
-        return np.array([
+        frame = np.array([
             u, v, w,
             gu, gv, gw,
-            self.current_salinity - self.target_salinity,
-            self.current_turbidity - self.target_turbidity,
-            agent_depth,
-        ], dtype=np.float32), potential
+            dS, dT,
+            agent.pos[2],
+        ], dtype=np.float32)
+
+        return np.concatenate([frame, self._hist.reshape(-1)]), potential
 
     def _zone_reachable(self, n_xy: int = 64, n_z_band: int = 5) -> bool:
         '''True if some domain point satisfies both |S - S*| < eps_S and
@@ -287,6 +301,33 @@ class PlumesEnv(gym.Env):
             return False
         gx, gy, _ = self._salinity_grad_at(X[mask], Y[mask], Z[mask])
         return bool(np.median(np.sqrt(gx ** 2 + gy ** 2)) >= self.min_band_grad)
+
+    def _potential_at(self, agent, S, tau) -> float:
+        '''Shaping potential Phi(s): the multi-scale Gaussian over the MEASUREMENT
+        error, i.e. a function of exactly the two quantities the agent senses.
+
+        eps_* MUST be the env's success tolerances: reward_func sizes its two
+        narrow kernels at 5x and 1.5x eps, so leaving them at the function
+        defaults (0.1 / 0.01) builds the precision endgame around a box 3x (S)
+        and 5x (tau) tighter than the one _is_in_zone actually tests — the sharp
+        kernel then reads ~0 at the success boundary, exactly where the agent
+        needs the gradient.
+
+        KNOWN WEAKNESS (measured 2026-08-06): this potential saturates. One 1 m
+        step toward the zone moves Phi by 0.033 within 50 m of it but only 0.0003
+        beyond 400 m, and >50% of the domain sits beyond 200 m — so over half the
+        domain the reward carries no directional information and the agent must
+        random-walk into the basin before shaping helps. A distance-to-zone
+        potential 10*(1 - d/diag) was tried as a replacement and was clearly
+        WORSE (success decayed 0.34 -> 0.03 over 2M steps): d is not in the
+        observation, so the critic cannot predict its own shaping and the
+        advantage becomes noise. Oceananigans needs that potential because its
+        TURBULENT field makes the error potential non-monotone; this analytic
+        Gaussian field has no such local optima. Any future fix should stay a
+        function of (S - S*, tau - tau*) and attack the saturation instead —
+        e.g. a form that is linear rather than exponential in the errors.'''
+        return reward_func(S, tau, self.target_salinity, self.target_turbidity,
+                           eps_s=self.epsilon_salinity, eps_tau=self.epsilon_turbidity)
 
     def _is_in_zone(self) -> bool:
         '''True when measured (S, tau) lie within epsilon of the target couple.'''
@@ -346,14 +387,24 @@ class PlumesEnv(gym.Env):
             self.target_turbidity = compute_turbidity(tgt[2])
             if self._zone_reachable() and self._band_grad_ok():
                 break
-            else:
-                raise RuntimeError(
-                    "reset(): no reachable target zone after 20 field/target resamples"
-                )
+        else:
+            # for...else: only fires when the loop was never broken out of, i.e.
+            # all 20 resamples failed. Previously this `else` was bound to the
+            # `if` above, so the FIRST rejected target raised instead of
+            # resampling — which made single-agent resets fail outright.
+            raise RuntimeError(
+                "reset(): no reachable target zone after 20 field/target resamples"
+            )
 
-        # Init RL vars
-        self.history = np.zeros((self.k, 2), dtype=np.float32)
-        self.st_history = np.zeros((self.k, 2), dtype=np.float32)
+        # Observation history: rows (dx, dy, dz, S-S*, τ-τ*), oldest->newest.
+        # The error columns are SEEDED with the spawn measurement rather than
+        # left at zero, so an empty buffer never reads as "the agent just
+        # measured a perfect match"; the direction columns stay 0 (no action yet).
+        agent0 = self.sim.agents[0]
+        S0, tau0 = self._measure(agent0)[:2]
+        self._hist = np.zeros((self.k, 5), dtype=np.float32)
+        self._hist[:, 3] = S0 - self.target_salinity
+        self._hist[:, 4] = tau0 - self.target_turbidity
         self.t_step = 0
 
         obs, phi0 = self._build_state(self.sim.agents[0])
@@ -367,7 +418,14 @@ class PlumesEnv(gym.Env):
         agent = self.sim.agents[0]
         agent.cmd_local_vel = np.array([mov[0]*self.v_agent, mov[1]*self.v_agent])
         agent.cmd_heave = mov[2]*self.v_agent
-        agent.cmd_heading = np.rad2deg(np.arctan2(mov[0], mov[1]))
+        # No heading command: config/agent.xml uses heading_control="yawrate",
+        # whose update_heading branch integrates cmd_yawrate and never reads
+        # cmd_heading — so setting it was a silent no-op. (It was also wrong on
+        # its own terms: arctan2(mov[0], mov[1]) swaps the arguments and returns
+        # 0 for every pure-vertical and no-op action.) Heading therefore stays at
+        # its random spawn value; that is fine, because the observation is
+        # expressed in the body frame, so the policy sees a self-consistent
+        # frame either way.
 
         for _ in range(self.frame_skip):
              self.sim.tick()
@@ -406,14 +464,15 @@ class MultiAgentPlumesEnv(PlumesEnv):
     swarm, exposing the PettingZoo-parallel-flattened API that
     src/multi_agent/ippo.py (and mappo.py) consume:
 
-        reset() -> obs (N, 9), info
-        step(actions (N,)) -> obs (N, 9), rewards (N,),
+        reset() -> obs (N, 9+5k), info
+        step(actions (N,)) -> obs (N, 9+5k), rewards (N,),
                               terminateds (N,), truncateds (N,), info
 
-    The per-agent LOCAL observation is exactly PlumesEnv's 9-dim gradient obs
-    (no history buffer):
+    The per-agent LOCAL observation is exactly PlumesEnv's observation — the
+    9-dim gradient frame followed by the k-deep history:
         [ u v w (body-frame currents) | gu gv gw (body-frame salinity gradient)
-          | S - S* | tau - tau* | depth ]
+          | S - S* | tau - tau* | depth
+          | k rows of (dx, dy, dz, S - S*, tau - tau*), oldest -> newest ]
 
     info["global_state"] carries a (9N + 2,) centralized state for a MAPPO
     critic; IPPO ignores it (its critic uses the local obs only):
@@ -429,6 +488,13 @@ class MultiAgentPlumesEnv(PlumesEnv):
                  xml_file: str,
                  n_agents: int = 2,
                  z_scale: float = 1.0,           # vertical (heave) speed multiplier; <1 = finer depth control
+                                                 # KEEP AT 1.0. Lowering it does not buy precision: once
+                                                 # reward_func is given the env tolerance eps_tau=0.05 (see
+                                                 # _build_state) its sharp kernel spans 17-27 m of depth, which
+                                                 # 1 m/step already resolves 20x over. It only buys cost: the
+                                                 # spawn->tau-band vertical gap is mean 26 m / p90 61 m, so
+                                                 # z_scale=0.1 turns a ~26-step descent into ~264 (458 on
+                                                 # diagonal actions) out of an 1800-step budget.
                  reward_mode: str = "shaped",    # "shaped" (potential-based) | "sparse" (-1/step, +bonus to all on first success)
                  end_on_any_success: bool = True,
                  **base_kwargs):
@@ -509,6 +575,14 @@ class MultiAgentPlumesEnv(PlumesEnv):
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
         self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
+        # Per-agent observation history, rows (dx, dy, dz, S-S*, τ-τ*),
+        # oldest->newest. Error columns seeded with each agent's own spawn
+        # measurement (see PlumesEnv.reset for why).
+        self._hist = np.zeros((self.n_agents, self.k, 5), dtype=np.float32)
+        for i, agent in enumerate(self.sim.agents):
+            S0, tau0 = self._measure(agent)[:2]
+            self._hist[i, :, 3] = S0 - self.target_salinity
+            self._hist[i, :, 4] = tau0 - self.target_turbidity
         self.t_step = 0
 
         obs = np.zeros((self.n_agents, self.local_observation_space.shape[0]), dtype=np.float32)
@@ -536,7 +610,8 @@ class MultiAgentPlumesEnv(PlumesEnv):
             mov = self._action_to_direction[actions[i]]
             agent.cmd_local_vel = np.array([mov[0] * self.v_agent, mov[1] * self.v_agent])
             agent.cmd_heave = mov[2] * self.v_agent * self.z_scale
-            agent.cmd_heading = np.rad2deg(np.arctan2(mov[0], mov[1]))
+            # cmd_heading dropped — silent no-op under heading_control="yawrate".
+            # See PlumesEnv.step.
 
         for _ in range(self.frame_skip):
             self.sim.tick()
@@ -588,7 +663,14 @@ class MultiAgentPlumesEnv(PlumesEnv):
         episode_over = out_of_time or (self.end_on_any_success and bool(terminateds.any()))
         truncateds = np.full(self.n_agents, episode_over) & (~self._success)
 
-        info = {"global_state": self._build_global_state()}
+        # TIME-LIMIT vs TEAM-TERMINAL. A trainer must bootstrap γV(s') for an agent
+        # cut off by the time limit (the episode would have continued) but NOT for
+        # one whose episode genuinely ended. With end_on_any_success the
+        # non-succeeding agents are flagged `truncated`, yet a teammate's success is
+        # a TERMINAL event for the whole team — there is no future to bootstrap.
+        # Expose which kind of ending this is so the trainer can tell them apart.
+        info = {"global_state": self._build_global_state(),
+                "timeout": bool(out_of_time and not terminateds.any())}
         return obs, rewards, terminateds, truncateds, info
 
     # ----------------------------------------------------------------- helpers
@@ -601,19 +683,27 @@ class MultiAgentPlumesEnv(PlumesEnv):
         )
 
     def _build_local_state(self, i, action=None):
-        '''Per-agent version of PlumesEnv._build_state (no shared state, no history).
-        Returns (obs (9,), potential, S, tau) for agent i; `action` is accepted for
-        signature parity with MultiAgentEnv but unused (the base obs has no history).'''
+        '''Per-agent version of PlumesEnv._build_state (no shared state).
+        Returns (obs (9+5k,), potential, S, tau) for agent i. When `action` is
+        given (a step by a live agent) that agent's history is advanced first;
+        a frozen agent is re-observed with action=None so its buffer stops.'''
         agent = self.sim.agents[i]
         S, tau, u, v, w, gu, gv, gw = self._measure(agent)
-        potential = reward_func(S, tau, self.target_salinity, self.target_turbidity)
-        obs = np.array([
+        potential = self._potential_at(agent, S, tau)
+        dS = S - self.target_salinity
+        dT = tau - self.target_turbidity
+        if action is not None and self.k > 0:
+            self._hist[i] = np.roll(self._hist[i], -1, axis=0)
+            self._hist[i, -1, :3] = self._action_to_direction[action]
+            self._hist[i, -1, 3] = dS
+            self._hist[i, -1, 4] = dT
+        frame = np.array([
             u, v, w,
             gu, gv, gw,
-            S - self.target_salinity,
-            tau - self.target_turbidity,
+            dS, dT,
             agent.pos[2],
         ], dtype=np.float32)
+        obs = np.concatenate([frame, self._hist[i].reshape(-1)])
         return obs, potential, S, tau
 
     def _build_global_state(self):

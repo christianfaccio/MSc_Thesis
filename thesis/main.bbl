@@ -331,6 +331,61 @@
       \field{title}{Multi-agent reinforcement learning: Foundations and modern approaches}
       \field{year}{2024}
     \endentry
+    \entry{schulman2015trpo}{inproceedings}{}
+      \name{author}{5}{}{%
+        {{hash=3e09bd2a25d237ebdaed560a07c0451e}{%
+           family={Schulman},
+           familyi={S\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod}}}%
+        {{hash=c9545da54b33744da25943cdf66eadac}{%
+           family={Levine},
+           familyi={L\bibinitperiod},
+           given={Sergey},
+           giveni={S\bibinitperiod}}}%
+        {{hash=a901fd78fe1108cfa7d11129644967c7}{%
+           family={Moritz},
+           familyi={M\bibinitperiod},
+           given={Philipp},
+           giveni={P\bibinitperiod}}}%
+        {{hash=8a36116840c7ee55901618c95fd08a58}{%
+           family={Jordan},
+           familyi={J\bibinitperiod},
+           given={Michael\bibnamedelima I.},
+           giveni={M\bibinitperiod\bibinitdelim I\bibinitperiod}}}%
+        {{hash=e28d4ee199593959d8c29980a64f1974}{%
+           family={Abbeel},
+           familyi={A\bibinitperiod},
+           given={Pieter},
+           giveni={P\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {PMLR}%
+      }
+      \strng{namehash}{8d6613ae59595910252a86a61babf6c8}
+      \strng{fullhash}{945251de1d41bc2767a541a8148f51da}
+      \strng{bibnamehash}{945251de1d41bc2767a541a8148f51da}
+      \strng{authorbibnamehash}{945251de1d41bc2767a541a8148f51da}
+      \strng{authornamehash}{8d6613ae59595910252a86a61babf6c8}
+      \strng{authorfullhash}{945251de1d41bc2767a541a8148f51da}
+      \field{extraname}{1}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 32nd International Conference on Machine Learning (ICML)}
+      \field{eprinttype}{arXiv}
+      \field{note}{docs/TRPO.pdf}
+      \field{series}{Proceedings of Machine Learning Research}
+      \field{title}{Trust Region Policy Optimization}
+      \field{volume}{37}
+      \field{year}{2015}
+      \field{pages}{1889\bibrangedash 1897}
+      \range{pages}{9}
+      \verb{eprint}
+      \verb 1502.05477
+      \endverb
+    \endentry
     \entry{zhang2021multi}{article}{}
       \name{author}{3}{}{%
         {{hash=d2333c98ffcc26f61ae2f6f998292935}{%
@@ -358,8 +413,8 @@
       \strng{authorbibnamehash}{e05bfaed45551f26949d1f199143629d}
       \strng{authornamehash}{e05bfaed45551f26949d1f199143629d}
       \strng{authorfullhash}{e05bfaed45551f26949d1f199143629d}
-      \field{sortinit}{7}
-      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
       \field{labelnamesource}{author}
       \field{labeltitlesource}{title}
       \field{journaltitle}{Handbook of reinforcement learning and control}
@@ -369,8 +424,8 @@
       \range{pages}{64}
     \endentry
     \entry{swim_simulator}{online}{}
-      \field{sortinit}{9}
-      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
       \field{labeltitlesource}{title}
       \field{title}{{SWIM}: Underwater {SW}arm s{IM}ulator}
       \field{urlday}{2}
@@ -483,6 +538,473 @@
       \verb 2502.14148
       \endverb
     \endentry
+    \entry{granadeno2025multisource}{misc}{}
+      \name{author}{3}{}{%
+        {{hash=78a68c77cd4bc8af095b33a5132b29f2}{%
+           family={Alarcon\bibnamedelima Granadeno},
+           familyi={A\bibinitperiod\bibinitdelim G\bibinitperiod},
+           given={Pedro\bibnamedelima Antonio},
+           giveni={P\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+        {{hash=c3282fe8e2db9c4776653ec889fe82e8}{%
+           family={Chambers},
+           familyi={C\bibinitperiod},
+           given={Theodore},
+           giveni={T\bibinitperiod}}}%
+        {{hash=7f39f12f6ce6642514b823ceb237a7bc}{%
+           family={Cleland-Huang},
+           familyi={C\bibinithyphendelim H\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod}}}%
+      }
+      \strng{namehash}{ab2d1c9fdd1d7972bebad4cbbd858308}
+      \strng{fullhash}{ab2d1c9fdd1d7972bebad4cbbd858308}
+      \strng{bibnamehash}{ab2d1c9fdd1d7972bebad4cbbd858308}
+      \strng{authorbibnamehash}{ab2d1c9fdd1d7972bebad4cbbd858308}
+      \strng{authornamehash}{ab2d1c9fdd1d7972bebad4cbbd858308}
+      \strng{authorfullhash}{ab2d1c9fdd1d7972bebad4cbbd858308}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{eprintclass}{cs.MA}
+      \field{eprinttype}{arXiv}
+      \field{note}{docs/2505.08825v1.pdf}
+      \field{title}{Multi-Source Plume Tracing via Multi-Agent Reinforcement Learning}
+      \field{year}{2025}
+      \verb{doi}
+      \verb 10.48550/arXiv.2505.08825
+      \endverb
+      \verb{eprint}
+      \verb 2505.08825
+      \endverb
+    \endentry
+    \entry{tan2024adaptiveqpso}{article}{}
+      \name{author}{6}{}{%
+        {{hash=5599b0be27723d0f76cfbc4ba88d98de}{%
+           family={Tan},
+           familyi={T\bibinitperiod},
+           given={Li},
+           giveni={L\bibinitperiod}}}%
+        {{hash=71364a3f700869d6bf1dd38b207b678b}{%
+           family={Zhang},
+           familyi={Z\bibinitperiod},
+           given={Hongtao},
+           giveni={H\bibinitperiod}}}%
+        {{hash=3565158ae93c778db2787b33f073e2ff}{%
+           family={Liu},
+           familyi={L\bibinitperiod},
+           given={Yuzhao},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=e4a8cfbceaf625012ad5e16968407225}{%
+           family={Yuan},
+           familyi={Y\bibinitperiod},
+           given={Tianli},
+           giveni={T\bibinitperiod}}}%
+        {{hash=db803dd8884a9eae4b6ec4c739a2b85f}{%
+           family={Jiang},
+           familyi={J\bibinitperiod},
+           given={Xujie},
+           giveni={X\bibinitperiod}}}%
+        {{hash=90c8bf5b2ab4ee1483930d2ac9dab43c}{%
+           family={Shang},
+           familyi={S\bibinitperiod},
+           given={Ziliang},
+           giveni={Z\bibinitperiod}}}%
+      }
+      \strng{namehash}{e6bc7937cdbcc03e4dc6edbdde1e89b5}
+      \strng{fullhash}{e9c874317d168c9d7b70c420716ac750}
+      \strng{bibnamehash}{e9c874317d168c9d7b70c420716ac750}
+      \strng{authorbibnamehash}{e9c874317d168c9d7b70c420716ac750}
+      \strng{authornamehash}{e6bc7937cdbcc03e4dc6edbdde1e89b5}
+      \strng{authorfullhash}{e9c874317d168c9d7b70c420716ac750}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Soft Computing}
+      \field{note}{docs/An adaptoive Q learning based Partcile Swarm Optimization.pdf}
+      \field{title}{An Adaptive {Q}-Learning Based Particle Swarm Optimization for Multi-{UAV} Path Planning}
+      \field{volume}{28}
+      \field{year}{2024}
+      \field{pages}{7931\bibrangedash 7946}
+      \range{pages}{16}
+      \verb{doi}
+      \verb 10.1007/s00500-024-09691-2
+      \endverb
+    \endentry
+    \entry{ma2024improvedqpso}{inproceedings}{}
+      \name{author}{2}{}{%
+        {{hash=0885ab609acb55657b056623036d36c7}{%
+           family={Ma},
+           familyi={M\bibinitperiod},
+           given={Zhiyao},
+           giveni={Z\bibinitperiod}}}%
+        {{hash=bd72531cf3024fe1ab62c164d3bf1a07}{%
+           family={Liu},
+           familyi={L\bibinitperiod},
+           given={Zhongxin},
+           giveni={Z\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {IEEE}%
+      }
+      \strng{namehash}{252c088369f97dec342850421115b870}
+      \strng{fullhash}{252c088369f97dec342850421115b870}
+      \strng{bibnamehash}{252c088369f97dec342850421115b870}
+      \strng{authorbibnamehash}{252c088369f97dec342850421115b870}
+      \strng{authornamehash}{252c088369f97dec342850421115b870}
+      \strng{authorfullhash}{252c088369f97dec342850421115b870}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{2024 6th International Conference on Frontier Technologies of Information and Computer (ICFTIC)}
+      \field{note}{docs/An\_Improved\_Q-Learning\_Algorithm\_with\_Particle\_Swarm\_Optimization\_for\_Path\_Planning.pdf}
+      \field{title}{An Improved {Q}-Learning Algorithm with Particle Swarm Optimization for Path Planning}
+      \field{year}{2024}
+      \field{pages}{1662\bibrangedash 1667}
+      \range{pages}{6}
+      \verb{doi}
+      \verb 10.1109/ICFTIC64248.2024.10913234
+      \endverb
+    \endentry
+    \entry{saeed2024energyefficient}{article}{}
+      \name{author}{6}{}{%
+        {{hash=e4416fcd5333edf2099a3f070f88bf2b}{%
+           family={Saeed},
+           familyi={S\bibinitperiod},
+           given={Rashid\bibnamedelima A.},
+           giveni={R\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+        {{hash=f5d133ce1fc9a04d0bd6c293ba8b21f7}{%
+           family={Ali},
+           familyi={A\bibinitperiod},
+           given={Elmustafa\bibnamedelima Sayed},
+           giveni={E\bibinitperiod\bibinitdelim S\bibinitperiod}}}%
+        {{hash=691f7623ca5945a6b7f2374d154b90a3}{%
+           family={Abdelhaq},
+           familyi={A\bibinitperiod},
+           given={Maha},
+           giveni={M\bibinitperiod}}}%
+        {{hash=863abe551b2a7c2283b0d0a9282fadc9}{%
+           family={Alsaqour},
+           familyi={A\bibinitperiod},
+           given={Raed},
+           giveni={R\bibinitperiod}}}%
+        {{hash=1ee45f75fdf178af15a215befeaf23bb}{%
+           family={Ahmed},
+           familyi={A\bibinitperiod},
+           given={Fatima\bibnamedelimb Rayan\bibnamedelima Awad},
+           giveni={F\bibinitperiod\bibinitdelim R\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+        {{hash=8a79a91455a423e3fbf9bcc45275e18a}{%
+           family={Saad},
+           familyi={S\bibinitperiod},
+           given={Asma\bibnamedelimb Mohammed\bibnamedelima Elbashir},
+           giveni={A\bibinitperiod\bibinitdelim M\bibinitperiod\bibinitdelim E\bibinitperiod}}}%
+      }
+      \strng{namehash}{a5e96bab7fae4118259ecb026f284283}
+      \strng{fullhash}{8e6fc488bca4fa14fac1de5bf0f9f2bd}
+      \strng{bibnamehash}{8e6fc488bca4fa14fac1de5bf0f9f2bd}
+      \strng{authorbibnamehash}{8e6fc488bca4fa14fac1de5bf0f9f2bd}
+      \strng{authornamehash}{a5e96bab7fae4118259ecb026f284283}
+      \strng{authorfullhash}{8e6fc488bca4fa14fac1de5bf0f9f2bd}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{IEEE Access}
+      \field{note}{docs/Energy\_Efficient\_Path\_Planning\_Scheme\_for\_Unmanned\_Aerial\_Vehicle\_Using\_Hybrid\_Generic\_Algorithm-Based\_Q-Learning\_Optimization.pdf}
+      \field{title}{Energy Efficient Path Planning Scheme for Unmanned Aerial Vehicle Using Hybrid Generic Algorithm-Based {Q}-Learning Optimization}
+      \field{volume}{12}
+      \field{year}{2024}
+      \field{pages}{13400\bibrangedash 13417}
+      \range{pages}{18}
+      \verb{doi}
+      \verb 10.1109/ACCESS.2023.3344455
+      \endverb
+    \endentry
+    \entry{meerza2019qpso}{inproceedings}{}
+      \name{author}{3}{}{%
+        {{hash=e410ad65cda36dc82b0ac1e439f72651}{%
+           family={Meerza},
+           familyi={M\bibinitperiod},
+           given={Syed\bibnamedelimb Irfan\bibnamedelima Ali},
+           giveni={S\bibinitperiod\bibinitdelim I\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+        {{hash=15c50e7494d6974169d4d5a843485396}{%
+           family={Islam},
+           familyi={I\bibinitperiod},
+           given={Moinul},
+           giveni={M\bibinitperiod}}}%
+        {{hash=9deebc56db157b357ba8a154b4e3adfa}{%
+           family={Uzzal},
+           familyi={U\bibinitperiod},
+           given={Md.\bibnamedelimi Mohiuddin},
+           giveni={M\bibinitperiod\bibinitdelim M\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {IEEE}%
+      }
+      \strng{namehash}{fed60dccd19718b43efefc275e3c77be}
+      \strng{fullhash}{fed60dccd19718b43efefc275e3c77be}
+      \strng{bibnamehash}{fed60dccd19718b43efefc275e3c77be}
+      \strng{authorbibnamehash}{fed60dccd19718b43efefc275e3c77be}
+      \strng{authornamehash}{fed60dccd19718b43efefc275e3c77be}
+      \strng{authorfullhash}{fed60dccd19718b43efefc275e3c77be}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{2019 1st International Conference on Advances in Science, Engineering and Robotics Technology (ICASERT)}
+      \field{note}{docs/Q-Learning\_Based\_Particle\_Swarm\_Optimization\_Algorithm\_for\_Optimal\_Path\_Planning\_of\_Swarm\_of\_Mobile\_Robots.pdf}
+      \field{title}{{Q}-Learning Based Particle Swarm Optimization Algorithm for Optimal Path Planning of Swarm of Mobile Robots}
+      \field{year}{2019}
+      \field{pages}{1\bibrangedash 5}
+      \range{pages}{5}
+      \verb{doi}
+      \verb 10.1109/ICASERT.2019.8934450
+      \endverb
+    \endentry
+    \entry{li2022qualityoriented}{article}{}
+      \name{author}{5}{}{%
+        {{hash=baf69039ddfcab5fe710d2b0cbbea4ac}{%
+           family={Li},
+           familyi={L\bibinitperiod},
+           given={Dongcheng},
+           giveni={D\bibinitperiod}}}%
+        {{hash=4bce5aab067086f5706586aacd2fba15}{%
+           family={Yin},
+           familyi={Y\bibinitperiod},
+           given={Wangping},
+           giveni={W\bibinitperiod}}}%
+        {{hash=6fadf11557d0cce565a8fb5a47667a78}{%
+           family={Wong},
+           familyi={W\bibinitperiod},
+           given={W.\bibnamedelimi Eric},
+           giveni={W\bibinitperiod\bibinitdelim E\bibinitperiod}}}%
+        {{hash=4cbf23c9a84cc0d4cb6b3a23b34f5676}{%
+           family={Jian},
+           familyi={J\bibinitperiod},
+           given={Mingyong},
+           giveni={M\bibinitperiod}}}%
+        {{hash=6a8b95d700ff154de3f12adebb457875}{%
+           family={Chau},
+           familyi={C\bibinitperiod},
+           given={Matthew},
+           giveni={M\bibinitperiod}}}%
+      }
+      \strng{namehash}{6b45ca21d71f136db00ea427d174c054}
+      \strng{fullhash}{fac1984111a4c6ed2db764865796c03b}
+      \strng{bibnamehash}{fac1984111a4c6ed2db764865796c03b}
+      \strng{authorbibnamehash}{fac1984111a4c6ed2db764865796c03b}
+      \strng{authornamehash}{6b45ca21d71f136db00ea427d174c054}
+      \strng{authorfullhash}{fac1984111a4c6ed2db764865796c03b}
+      \field{extraname}{1}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{IEEE Access}
+      \field{note}{docs/Quality-Oriented\_Hybrid\_Path\_Planning\_Based\_on\_A\_and\_Q-Learning\_for\_Unmanned\_Aerial\_Vehicle.pdf}
+      \field{title}{Quality-Oriented Hybrid Path Planning Based on {A}$^*$ and {Q}-Learning for Unmanned Aerial Vehicle}
+      \field{volume}{10}
+      \field{year}{2022}
+      \field{pages}{7664\bibrangedash 7674}
+      \range{pages}{11}
+      \verb{doi}
+      \verb 10.1109/ACCESS.2021.3139534
+      \endverb
+    \endentry
+    \entry{li2025qlmopso}{article}{}
+      \name{author}{3}{}{%
+        {{hash=1aa3b12cced3fab14d54d7a13418db79}{%
+           family={Li},
+           familyi={L\bibinitperiod},
+           given={Wuke},
+           giveni={W\bibinitperiod}}}%
+        {{hash=593ea7f82dd02f3b0882caa018aef158}{%
+           family={Xiong},
+           familyi={X\bibinitperiod},
+           given={Ying},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=315ca54fb9ceeeee2a739ed0c80199d9}{%
+           family={Xiong},
+           familyi={X\bibinitperiod},
+           given={Qi},
+           giveni={Q\bibinitperiod}}}%
+      }
+      \strng{namehash}{9607531e96aca2af8756ddc632688b2f}
+      \strng{fullhash}{9607531e96aca2af8756ddc632688b2f}
+      \strng{bibnamehash}{9607531e96aca2af8756ddc632688b2f}
+      \strng{authorbibnamehash}{9607531e96aca2af8756ddc632688b2f}
+      \strng{authornamehash}{9607531e96aca2af8756ddc632688b2f}
+      \strng{authorfullhash}{9607531e96aca2af8756ddc632688b2f}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Symmetry}
+      \field{note}{docs/Reinforcement Learning-Guided Particle Swarm Optimization.pdf}
+      \field{number}{8}
+      \field{title}{Reinforcement Learning-Guided Particle Swarm Optimization for Multi-Objective Unmanned Aerial Vehicle Path Planning}
+      \field{volume}{17}
+      \field{year}{2025}
+      \field{pages}{1292}
+      \range{pages}{1}
+      \verb{doi}
+      \verb 10.3390/sym17081292
+      \endverb
+    \endentry
+    \entry{li2024multiauvsearch}{article}{}
+      \name{author}{6}{}{%
+        {{hash=9dadd9ccb758844fc104308dc76f7be1}{%
+           family={Li},
+           familyi={L\bibinitperiod},
+           given={Yueming},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=86bf26c68aee0699bddaf717e9e0b8dd}{%
+           family={Ma},
+           familyi={M\bibinitperiod},
+           given={Mingquan},
+           giveni={M\bibinitperiod}}}%
+        {{hash=3f63d8de2975d0bddc2dd877029a2cae}{%
+           family={Cao},
+           familyi={C\bibinitperiod},
+           given={Jian},
+           giveni={J\bibinitperiod}}}%
+        {{hash=1b0ff1b16fee1ee30d7597b35ebf5d3f}{%
+           family={Luo},
+           familyi={L\bibinitperiod},
+           given={Guobin},
+           giveni={G\bibinitperiod}}}%
+        {{hash=95cf0227388649796a35f69f0b8809d4}{%
+           family={Wang},
+           familyi={W\bibinitperiod},
+           given={Depeng},
+           giveni={D\bibinitperiod}}}%
+        {{hash=d7bf0a5e1082edea918b27fff9336488}{%
+           family={Chen},
+           familyi={C\bibinitperiod},
+           given={Weiqiang},
+           giveni={W\bibinitperiod}}}%
+      }
+      \strng{namehash}{91b31fa8d652ca13476e0473a4d21a9e}
+      \strng{fullhash}{1f4b5b0b647684992bea7995f89357f4}
+      \strng{bibnamehash}{1f4b5b0b647684992bea7995f89357f4}
+      \strng{authorbibnamehash}{1f4b5b0b647684992bea7995f89357f4}
+      \strng{authornamehash}{91b31fa8d652ca13476e0473a4d21a9e}
+      \strng{authorfullhash}{1f4b5b0b647684992bea7995f89357f4}
+      \field{extraname}{2}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Journal of Marine Science and Engineering}
+      \field{note}{docs/A Method for Multi-AUV Cooperative Area Search in Unknown Environment Based on Reinforcement Learning.pdf}
+      \field{number}{7}
+      \field{title}{A Method for Multi-{AUV} Cooperative Area Search in Unknown Environment Based on Reinforcement Learning}
+      \field{volume}{12}
+      \field{year}{2024}
+      \field{pages}{1194}
+      \range{pages}{1}
+      \verb{doi}
+      \verb 10.3390/jmse12071194
+      \endverb
+    \endentry
+    \entry{li2025multiauvmoving}{article}{}
+      \name{author}{4}{}{%
+        {{hash=16ad729c1f7e97f21873fdd01b674cd7}{%
+           family={Li},
+           familyi={L\bibinitperiod},
+           given={Le},
+           giveni={L\bibinitperiod}}}%
+        {{hash=d869e81c582622ca6cac0d6a9e1cf427}{%
+           family={An},
+           familyi={A\bibinitperiod},
+           given={Ruiqi},
+           giveni={R\bibinitperiod}}}%
+        {{hash=2ed38c5fe44c7e0b7eda0b19f46cd8a8}{%
+           family={Guo},
+           familyi={G\bibinitperiod},
+           given={Zhaozhi},
+           giveni={Z\bibinitperiod}}}%
+        {{hash=677116b54b0b8c8374557d0c26741645}{%
+           family={Gao},
+           familyi={G\bibinitperiod},
+           given={Jian},
+           giveni={J\bibinitperiod}}}%
+      }
+      \strng{namehash}{1306657956cc95df39c7691aa50d2a7f}
+      \strng{fullhash}{56df446c2b09b9aec4e14a9c516b95a2}
+      \strng{bibnamehash}{56df446c2b09b9aec4e14a9c516b95a2}
+      \strng{authorbibnamehash}{56df446c2b09b9aec4e14a9c516b95a2}
+      \strng{authornamehash}{1306657956cc95df39c7691aa50d2a7f}
+      \strng{authorfullhash}{56df446c2b09b9aec4e14a9c516b95a2}
+      \field{extraname}{3}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Journal of Marine Science and Engineering}
+      \field{note}{docs/Multi-AUV Cooperative Target Search Based on Reinforcement Learning and Bio-Inspired Algorithms..pdf}
+      \field{number}{11}
+      \field{title}{Multi-{AUV} Cooperative Search for Moving Targets Based on Multi-Agent Reinforcement Learning}
+      \field{volume}{13}
+      \field{year}{2025}
+      \field{pages}{2072}
+      \range{pages}{1}
+      \verb{doi}
+      \verb 10.3390/jmse13112072
+      \endverb
+    \endentry
+    \entry{hou2024uavswarmsearch}{article}{}
+      \name{author}{5}{}{%
+        {{hash=35ff70c1dab2d8f51690032efd35135f}{%
+           family={Hou},
+           familyi={H\bibinitperiod},
+           given={Yukai},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=acbe8c54f50e28c7d4d1861c1e644a37}{%
+           family={Zhao},
+           familyi={Z\bibinitperiod},
+           given={Jin},
+           giveni={J\bibinitperiod}}}%
+        {{hash=34ff1356d9184630ceb2c085ea29244e}{%
+           family={Zhang},
+           familyi={Z\bibinitperiod},
+           given={Rongqing},
+           giveni={R\bibinitperiod}}}%
+        {{hash=8ed13a70825e42214a8cda7c6e3cd8e9}{%
+           family={Cheng},
+           familyi={C\bibinitperiod},
+           given={Xiang},
+           giveni={X\bibinitperiod}}}%
+        {{hash=aa4bc40a5dea0992369dc39301cc4487}{%
+           family={Yang},
+           familyi={Y\bibinitperiod},
+           given={Liuqing},
+           giveni={L\bibinitperiod}}}%
+      }
+      \strng{namehash}{c0af779d348a87f3ffae8f881e525781}
+      \strng{fullhash}{e246b8c4aed521322a91230ccdfebf1f}
+      \strng{bibnamehash}{e246b8c4aed521322a91230ccdfebf1f}
+      \strng{authorbibnamehash}{e246b8c4aed521322a91230ccdfebf1f}
+      \strng{authornamehash}{c0af779d348a87f3ffae8f881e525781}
+      \strng{authorfullhash}{e246b8c4aed521322a91230ccdfebf1f}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{IEEE Transactions on Intelligent Vehicles}
+      \field{note}{docs/UAV\_Swarm\_Cooperative\_Target\_Search\_A\_Multi-Agent\_Reinforcement\_Learning\_Approach.pdf}
+      \field{number}{1}
+      \field{title}{{UAV} Swarm Cooperative Target Search: A Multi-Agent Reinforcement Learning Approach}
+      \field{volume}{9}
+      \field{year}{2024}
+      \field{pages}{568\bibrangedash 578}
+      \range{pages}{11}
+      \verb{doi}
+      \verb 10.1109/TIV.2023.3316196
+      \endverb
+    \endentry
     \entry{dewitt2020ippo}{misc}{}
       \name{author}{7}{}{%
         {{hash=edab48156868d6a118ab71661e525bae}{%
@@ -527,8 +1049,8 @@
       \strng{authorbibnamehash}{33eed1ea5a6839410fc3b0622f71b1bd}
       \strng{authornamehash}{027464729e3627cd5fcaa616810b284a}
       \strng{authorfullhash}{33eed1ea5a6839410fc3b0622f71b1bd}
-      \field{sortinit}{1}
-      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
       \field{labelnamesource}{author}
       \field{labeltitlesource}{title}
       \field{eprintclass}{cs.AI}
@@ -587,8 +1109,8 @@
       \strng{authorbibnamehash}{606d06502f6751690748eb76e0b730b7}
       \strng{authornamehash}{e8e7ddbab774078659f78cda4aa60fe4}
       \strng{authorfullhash}{606d06502f6751690748eb76e0b730b7}
-      \field{sortinit}{1}
-      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
       \field{labelnamesource}{author}
       \field{labeltitlesource}{title}
       \field{booktitle}{Advances in Neural Information Processing Systems 35 (NeurIPS), Datasets and Benchmarks Track}
@@ -635,9 +1157,9 @@
       \strng{authorbibnamehash}{a6c6ed5a5aeb74e536f16291276ae392}
       \strng{authornamehash}{8d6613ae59595910252a86a61babf6c8}
       \strng{authorfullhash}{a6c6ed5a5aeb74e536f16291276ae392}
-      \field{extraname}{1}
-      \field{sortinit}{1}
-      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extraname}{2}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
       \field{labelnamesource}{author}
       \field{labeltitlesource}{title}
       \field{eprintclass}{cs.LG}
@@ -652,60 +1174,43 @@
       \verb 1707.06347
       \endverb
     \endentry
-    \entry{schulman2015trpo}{inproceedings}{}
-      \name{author}{5}{}{%
-        {{hash=3e09bd2a25d237ebdaed560a07c0451e}{%
-           family={Schulman},
-           familyi={S\bibinitperiod},
-           given={John},
-           giveni={J\bibinitperiod}}}%
-        {{hash=c9545da54b33744da25943cdf66eadac}{%
-           family={Levine},
-           familyi={L\bibinitperiod},
-           given={Sergey},
+    \entry{ng1999policy}{inproceedings}{}
+      \name{author}{3}{}{%
+        {{hash=49e889356ff39df159461bc2895c7e16}{%
+           family={Ng},
+           familyi={N\bibinitperiod},
+           given={Andrew\bibnamedelima Y},
+           giveni={A\bibinitperiod\bibinitdelim Y\bibinitperiod}}}%
+        {{hash=3852e67d6ba58b4e2a2ac6ce5d71c4a1}{%
+           family={Harada},
+           familyi={H\bibinitperiod},
+           given={Daishi},
+           giveni={D\bibinitperiod}}}%
+        {{hash=143fa183327d9fcd9de18eec99d6ca97}{%
+           family={Russell},
+           familyi={R\bibinitperiod},
+           given={Stuart},
            giveni={S\bibinitperiod}}}%
-        {{hash=a901fd78fe1108cfa7d11129644967c7}{%
-           family={Moritz},
-           familyi={M\bibinitperiod},
-           given={Philipp},
-           giveni={P\bibinitperiod}}}%
-        {{hash=8a36116840c7ee55901618c95fd08a58}{%
-           family={Jordan},
-           familyi={J\bibinitperiod},
-           given={Michael\bibnamedelima I.},
-           giveni={M\bibinitperiod\bibinitdelim I\bibinitperiod}}}%
-        {{hash=e28d4ee199593959d8c29980a64f1974}{%
-           family={Abbeel},
-           familyi={A\bibinitperiod},
-           given={Pieter},
-           giveni={P\bibinitperiod}}}%
       }
-      \list{publisher}{1}{%
-        {PMLR}%
+      \list{organization}{1}{%
+        {Citeseer}%
       }
-      \strng{namehash}{8d6613ae59595910252a86a61babf6c8}
-      \strng{fullhash}{945251de1d41bc2767a541a8148f51da}
-      \strng{bibnamehash}{945251de1d41bc2767a541a8148f51da}
-      \strng{authorbibnamehash}{945251de1d41bc2767a541a8148f51da}
-      \strng{authornamehash}{8d6613ae59595910252a86a61babf6c8}
-      \strng{authorfullhash}{945251de1d41bc2767a541a8148f51da}
-      \field{extraname}{2}
-      \field{sortinit}{1}
-      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \strng{namehash}{04b4f38b08567b85d2b7665e50728e38}
+      \strng{fullhash}{04b4f38b08567b85d2b7665e50728e38}
+      \strng{bibnamehash}{04b4f38b08567b85d2b7665e50728e38}
+      \strng{authorbibnamehash}{04b4f38b08567b85d2b7665e50728e38}
+      \strng{authornamehash}{04b4f38b08567b85d2b7665e50728e38}
+      \strng{authorfullhash}{04b4f38b08567b85d2b7665e50728e38}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
       \field{labelnamesource}{author}
       \field{labeltitlesource}{title}
-      \field{booktitle}{Proceedings of the 32nd International Conference on Machine Learning (ICML)}
-      \field{eprinttype}{arXiv}
-      \field{note}{docs/TRPO.pdf}
-      \field{series}{Proceedings of Machine Learning Research}
-      \field{title}{Trust Region Policy Optimization}
-      \field{volume}{37}
-      \field{year}{2015}
-      \field{pages}{1889\bibrangedash 1897}
-      \range{pages}{9}
-      \verb{eprint}
-      \verb 1502.05477
-      \endverb
+      \field{booktitle}{Icml}
+      \field{title}{Policy invariance under reward transformations: Theory and application to reward shaping}
+      \field{volume}{99}
+      \field{year}{1999}
+      \field{pages}{278\bibrangedash 287}
+      \range{pages}{10}
     \endentry
   \enddatalist
 \endrefsection
