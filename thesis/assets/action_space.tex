@@ -1,0 +1,104 @@
+% ---------------------------------------------------------------------------
+% The 27-action discrete action space of the AUV agent.
+%
+% Requires in the preamble:
+%   \usepackage{tikz}
+%   \usetikzlibrary{arrows.meta}
+%
+% Use as:
+%   \begin{figure}[t]
+%     \centering
+%     \input{assets/action_space.tex}
+%     \caption{...}
+%     \label{fig:action-space}
+%   \end{figure}
+%
+% Action index convention (src/envs/oceananigans.py:213, itertools.product):
+%   a = 9(\Delta x + 1) + 3(\Delta y + 1) + (\Delta z + 1)
+%   \Delta x = surge (body x, forward), \Delta y = sway (body y, lateral),
+%   \Delta z = heave.  +z is DOWNWARD (agent.pos[2] = 0 is the surface), so
+%   \Delta z = +1 descends.  All 26 moving actions are unit-normalised.
+% ---------------------------------------------------------------------------
+\begin{tikzpicture}[
+    x=1cm, y=1cm,
+    cell/.style  = {draw=black!25, line width=0.4pt,
+                    minimum size=1.25cm, inner sep=0pt},
+    ctr/.style   = {draw=black!25, line width=0.4pt, fill=black!4,
+                    minimum size=1.25cm, inner sep=0pt},
+    arr/.style   = {-{Stealth[length=1.9mm,width=1.7mm]},
+                    line width=0.7pt, black!72},
+    sym/.style   = {line width=0.6pt, black!72},
+    idx/.style   = {font=\tiny\sffamily, text=black!50, inner sep=1.2pt},
+    hdr/.style   = {font=\small\bfseries, text=black!85},
+    sub/.style   = {font=\scriptsize, text=black!55},
+    axlab/.style = {font=\scriptsize\itshape, text=black!65},
+    leg/.style   = {font=\scriptsize, text=black!65},
+  ]
+
+  \def\cs{1.25}   % cell size
+  \def\gap{4.55}  % horizontal pitch between panels
+
+  % ---- three panels, one per vertical choice ------------------------------
+  \foreach \dz [count=\pn from 0] in {-1,0,1} {
+    \begin{scope}[xshift=\pn*\gap cm]
+
+      \foreach \sx in {-1,0,1} {
+        \foreach \sy in {-1,0,1} {
+          \pgfmathtruncatemacro{\aid}{9*(\sx+1) + 3*(\sy+1) + (\dz+1)}
+          \pgfmathsetmacro{\nrm}{sqrt(\sx*\sx + \sy*\sy)}
+
+          \ifdim \nrm pt > 0pt
+            \node[cell] (c) at (\sy*\cs, \sx*\cs) {};
+            \pgfmathsetmacro{\ux}{0.31*\cs*\sy/\nrm}
+            \pgfmathsetmacro{\uy}{0.31*\cs*\sx/\nrm}
+            \draw[arr] ([shift={(-\ux,-\uy)}]c.center)
+                    -- ([shift={( \ux, \uy)}]c.center);
+          \else
+            \node[ctr] (c) at (\sy*\cs, \sx*\cs) {};
+            \ifnum\dz=-1\relax   % pure ascent: out of the page
+              \draw[sym] (c.center) circle (0.17);
+              \fill[black!72] (c.center) circle (0.045);
+            \fi
+            \ifnum\dz=0\relax    % hold: the no-op
+              \fill[black!72] (c.center) circle (0.075);
+            \fi
+            \ifnum\dz=1\relax    % pure descent: into the page
+              \draw[sym] (c.center) circle (0.17);
+              \draw[sym] ([shift={(-0.12,-0.12)}]c.center)
+                      -- ([shift={( 0.12, 0.12)}]c.center);
+              \draw[sym] ([shift={(-0.12, 0.12)}]c.center)
+                      -- ([shift={( 0.12,-0.12)}]c.center);
+            \fi
+          \fi
+
+          \node[idx, anchor=south west]
+            at ([shift={(-0.45*\cs,-0.45*\cs)}]c.center) {\aid};
+        }
+      }
+
+      % panel headings
+      \ifnum\dz=-1\relax \node[hdr] at (0, 2.42) {Ascend};      \fi
+      \ifnum\dz=0\relax  \node[hdr] at (0, 2.42) {Hold depth};  \fi
+      \ifnum\dz=1\relax  \node[hdr] at (0, 2.42) {Descend};     \fi
+      \ifnum\dz=-1\relax \node[sub] at (0, 2.06) {$\Delta z = -1$ (up)};   \fi
+      \ifnum\dz=0\relax  \node[sub] at (0, 2.06) {$\Delta z = 0$};         \fi
+      \ifnum\dz=1\relax  \node[sub] at (0, 2.06) {$\Delta z = +1$ (down)}; \fi
+
+    \end{scope}
+  }
+
+  % ---- body-frame axes: an L-pair below-left of the first panel -----------
+  \draw[arr] (-2.55, -1.95) -- (-2.55, -1.05);
+  \node[axlab, rotate=90, anchor=south] at (-2.70, -1.50) {surge $\Delta x$};
+  \draw[arr] (-2.55, -1.95) -- (-1.65, -1.95);
+  \node[axlab, anchor=north] at (-2.10, -2.10) {sway $\Delta y$};
+
+  % ---- legend ------------------------------------------------------------
+  \node[leg, anchor=west] at (-2.95, -3.35)
+    {$\odot$~ascend in place \quad $\bullet$~hold, the no-op
+     \quad $\otimes$~descend in place};
+  \node[leg, anchor=west] at (-2.95, -3.78)
+    {Every one of the 26 moving actions is a unit vector: the commanded speed
+     is $v$ in all directions, so diagonals are no faster.};
+
+\end{tikzpicture}

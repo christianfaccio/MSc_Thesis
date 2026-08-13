@@ -34,7 +34,7 @@ while the latter to the local update of each agent.
 
 An agent is a point in the 3D space and its state is determined by four DoF: the 3D
 position and the yaw angle. Roll and pitch are not considered, and yaw is fixed during 
-an episode for simplicity. Agent control is achieved by three schemes:
+an episode for simplicity. Agent control is achieved by three schemes, as showed in Figure~\ref{fig:6dof}:
 \begin{enumerate}
     \item \textit{Depth}: Set to heave, such that the vertical velocity is taken as input;
     \begin{equation}
@@ -61,6 +61,13 @@ an episode for simplicity. Agent control is achieved by three schemes:
     \end{equation}
 \end{enumerate}
 
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.4\textwidth]{assets/6dof.jpg}
+    \caption{Representation of the 6 DoF of an AUV \cite{LEE2016301}.}
+    \label{fig:6dof}
+\end{figure}
+
 In this work, the action space is a discrete set of 27 actions, which corresponds to the 26 neighbors of a cell in a 3D grid plus the "stay" action. 
 Thus, each action corresponds to a movement in the continuous space that is discretized by the grid, and is splitted into the three components 
 as described above. The total magnitude of the velocity is fixed to $1 m/s$, which is a reasonable value for an AUV. It follows that, given the total velocity and the angle of the action in the horizontal and vertial 
@@ -70,7 +77,22 @@ dimensions, the three components of the velocity are computed as follows:
     v_y = v \cos(\theta) \sin(\phi) \quad\quad
     v_z = v \sin(\theta)
 \end{equation}
-where $\theta$ is the angle in the vertical plane and $\phi$ is the angle in the horizontal plane. The angles are computed based on the action index, which is a number between 0 and 26. 
+where $\theta$ is the angle in the vertical plane and $\phi$ is the angle in the horizontal plane. The angles are computed based on the action index, which is a number between 0 and 26. Figure~\ref{fig:action-space} illustrates this.
+
+\begin{figure}[t]
+    \centering
+    \input{assets/action_space.tex}
+    \caption{The 27 discrete actions, decomposed by the vertical component
+    $\Delta z$ into three horizontal keypads. Each cell shows the commanded
+    direction and its action index $a = 9(\Delta x + 1) + 3(\Delta y + 1) +
+    (\Delta z + 1)$, where $\Delta x$ is surge and $\Delta y$ is sway in the
+    body frame. Because $z$ is measured positive downward, $\Delta z = +1$
+    descends. The centre cell of each keypad is one of the three purely
+    vertical actions, with $a = 13$ the no-op. Normalising every triple to
+    unit length makes the commanded speed $v$ identical in all 26 directions,
+    so diagonal moves cover no more ground per step than axis-aligned ones.}
+    \label{fig:action-space}
+\end{figure}
 
 \section{Environment}
 
@@ -212,9 +234,81 @@ is transferred downward by turbulence.
 Surface stress plus rotation gives the classical Ekman spiral: the current at the surface
 is deflected to the right of the wind (northern hemisphere) and rotates further right with depth while decaying. 
 
+The resulting field is shown in Figure~\ref{fig:currents_velocities}. In the selected file, the horizontal currents' magnitude has
+an average of $0.1784m/s$, with a maximum value of $0.4545m/s$. The vertical one, instead, has an average of $0.0382m/s$ and a maximum of $0.1691m/s$, as can be seen in Figure~\ref{fig:currents_stats}.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{assets/currents_velocities.pdf}
+    \caption{Currents field at four different depths, with the color representing the magnitude of the velocity. The arrows represent the direction of the current.}
+    \label{fig:currents_velocities}
+\end{figure}
+
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{assets/currents_stats.pdf}
+    \caption{Currents statistics. The first plot shows the aggregate horizontal velocity magnitude distribution at varying depth. The second plot shows the vertical current field magnitude at fixed $y$, varying $x$ and depth. The third plot shows the overall horizontal magnitude distribution. The dark line refers to the agent's speed.}
+    \label{fig:currents_stats}
+\end{figure}
+
+Finally, Table~\ref{tab:currents_statistics} shows the overall statistics of the currents field across all the simulations used for training. 
+
+\begin{table}[t]
+\caption{Overall currents' statistics in the training simulations\label{tab:currents_statistics}}\vspace{0.25em} % adds some additional space between caption and \toprule, if desired.
+\centering{%
+\tagpdfsetup{table/header-rows={1}}
+\begin{tabular*}{\textwidth}{@{\hspace*{1.5em}}l@{\extracolsep{\fill}}ccccc@{\hspace*{1.5em}}}\toprule
+Quantity &
+Mean &
+Median &
+p95 &
+p99 &
+Max \\ \midrule
+$|u,v|$ horizontal & 0.1940 & 0.1915 & 0.3549 & 0.4051 & 0.7266 \\
+$|w|$ vertical & 0.0356 & 0.0241 & 0.1105 & 0.1709 & 0.4627 \\
+\bottomrule
+\end{tabular*}
+}%
+\end{table}
+
 \subsection{Salinity Field}
 
 Salinity is the second field of the environment, and it is the variable that alongside the turbidity defines the target zone for the agents.
 In this work it is computed by advecting $N$ salinity sources, initialized randomly at south and west walls at surface and with a random strength.
 At each timestep, the sources emit salinity particles, which are advected by the currents and corrected by a diffusion term that bounds the PSU 
 range to 10 PSU. That was a choice made either to have a navigable field with computable gradients and to resemble the realistic salinity range of the Gulf.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.45\textwidth]{assets/salinity_field.pdf}\hfill 
+    \includegraphics[width=0.45\textwidth]{assets/salinity_field_target.pdf}
+    \caption{Salinity field of a simulation. The left plot shows the salinity field in the 3D environment, with the color representing the PSU value. The right plot adds also the target zone, defined as the points that satisfy a salinity value of $43.852 \pm 0.15$ and a turbidity value of $0.4194\pm 0.05$.}
+    \label{fig:salinity_field}
+\end{figure}
+
+As can be seen in Figure~\ref{fig:salinity_field}, the PSU range is between $41.974$ and $45.913$, so the resulting PSU range is not 
+exactly 10 PSU, but it is still navigable and the gradients are informative for the agents. The target zone is defined as the points 
+that satisfy a given salinity and turbidity value, which are obtained from a sampled point in the environment at training time, 
+to ensure that the target zone is always reachable. Moreover, the default errors for the two fields are set to $0.15$ and $0.05$, respectively. 
+Table~\ref{tab:salinity_statistics} shows the overall statistics of the salinity field across all the simulations used for training.
+
+\begin{table}[t]
+\caption{Overall salinity statistics in the training simulations\label{tab:salinity_statistics}}\vspace{0.25em} % adds some additional space between caption and \toprule, if desired.
+\centering{%
+\tagpdfsetup{table/header-rows={1}}
+\begin{tabular*}{\textwidth}{@{\hspace*{1.5em}}l@{\extracolsep{\fill}}cccccc@{\hspace*{1.5em}}}\toprule
+Quantity &
+Mean &
+Median &
+p95 &
+p99 &
+Max &
+Min\\ \midrule
+$S$ [PSU] & 43.678 & 43.699 & 45.309 & 45.635 & 46.935 & 39.784 \\
+$|\nabla_{x,y}S|$ & 0.01571 & 0.01038 & 0.04825 & 0.07688 & 0.29711 & 0.0 \\
+$|\nabla_{z}S|$ & 0.02786 & 0.01469 & 0.10238 & 0.17587 & 0.73736 & 0.0 \\
+\bottomrule
+\end{tabular*}
+}%
+\end{table}
