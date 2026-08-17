@@ -251,3 +251,76 @@ Moreover, at success the agent receives a bonus of $20.0$, which makes the final
         20.0 & \text{if success}
     \end{cases}
 \end{equation}
+
+\section{Results}
+
+The trained policies were eight in total, given by the combination of the two algorithms (IPPO and MAPPO), with and without communication, and with two different numbers of agents (2 and 4). 
+Training of the policies with 2 agents was done for 10M timesteps and took 3-5 hours each, Figure~\ref{fig:training_2N} shows the episodic return, length and success rate during training.
+\begin{figure}[t]
+    \centering 
+    \includegraphics[width=\textwidth]{assets/fig7_training_curves_N2.pdf}
+    \caption{Training curves for 2 agent policies.}
+    \label{fig:training_2N}
+\end{figure}
+As can be seen, the agents start acting randomly, with a low success rate and a high episode length. As the training progresses,
+the agents learn to behave correctly and start reaching higher returns and success rates, with lower episode lengths. One small caveat
+is that since the target zone is sampled randomly at each episode, it may be so large that the agents just need to learn to go in the 
+target depth to reach the goal, creating a scenario where pure spawn luck can lead to success. This is reflected much more in the 
+training curves of the 4 agent policies, where the number of agents is higher and so the chance of one of them spawning close to 
+the target zone is much higher. In fact, Figure~\ref{fig:training_4N} shows flat curves, as if agents already start behaving optimally,
+but in reality the majority of the success is due to spawn luck. This, unfortunately, is an intrinsic limitation of the task, 
+since the target is an area and not a single point, and trying to avoid this by sampling a smaller region would introduce bias 
+in the training and create a false optimal policy. Training of the policies with 4 agents was done for 20M timesteps, with minibatch size of 48 and took 6-8 hours each. 
+\begin{figure}[t]
+    \centering 
+    \includegraphics[width=\textwidth]{assets/fig7_training_curves_N4.pdf}
+    \caption{Training curves for 4 agent policies.}
+    \label{fig:training_4N}
+\end{figure}
+
+Figure~\ref{fig:trajectory_2N} shows the trajectories developed during an episode by the IPPO policy without communication and using 2 agents. 
+From a horizontal point of view, they are as one might expect, showing willingness to reach the target area and fighting the currents in doing so.
+However, from a vertical point of view, the agents are doing a sort of oscillatory movement, going up and down in the water column. This is 
+probably due to the fact that different layers of depth present different salinity distributions, and so the agents may be induced to follow the 
+gradient of salinity in a vertical direction, instead of staying at the target depth. 
+
+\begin{figure}[t]
+    \centering 
+    \includegraphics[width=0.8\textwidth]{assets/trajectory_2N.png}
+    \caption{}
+    \label{fig:trajectory_2N}
+\end{figure}
+
+Figure~\ref{fig:trajectory_4N}, instead, shows the trajectories developed during an episode by the IPPO policy without communication and using 4 agents.
+From this figure, it is clear that the agents are trying to reach the target area, probably by following the filaments in the salinity field,
+but that they don't know where the target area is. As before, they are oscillating in the vertical direction, but this time they seem to stay 
+more near the target depth and at the surface. 
+
+\begin{figure}[t]
+    \centering 
+    \includegraphics[width=0.8\textwidth]{assets/trajectory_4N.png}
+    \caption{}
+    \label{fig:trajectory_4N}
+\end{figure}
+
+The developed policies create non-intuitive behaviors, which are difficult to understand if the whole environment is not visible.
+In fact, being it complex and made of currents, agents have developed a strategy that seems like following the salinity filaments,
+which are zones in the environment that contain more or less the same salinity value, and the target area should be located in one of them. 
+
+The results on the test set are shown in Figure~\ref{fig:success_matrix}. As can be seen, the success rate is higher when the agents 
+are randomly initialized in the environment, which is the same scenario they were trained on, and when they are initialized uniformly 
+in the spawning area. Moreover, when the target area is small, i.e. when the sampled point is rejected until the salinity value
+is in the extreme $5\%$ of its distribution at that depth layer, the success rate is lower, since it is a more difficult scenario. 
+All the policies perform better than a random agent, even though in certain cases like spawning at the origin the success rate is comparable to the random agent. 
+
+\begin{figure}[t]
+    \centering 
+    \includegraphics[width=0.8\textwidth]{assets/fig2_success_matrix.pdf}
+    \caption{}
+    \label{fig:success_matrix}
+\end{figure}
+
+Overall, IPPO without communication performs better with 4 agents, while MAPPO is comparable to it with 2 agents. This shows 
+that the use of a centralized critic is not always beneficial, and that independent agents in this task are an optimal solution.
+The use of communication, instead, is beneficial in the harder scenarios and when agents are distributed in the environment. 
+In the following chapter, the results are analyzed in more detail, and the effect of each component is analyzed in more depth.

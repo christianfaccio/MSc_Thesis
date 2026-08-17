@@ -82,7 +82,7 @@ BUDGETS = (100, 250, 500, 700, 1000, 1500, 2000, 3600)
 TASK_KEYS = ("netcdf_file", "domain", "target_mode", "target_percentile",
              "static_frame", "epsilon_salinity", "epsilon_turbidity",
              "v_agent", "dt", "frame_skip", "max_steps", "n_agents",
-             "eval_success_steps",
+             "eval_success_steps", "end_on_any_success",
              "spawn_mode", "min_spawn_distance", "spawn_max_tries",
              "max_cached_loaders")
 
@@ -148,6 +148,14 @@ def parse_args():
                         "policy's, typically 5.0)")
     p.add_argument("--success-steps", type=int, default=1,
                    help="consecutive in-zone steps counted as success (default 1)")
+    p.add_argument("--success-all", action="store_true",
+                   help="success_all evaluation mode, applied identically to every "
+                        "arm (episodes stay paired): the episode does NOT end on the "
+                        "first arrival — it runs on until EVERY agent has arrived or "
+                        "time runs out. Adds the success_all rate, time-to-all-"
+                        "arrived and a second McNemar block on the all-arrived "
+                        "outcome. Zero-shot probe: every policy stays exactly as "
+                        "trained (success_any); only the episode-end rule changes.")
     p.add_argument("--spawn-mode", type=str, default=None,
                    choices=["random", "origin", "max_dist"],
                    help="where the agents start, applied identically to every arm "
@@ -396,6 +404,13 @@ def run_arm(env, selector, base_seed, episodes, max_steps, multi_agent, dt_s,
         episode_success.append(dict(
             any=any(ep_succ),
             t_any=(min(ep_ts) if ep_ts else None),
+            # success_all lens (meaningful when the env runs with
+            # end_on_any_success=False, i.e. --success-all): everyone arrived,
+            # the sorted arrival steps, and the LAST arrival time.
+            all=all(ep_succ),
+            n_succeeded=int(sum(ep_succ)),
+            ts=sorted(ep_ts),
+            t_all=(max(ep_ts) if (ep_ts and all(ep_succ)) else None),
             coverage_redundancy=redundancy, nn_distance=nn,
             swarm_path=float(sum(
                 np.linalg.norm(np.diff(np.asarray(tr["pos"]), axis=0), axis=1).sum()
@@ -416,7 +431,8 @@ def _stat(agg, key, field="median", pct=False):
     return _fmt(v, pct)
 
 
-def print_table(labels, results, ep_stats, header, any_ts=None):
+def print_table(labels, results, ep_stats, header, any_ts=None,
+                success_all=False, all_ts=None):
     col_w = max(18, max(len(l) for l in labels) + 2)
     lab_w = 30
     total = lab_w + col_w * len(labels)
@@ -434,6 +450,19 @@ def print_table(labels, results, ep_stats, header, any_ts=None):
     row("success_any (episode)", lambda l: (
         f"{ep_stats[l]['any_rate'] * 100:.1f}% "
         f"[{ep_stats[l]['any_ci'][0] * 100:.0f},{ep_stats[l]['any_ci'][1] * 100:.0f}]"))
+    if success_all:
+        # success_all lens (episodes ran past the first arrival): everyone
+        # arrived, how many arrived on average, and the LAST arrival time —
+        # the "do the stragglers benefit from the swarm?" block.
+        row("success_all (episode)", lambda l: (
+            f"{ep_stats[l]['all_rate'] * 100:.1f}% "
+            f"[{ep_stats[l]['all_ci'][0] * 100:.0f},{ep_stats[l]['all_ci'][1] * 100:.0f}]"))
+        row("agents arrived (mean)", lambda l: _fmt(ep_stats[l].get("n_succeeded")))
+        if all_ts is not None:
+            row("t_all_reach (med, steps)",
+                lambda l: _fmt(median_t_any(all_ts[l])))
+        row("success_all@1500", lambda l: _fmt(
+            (results[l].get("success_all_at_budget") or {}).get("1500"), pct=True))
     row("per-agent success", lambda l: (
         f"{results[l]['success_rate'] * 100:.1f}% "
         f"[{results[l]['success_ci95'][0] * 100:.0f},{results[l]['success_ci95'][1] * 100:.0f}]"))
@@ -554,15 +583,19 @@ def make_plots(fig_dir, labels, colors, results, curves, any_ts, ep_stats,
     plt.close()
 
 
-def write_paired_csv(path, labels, any_by_label, episodes):
+def write_paired_csv(path, labels, any_by_label, episodes, all_by_label=None):
     with open(path, "w", newline="") as f:
         cols = ["episode"] + [f"{l}_any" for l in labels]
+        if all_by_label is not None:
+            cols += [f"{l}_all" for l in labels]
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         for ep in range(episodes):
             row = {"episode": ep}
             for l in labels:
                 row[f"{l}_any"] = int(any_by_label[l][ep])
+                if all_by_label is not None:
+                    row[f"{l}_all"] = int(all_by_label[l][ep])
             w.writerow(row)
 
 
@@ -601,6 +634,11 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
     task.netcdf_file = cli.netcdf_file or task.netcdf_file
     task.max_steps = cli.max_steps or task.max_steps
     task.eval_success_steps = cli.success_steps
+    # --success-all: every arm's env runs past the first arrival (success_all
+    # eval semantics). A TASK_KEY, so it is forced identically onto every arm
+    # and the episodes stay paired.
+    success_all = bool(getattr(cli, "success_all", False))
+    task.end_on_any_success = not success_all
     task.min_spawn_distance = cli.min_spawn_distance
     task.spawn_max_tries = cli.spawn_max_tries
     task.comms_radius_override = getattr(cli, "comms_radius", None)
@@ -672,6 +710,8 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
           f"__N{N}__{task.target_mode}__spawn-{task.spawn_mode}"
     if cli.min_spawn_distance > 0.0:
         tag += f"__d{int(cli.min_spawn_distance)}"
+    if success_all:
+        tag += "__success_all"
     out_dir = (os.path.join(cli.out_dir, f"N{N}") if cli.out_dir
                else os.path.join(ROOT, "stats", "out", tag))
     os.makedirs(out_dir, exist_ok=True)
@@ -697,11 +737,14 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
         print(f"Spawn        : >= {cli.min_spawn_distance:.0f} m from zone "
               f"(distant-start, {cli.spawn_max_tries} tries/agent)")
     print(f"Decode       : {cli.mode}")
+    print(f"Episode end  : "
+          f"{'success_ALL (runs past the first arrival)' if success_all else 'success_any (first arrival, as trained)'}")
     print(f"Out          : {out_dir}")
 
     results, curves = {}, {}
     per_agent_by_label, any_by_label, ep_stats = {}, {}, {}
     any_ts = {}
+    all_by_label, all_ts = {}, {}
     for l in labels:
         env, selector = arms[l]
         key = cache_keys.get(l)
@@ -720,7 +763,10 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
         per_agent_by_label[l] = per_agent
         any_by_label[l] = [bool(e["any"]) for e in episode_success]
         any_ts[l] = [e["t_any"] for e in episode_success]
+        all_by_label[l] = [bool(e.get("all", e["any"])) for e in episode_success]
+        all_ts[l] = [e.get("t_all") for e in episode_success]
         k_any = int(sum(any_by_label[l]))
+        k_all = int(sum(all_by_label[l]))
         n_ep = cli.episodes
         def _m(key):
             vals = [e[key] for e in episode_success if e.get(key) is not None]
@@ -728,16 +774,24 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
 
         ep_stats[l] = dict(
             any_rate=k_any / n_ep, any_ci=list(ev.wilson_ci(k_any, n_ep)), n=n_ep,
+            all_rate=k_all / n_ep, all_ci=list(ev.wilson_ci(k_all, n_ep)),
+            n_succeeded=_m("n_succeeded"),
             coverage_redundancy=_m("coverage_redundancy"),
             nn_distance=_m("nn_distance"), swarm_path=_m("swarm_path"))
-        print(f"  [{l:>16}] success_any {ep_stats[l]['any_rate']*100:5.1f}%  "
+        extra = (f"  success_all {ep_stats[l]['all_rate']*100:5.1f}%"
+                 if success_all else "")
+        print(f"  [{l:>16}] success_any {ep_stats[l]['any_rate']*100:5.1f}%{extra}  "
               f"per-agent {agg['success_rate']*100:5.1f}%  SPL {agg['spl_mean']:.3f}"
               f"{'   (reused: radius-invariant)' if reused else ''}")
 
     header = (f"{' vs '.join(labels)}   N={N}   "
-              f"{cli.episodes} paired episodes")
-    print_table(labels, results, ep_stats, header, any_ts=any_ts)
+              f"{cli.episodes} paired episodes"
+              + ("   [success_all]" if success_all else ""))
+    print_table(labels, results, ep_stats, header, any_ts=any_ts,
+                success_all=success_all, all_ts=all_ts)
     tests = print_mcnemar(labels, any_by_label, "success_any")
+    tests_all = (print_mcnemar(labels, all_by_label, "success_all")
+                 if success_all else None)
 
     make_plots(os.path.join(out_dir, "figures"), labels, colors, results, curves,
                any_ts, ep_stats, task.max_steps, N, cli.episodes)
@@ -756,26 +810,34 @@ def run_group(N, specs, cli, device, src_raw, base_seed, cache=None):
         labels=labels, include_random=cli.include_random,
         task_source=labels[0], n_agents=N,
         episodes=cli.episodes, base_seed=base_seed, max_steps=task.max_steps,
-        success_steps=cli.success_steps, netcdf_file=task.netcdf_file,
+        success_steps=cli.success_steps, success_all=success_all,
+        netcdf_file=task.netcdf_file,
         target_mode=task.target_mode, target_percentile=task.target_percentile,
         spawn_mode=task.spawn_mode, min_spawn_distance=cli.min_spawn_distance,
         decode=cli.mode,
         generated=datetime.now().isoformat(timespec="seconds"),
         episode_stats=ep_stats, results=results, mcnemar_success_any=mcnemar,
     )
+    if tests_all is not None:
+        summary["mcnemar_success_all"] = _mcnemar_block(tests_all)
     with open(os.path.join(out_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     ev.write_csv(os.path.join(out_dir, "per_episode.csv"), per_agent_by_label)
     write_paired_csv(os.path.join(out_dir, "paired_episodes.csv"),
-                     labels, any_by_label, cli.episodes)
+                     labels, any_by_label, cli.episodes,
+                     all_by_label=(all_by_label if success_all else None))
 
     print(f"\nWrote summary.json, per_episode.csv, paired_episodes.csv, figures/ -> {out_dir}")
     for env in {id(arms[l][0]): arms[l][0] for l in labels}.values():
         env.close()
 
     return dict(n_agents=N, labels=labels, pol_labels=pol_labels, kinds=kinds,
-                any_by_label=any_by_label,
-                any_ts=any_ts, ep_stats=ep_stats, results=results,
+                any_by_label=any_by_label, all_by_label=all_by_label,
+                any_ts=any_ts, all_ts=all_ts, ep_stats=ep_stats, results=results,
+                # per-agent-episode metric dicts (agent index in "_agent",
+                # episode in "_episode"): the raw per-AGENT arrival data, which
+                # the episode-level any_ts/all_ts summaries throw away.
+                per_agent_by_label=per_agent_by_label,
                 out_dir=out_dir, summary=summary)
 
 

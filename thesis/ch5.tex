@@ -1,5 +1,164 @@
 \chapter{Experiments}
 
-This chapter includes all the experiments that were 
-performed to test the obtained policies in different 
-contexts.
+A set of experiments was designed to evaluate the performance and usefulness of the components of the proposed framework. 
+For example, the effect of communication and CTDE on top of independent agents has not been yet evaluated,
+the increase of the number of agents seems not to bring any benefit except more coverage, and different scenarios 
+have not been tested. Thus, in this chapter, the results and relative analysis of the experiments are presented.
+
+Experiments are made of a set of 100 episodes each, and in each experiment some parameters are modified so that 
+their effect can be evaluated. These parameters are:
+\begin{itemize}
+    \item Communication radius: $\left\{\infty, 250, 0\right\}$ meters. This tests if communication is effectively used by the agents or if they perform better without it.
+    \item Target area selection: $\left\{random,tail\right\}$. When selected randomly, the target values are taken from a randomly
+    sampled point in the environment, which could lead to a target area that is quite large. When selected from the tail of the salinity distribution at that depth layer, 
+    the target area is definately smaller, and the task is more difficult;
+    \item Agent initialization: $\left\{random,origin,max\_dist\right\}$. When initialized randomly, each agent spawns in a random point of the environment. When initialized 
+    at the origin, each agent spawns in the same point ($0,0$). When initialized with a maximum distance, the agents are spawned uniformly in the spawning area, which is defined by the south and west boundaries at surface level.
+\end{itemize}
+
+For each combination of the parameters above, the trained policies are run for 100 episodes. In the following sections, each experiment is analyzed carefully.
+
+% TODO: revise
+\section{Communication and CTDE}
+
+Prior to any experiment, one can hypothesize that communication and CTDE, being them two ways of letting the agents share information, should help 
+with difficult targets and have a more pronounced effect when the number of agents is increased. In Figure~\ref{fig:mech_effect}, it is possible to 
+notice that communication sort of follows this idea, since it has a higher effect with a larger number of agents, and in general the effect is more
+pronounced with the harder targets. When targets are sampled randomly, there is not much evidence of communication effectiveness, but when target areas 
+are smaller, communication helps achieving success rates even $24\%$ higher than the relative baseline. MAPPO seems to benefit from communication when 
+more agents are present, while IPPO benefits from it when the target areas are small. Regarding CTDE, it seems that it hurts more then it helps. In fact,
+it seems to bring benefits only in the cases where agents don't have communication, signalling that the two mechanisms are complementary and should not be used together.
+Also, it seems that CTDE is more effective when the number of agents is small, and when they are initialized either in the same point of uniformly in the spawning area.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{assets/fig1_mechanism_effects.pdf}
+    \caption{}
+    \label{fig:mech_effect}
+\end{figure}
+
+\section{Agent initialization}
+
+How agents are initialized in the environment matters. Not only because they are able to cover more area but also because of the effect of communication.
+Figure~\ref{fig:agent_init_effect} shows the success rate and the time to success for the different initialization methods that were tested.
+In general, the best results are obtained when agents are initialized randomly in the environment, since they were trained on that scenario to avoid introducing bias.
+The other two methods are more realistic, since they simulate the release of real AUVs from the land. The origin initialization, 
+which spawns all the agents at the same point, is the worst case scenario in all cases. This is because the agents, made of the same policy, will tend to act 
+the same way under the same circumstances, and if they start at the same point, they are in similar states from the beginning. That way, they cover less
+area and the effect of communication is less pronounced since they can not know the target values at distant points in space, but are limited to close points' values.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.8\textwidth]{assets/fig8_spawn_effect.pdf}
+    \caption{}
+    \label{fig:agent_init_effect}
+\end{figure}
+
+The uniform initialization at the land boundaries is a better case, and it sort of reflects the random initialization, since results are similar. 
+In this case, agents are naturally spread in the environment, and they can communicate to the others the target values they find, which helps 
+the peers to know better about the environment even at distant points. 
+
+\section{Difficult targets}
+
+Since in this task the target to search for is an area and not a point, and it has been shown that on average it is quite large,
+what happens if a smaller area is used as a target? To carry on this experiment, a random point is sampled in the environment until
+the salinity value is in the extreme $5\%$ of its distribution at that depth layer. As Figure~\ref{fig:difficult_targets} shows, the success rate
+is naturally lower, but communication and CTDE help in these cases. In the figure, the plots show the fraction of episodes solved
+in function of the step budget, with 2 and 4 agents, in the random and tail targets. In the upper left plot, it is noticeable that
+the policies with communication or CTDE perform better than independent agents, which is not the case with random sampled targets. 
+
+\begin{figure}[t]
+    \centering 
+    \includegraphics[width=0.8\textwidth]{assets/fig9_hard_targets.pdf}
+    \caption{}
+    \label{fig:difficult_targets}
+\end{figure}
+
+In the 4 agents case, this does not hold, since here independent agents are the optimal choice. As said before, this is probably a natural 
+training limitation of this task, where the use of large zones as targets limit the learning of cooperation and optimal policies as the number of agents is increased,
+holding the environment fixed. Moreover, the effect of communication and CTDE is more pronounced with a higher step budget, i.e., when agents
+have more time to explore and understand the environment for the search task. This is easily noticeable in the case of difficult targets, since
+the line plotted does not have a linear trend as shown in the random targets' ones. 
+
+\section{Communication range}
+
+Agents were trained with an infinite value for the communication range either for simplicity and for the small environment domain,
+for which is assumed to exist a technology that let the agents communicate some bits for the targets' values and relative distance
+to each other. However, it is not said that communication is effectively used by the agents, and this experiment is made exactly for this 
+reason. 
+
+\begin{figure}
+    \centering 
+    \includegraphics[width=0.8\textwidth]{assets/fig3_comms_range.pdf}
+    \caption{}
+    \label{fig:communication_range}
+\end{figure}
+
+As Figure~\ref{fig:communication_range} shows, with 2 agents the communication is effectively used, since the success rate drops as the 
+communication range is cut. However, with 4 agents it is the opposite, i.e., they are better without communication, and this has been 
+extensively seen before, as independent agents in this case were the best option, and here is definately confirmed.
+
+\section{Scaling N}
+
+When increasing the number of agents, the first thing that comes to mind is that the success rate should increase just because there are more agents to cover the area. 
+However, it may not be the case for all the policies, due to the effect of communication and CTDE. In Figure~\ref{fig:scaling_n}, it is possible to see the success rate 
+and the penalized time to success as a function of the number of agents. In general, the success rate increases as the number of agents increases, and the time to success
+descreases as the number of agents increases, as one expects. The only exception is in this case MAPPO without communication, that seems to be worse with respect to all other policies.
+
+\begin{figure}[t]
+    \centering 
+    \includegraphics[width=0.8\textwidth]{assets/fig10_scaling_n.pdf}
+    \caption{}
+    \label{fig:scaling_n}
+\end{figure}
+
+\section{Time to success}
+
+The success rate is not the only metric that can be used to evaluate the performance of a policy. 
+In fact, it does not consider the time it takes for an agent to find the target zone. An agent that 
+always succeeds but takes a long time to do so may be less useful than an agent that succeeds less often
+but finds the target quickly, since batteries don't have infinite capacity. Therefore, a thorough analysis
+on the times to reach the target is necessary. Figure ~\ref{fig:time_to_first_success} shows on the left charts the median time
+to reach target for the first agent only, while on the right charts the same metric but weighted for the 
+number of episodes solved. 
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{assets/fig5_time_to_first_success.pdf}
+    \caption{}
+    \label{fig:time_to_first_success}
+\end{figure}
+
+As can be noticed, the faster times can be found in the scenarios with random sampled targets and randomly initialized agents, the one the policies are trained on. 
+The cases where targets are harder take longer to be solved, and the effect of communication in those cases is helpful, since it reduces the time to success.
+In the plot with 4 agents, there are larger times, but as can be seen in the right plot, weighted for the number of solved episodes the metric results in a 
+value comparable to the one with 2 agents. In fact, the median time is higher because more difficult episodes are solved. 
+
+Scenarios where success is determined by all agents reaching the target have also been considered. However, training on those specific scenarios is not trivial,
+since the reward must be carefully designed, since it is shared and some agents may not reach target. Therefore, the trained policies were evaluated on those
+cases, and the results are shown in Figures~\ref{fig:arrival_by_rank_N2} for 2 agents' policies and in Figure~\ref{fig:arrival_by_rank_N4} for 4 agents' policies. 
+The figures show the probability of reaching target based on the rank of the agent, as a function of the step budget.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.6\textwidth]{assets/fig6_arrival_by_rank_N2.pdf}
+    \caption{}
+    \label{fig:arrival_by_rank_N2}
+\end{figure}
+
+For 2 agents, the second agent reaches target with a lower probability than the first one, as expected. Moreover,
+the policies that results in better success rates are the ones that use either communication or CTDE. With an initialization 
+of the agents in the same point, the metric is higher at lower budgets, but with uniform initialization the results are more robust
+between the policies.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{assets/fig6_arrival_by_rank_N4.pdf}
+    \caption{}
+    \label{fig:arrival_by_rank_N4}
+\end{figure}
+
+Regarding the 4 agents' policies, the results are more interesting. In fact, MAPPO with communication seems to perform better than 
+all the other policies, in each case, and it is more pronounced in third and fourth agents with initialization at the same point. MAPPO 
+alone here performs poorly, showing that communication helps later agents to understand that they need to go where the agents that already 
+succeeded are.

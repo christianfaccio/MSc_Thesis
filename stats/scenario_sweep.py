@@ -145,6 +145,11 @@ def parse_args():
                         "comparable (default 0)")
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--success-steps", type=int, default=1)
+    p.add_argument("--success-all", action="store_true",
+                   help="run EVERY scenario in success_all evaluation mode: episodes "
+                        "run past the first arrival until every agent arrives or "
+                        "time runs out (see compare_single_vs_multi --success-all). "
+                        "Adds success_all / time-to-all-arrived matrices.")
     p.add_argument("--spawn-max-tries", type=int, default=200)
     p.add_argument("--max-cached-loaders", type=int, default=None,
                    help="per-arm NetCDF loader LRU cap (default: as trained, 8). "
@@ -197,7 +202,8 @@ def scenario_cli(base, scenario, out_dir):
         baseline=base.baseline, netcdf_file=base.netcdf_file,
         episodes=base.episodes, seed=base.seed, max_steps=base.max_steps,
         target_mode=None, target_percentile=base.target_percentile,
-        success_steps=base.success_steps, spawn_mode=None,
+        success_steps=base.success_steps,
+        success_all=getattr(base, "success_all", False), spawn_mode=None,
         min_spawn_distance=0.0, spawn_max_tries=base.spawn_max_tries,
         comms_radius=None, mode=base.mode,
         max_cached_loaders=base.max_cached_loaders,
@@ -224,7 +230,9 @@ def _strip(name, scenario, elapsed, groups):
         groups={str(n): dict(labels=g["labels"], pol_labels=g["pol_labels"],
                              kinds=g["kinds"], ep_stats=g["ep_stats"],
                              any_by_label=g["any_by_label"],
-                             any_ts=g["any_ts"], out_dir=g["out_dir"],
+                             all_by_label=g.get("all_by_label", {}),
+                             any_ts=g["any_ts"], all_ts=g.get("all_ts", {}),
+                             out_dir=g["out_dir"],
                              spl={l: g["results"][l]["spl_mean"] for l in g["labels"]})
                 for n, g in groups.items()})
 
@@ -331,6 +339,8 @@ def matrix(results, n, baseline_label):
             cells[(l, r["name"])] = dict(
                 any_rate=st["any_rate"],
                 t_any=cs.median_t_any(g["any_ts"][l]),
+                all_rate=st.get("all_rate"),
+                t_all=cs.median_t_any(g.get("all_ts", {}).get(l, [])),
                 coverage_redundancy=st.get("coverage_redundancy"),
                 swarm_path=st.get("swarm_path"), spl=g["spl"][l],
                 margin=margin, baseline=base)
@@ -370,7 +380,7 @@ def print_matrix(title, arms, names, cells, field, kind, note=""):
 
 
 def write_matrix_csv(path, arms, names, cells, n):
-    fields = ["any_rate", "t_any", "coverage_redundancy",
+    fields = ["any_rate", "t_any", "all_rate", "t_all", "coverage_redundancy",
               "swarm_path", "spl"]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["n_agents", "arm", "scenario", "baseline",
@@ -496,6 +506,7 @@ def main():
     # ---- cross-scenario matrices --------------------------------------- #
     payload = dict(generated=datetime.now().isoformat(timespec="seconds"),
                    episodes=cli.episodes, base_seed=cli.seed, decode=cli.mode,
+                   success_all=cli.success_all,
                    n_agents=ns, elapsed_min=total_min,
                    spawn_modes=list(cli.spawn_modes),
                    target_modes=list(cli.target_modes),
@@ -521,6 +532,15 @@ def main():
                      arms, names, cells, "t_any", "int",
                      note="trajectory efficiency; compare only between arms with "
                           "similar success_any in the same cell")
+        if cli.success_all:
+            print_matrix(f"success_all (%)  N={n}", arms, names, cells,
+                         "all_rate", "pct",
+                         note="every agent arrived (episodes ran past the first "
+                              "arrival); censored at max_steps")
+            print_matrix(f"t_all_reach (median steps, all-arrived only)  N={n}",
+                         arms, names, cells, "t_all", "int",
+                         note="LAST arrival time; compare only between arms with "
+                              "similar success_all in the same cell")
         print_matrix(f"coverage redundancy  N={n}", arms, names, cells,
                      "coverage_redundancy", "num",
                      note="1.0 = perfectly disjoint search, 1/N = everyone swept "

@@ -85,6 +85,14 @@ def parse_args():
     p.add_argument("--success-steps", type=int, default=1,
                    help="consecutive in-zone steps counted as success for THIS eval "
                         "(default 1 = 'reached the zone'; training often used 3)")
+    p.add_argument("--success-all", action="store_true",
+                   help="success_all evaluation mode: the episode does NOT end on the "
+                        "first arrival — it runs on until EVERY agent has arrived or "
+                        "time runs out. Adds the success_all rate, per-arrival-rank "
+                        "times and time-to-all-arrived to the report. Zero-shot "
+                        "generalization probe: the policy stays exactly as trained "
+                        "(success_any), only the episode-end rule changes. Expect "
+                        "censoring at max_steps — stragglers may time out.")
     p.add_argument("--spawn-mode", type=str, default=None,
                    choices=["random", "origin", "max_dist"],
                    help="override where the agents start (default: the checkpoint's). "
@@ -137,6 +145,9 @@ def build_env(args):
         static_frame=getattr(args, "static_frame", True),
         success_steps_required=getattr(args, "eval_success_steps", 1),
         max_cached_loaders=getattr(args, "max_cached_loaders", 8),
+        # True (default) = success_any, the training semantics; False =
+        # success_all eval mode (--success-all): run past the first arrival.
+        end_on_any_success=getattr(args, "end_on_any_success", True),
         epsilon_salinity=getattr(args, "epsilon_salinity", 0.3),
         epsilon_turbidity=getattr(args, "epsilon_turbidity", 0.05),
         sigma_s=getattr(args, "sigma_s", 3.0),
@@ -406,6 +417,16 @@ def aggregate(per_agent, episode_success):
     k = int(sum(succ))
     lo, hi = wilson_ci(k, n)
     succ_only = [m for m in per_agent if m["success"]]
+    # Arrival-rank view of the same data: e["ts"] is the episode's sorted list
+    # of arrival steps, so rank 1 = the winner (== t_any), rank 2 = the first
+    # straggler, ... Under success_any every list has at most one entry; the
+    # higher ranks only fill in under --success-all. Rank-r stats are computed
+    # over the episodes where at least r agents arrived (censoring-aware).
+    max_rank = max((len(e.get("ts", [])) for e in episode_success), default=0)
+    steps_by_rank = {str(r): _stats([e["ts"][r - 1] for e in episode_success
+                                     if len(e.get("ts", [])) >= r])
+                     for r in range(1, max_rank + 1)}
+    t_alls = [e.get("t_all") for e in episode_success]
     return dict(
         n_agent_episodes=n,
         success_rate=(k / n if n else None),
@@ -414,13 +435,25 @@ def aggregate(per_agent, episode_success):
         spl_mean=float(np.mean([m["spl"] for m in per_agent])) if n else None,
         # episode-level swarm outcomes
         episode_success_any=float(np.mean([e["any"] for e in episode_success])) if episode_success else None,
+        # success_all lens: every agent arrived (== success_any for N=1; under
+        # the success_any episode rule it is ~0 for N>1 by construction, since
+        # the episode ends at the first arrival — only meaningful with
+        # --success-all).
+        episode_success_all=(float(np.mean([e.get("all", e["any"]) for e in episode_success]))
+                             if episode_success else None),
+        n_succeeded=_stats([e.get("n_succeeded") for e in episode_success]),
         # success_any within a step budget T — separates genuine navigation from
         # slow diffusive luck (a random walk keeps climbing with budget; a real
         # navigator saturates early). t_any = earliest success in the episode.
         success_at_budget={str(T): float(np.mean(
             [e["t_any"] is not None and e["t_any"] <= T for e in episode_success]))
             for T in (100, 250, 500, 700, 1000, 1500, 2000, 3600)} if episode_success else None,
+        success_all_at_budget={str(T): float(np.mean(
+            [t is not None and t <= T for t in t_alls]))
+            for T in (100, 250, 500, 700, 1000, 1500, 2000, 3600)} if episode_success else None,
         # timing / geometry
+        steps_to_all_success=_stats([t for t in t_alls if t is not None]),
+        steps_to_success_by_rank=steps_by_rank,
         steps_to_success=_stats([m["steps_to_success"] for m in succ_only]),
         time_to_success_s=_stats([m["time_s"] for m in succ_only]),
         path_efficiency_success=_stats([m["path_efficiency"] for m in succ_only]),
@@ -439,7 +472,7 @@ def aggregate(per_agent, episode_success):
 # --------------------------------------------------------------------------- #
 # reporting
 # --------------------------------------------------------------------------- #
-def print_table(results, header):
+def print_table(results, header, success_all=False):
     modes = list(results.keys())
     print("\n" + "=" * 74)
     print(header)
@@ -468,6 +501,25 @@ def print_table(results, header):
          if a.get("success_at_budget") else "-"))
     line("  success_any@1500 steps", lambda a: (f"{a['success_at_budget']['1500']*100:.1f}%"
          if a.get("success_at_budget") else "-"))
+    if success_all:
+        # The success_all lens (only honest when the episodes ran with
+        # --success-all): everyone-arrived rate, mean arrivals per episode,
+        # the LAST arrival time, and the per-rank arrival times (rank 1 = the
+        # winner = t_any; rank 2+ = the stragglers, each conditioned on that
+        # many agents having arrived).
+        line("episode success_all", lambda a: stat(a, "episode_success_all", None, pct=True))
+        line("  success_all@700 steps", lambda a: (f"{a['success_all_at_budget']['700']*100:.1f}%"
+             if a.get("success_all_at_budget") else "-"))
+        line("  success_all@1500 steps", lambda a: (f"{a['success_all_at_budget']['1500']*100:.1f}%"
+             if a.get("success_all_at_budget") else "-"))
+        line("agents arrived (mean)", lambda a: stat(a, "n_succeeded", "mean"))
+        line("steps to ALL arrived (med)", lambda a: stat(a, "steps_to_all_success"))
+        ranks = sorted({int(r) for m in modes
+                        for r in results[m].get("steps_to_success_by_rank", {})})
+        for r in ranks:
+            line(f"  arrival #{r} steps (med)",
+                 lambda a, r=r: (stat({"s": a["steps_to_success_by_rank"][str(r)]}, "s")
+                                 if str(r) in a.get("steps_to_success_by_rank", {}) else "-"))
     line("steps to success (med)", lambda a: stat(a, "steps_to_success"))
     line("time to success s (med)", lambda a: stat(a, "time_to_success_s"))
     line("path eff. success (med)", lambda a: stat(a, "path_efficiency_success"))
@@ -482,14 +534,16 @@ def print_table(results, header):
     print("=" * 74)
 
 
-def save_plots(fig_dir, curves, per_agent_by_mode, t_any_by_mode=None, max_steps=None):
+def save_plots(fig_dir, curves, per_agent_by_mode, t_any_by_mode=None, max_steps=None,
+               t_all_by_mode=None):
     os.makedirs(fig_dir, exist_ok=True)
     colors = {"greedy": "tab:blue", "stochastic": "tab:orange",
               "random": "tab:gray", "gradient": "tab:green"}
 
     # 0) success within a step budget (empirical CDF of the episode's success
     #    time) — a navigator saturates early, diffusion climbs forever, so the
-    #    SHAPE separates skill from luck.
+    #    SHAPE separates skill from luck. In success_all mode the dashed curve
+    #    is the ALL-arrived CDF (last arrival), always at or below the solid one.
     if t_any_by_mode:
         plt.figure(figsize=(7, 5))
 
@@ -504,6 +558,8 @@ def save_plots(fig_dir, curves, per_agent_by_mode, t_any_by_mode=None, max_steps
 
         for mode, ts in t_any_by_mode.items():
             _cdf(ts, "-", mode)
+        for mode, ts in (t_all_by_mode or {}).items():
+            _cdf(ts, "--", f"{mode} (all arrived)")
         plt.xlabel("step budget T"); plt.ylabel("episode success within T")
         plt.title("Success vs step budget"); plt.ylim(0, 1.02)
         if max_steps:
@@ -586,6 +642,9 @@ def main():
         if cli.spawn_mode != "random":
             args.min_spawn_distance = 0.0
     args.eval_success_steps = cli.success_steps
+    # --success-all: run the episode past the first arrival (success_all eval
+    # semantics); the policy itself is unchanged, only the episode-end rule.
+    args.end_on_any_success = not cli.success_all
 
     env = build_env(args)
     multi_agent = int(a.get("n_agents", 1)) > 1
@@ -606,7 +665,8 @@ def main():
     # against test/ vs train/ or random/gradient don't collide.
     split = os.path.basename(str(args.netcdf_file).rstrip("/")) if cli.netcdf_file else None
     tag = f"{run_name}__iter{it}" + (f"__{split}" if split else "") \
-        + (f"__{cli.policy}" if cli.policy != "checkpoint" else "")
+        + (f"__{cli.policy}" if cli.policy != "checkpoint" else "") \
+        + ("__success_all" if cli.success_all else "")
     out_dir = cli.out_dir or os.path.join(ROOT, "stats", "out", tag)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -617,6 +677,7 @@ def main():
           f"n_agents={env.n_agents}, obs_dim={int(np.prod(env.observation_space.shape))}")
     print(f"Episodes   : {cli.episodes} per mode, base seed {base_seed}, "
           f"max_steps={args.max_steps}, success_steps={cli.success_steps}")
+    print(f"Episode end: {'success_ALL (runs past the first arrival)' if cli.success_all else 'success_any (first arrival, as trained)'}")
     print(f"Field      : {args.netcdf_file}  (eps_S={env.epsilon_salinity}, eps_tau={env.epsilon_turbidity})")
     print(f"Out        : {out_dir}")
 
@@ -631,6 +692,7 @@ def main():
         mode_selectors = {"gradient": make_gradient_selector(env)}
 
     results, curves, per_agent_by_mode, t_any_by_mode = {}, {}, {}, {}
+    t_all_by_mode = {}
     for mode, select_actions in mode_selectors.items():
         per_agent, traces_all, episode_success = [], [], []
         for ep in range(cli.episodes):
@@ -645,27 +707,36 @@ def main():
                 ep_succ.append(m["success"])
                 if m["success"]:
                     ep_ts.append(m["steps_to_success"])
-            # t_any = earliest agent success in the episode; the episode ends
-            # there, so it is also the episode's length.
+            # t_any = earliest agent success; under success_any the episode ends
+            # there. ts (sorted arrival steps) and t_all (last arrival, only when
+            # EVERYONE arrived) feed the success_all lens — meaningful with
+            # --success-all, where the episode runs past the first arrival.
             episode_success.append(dict(
                 any=any(ep_succ),
-                t_any=(min(ep_ts) if ep_ts else None)))
+                t_any=(min(ep_ts) if ep_ts else None),
+                all=all(ep_succ),
+                n_succeeded=int(sum(ep_succ)),
+                ts=sorted(ep_ts),
+                t_all=(max(ep_ts) if (ep_ts and all(ep_succ)) else None)))
         results[mode] = aggregate(per_agent, episode_success)
         curves[mode] = approach_curve(traces_all)
         per_agent_by_mode[mode] = per_agent
         t_any_by_mode[mode] = [e["t_any"] for e in episode_success]
+        t_all_by_mode[mode] = [e["t_all"] for e in episode_success]
         print(f"  [{mode}] done: success {results[mode]['success_rate']*100:.1f}%  "
               f"SPL {results[mode]['spl_mean']:.3f}")
 
-    header = f"{run_name}  (iter {it})  —  {cli.episodes} episodes/mode"
-    print_table(results, header)
+    header = f"{run_name}  (iter {it})  —  {cli.episodes} episodes/mode" \
+        + ("  [success_all]" if cli.success_all else "")
+    print_table(results, header, success_all=cli.success_all)
 
     summary = dict(
         checkpoint=cli.checkpoint, run_name=run_name, iteration=it,
         policy=cli.policy,
         multi_agent=multi_agent, n_agents=env.n_agents,
         episodes=cli.episodes, base_seed=base_seed, max_steps=args.max_steps,
-        success_steps=cli.success_steps, netcdf_file=args.netcdf_file,
+        success_steps=cli.success_steps, success_all=cli.success_all,
+        netcdf_file=args.netcdf_file,
         epsilon_salinity=env.epsilon_salinity, epsilon_turbidity=env.epsilon_turbidity,
         generated=datetime.now().isoformat(timespec="seconds"),
         results=results,
@@ -674,7 +745,8 @@ def main():
         json.dump(summary, f, indent=2)
     write_csv(os.path.join(out_dir, "per_episode.csv"), per_agent_by_mode)
     save_plots(os.path.join(out_dir, "figures"), curves, per_agent_by_mode,
-               t_any_by_mode, args.max_steps)
+               t_any_by_mode, args.max_steps,
+               t_all_by_mode=(t_all_by_mode if cli.success_all else None))
 
     print(f"\nWrote summary.json, per_episode.csv, figures/ -> {out_dir}")
     env.close()

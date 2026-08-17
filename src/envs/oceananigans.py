@@ -51,6 +51,7 @@ class OceananigansEnv(gym.Env):
                  success_bonus: float = 20.0,       # sparse reward on reaching the target
                  static_frame: bool = True,         # NetCDF: freeze one random snapshot per episode (no time evolution)
                  success_steps_required: int = 1,   # consecutive in-zone steps needed to terminate as success; >1 forces the agent to arrive AND hold (kills single-step luck crossings on turbulent fields)
+                 end_on_any_success: bool = True,   # True = success_any (episode ends on the FIRST arrival — the training semantics); False = success_all EVALUATION mode: the episode runs on until every agent has arrived or time runs out, so the stragglers' arrival times are measurable. Eval-only: training with False re-opens the finish-last bonus pathology (see the episode-end comment in step())
                  max_cached_loaders: int = 8,       # LRU cap on cached FieldLoaders (~90 MB each) per env instance
                  epsilon_salinity: float = 0.3,     # success tolerance on |S - S*| (PSU); size to ~3% of the field's per-snapshot span
                  epsilon_turbidity: float = 0.05,   # success tolerance on |τ - τ*|   TODO: try with epsilon turbidity bound to meters
@@ -98,6 +99,7 @@ class OceananigansEnv(gym.Env):
                 "debug baseline env; reset() always freezes one snapshot.")
         self.static_frame = static_frame
         self._success_steps_required = int(success_steps_required)
+        self.end_on_any_success = bool(end_on_any_success)
         if target_mode not in ("random", "tail"):
             raise NotImplementedError(
                 f"target_mode={target_mode!r} is not implemented in this env "
@@ -132,6 +134,10 @@ class OceananigansEnv(gym.Env):
         self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
+        # Per-agent arrival step (NaN until that agent succeeds). Under
+        # success_any only the winner's entry is ever set; under success_all
+        # (end_on_any_success=False) it fills in as the stragglers arrive.
+        self._success_step = np.full(self.n_agents, np.nan)
 
         # --- team reward ---
         # The reward is a weighted sum of THREE potentials, each a function of the
@@ -601,6 +607,7 @@ class OceananigansEnv(gym.Env):
 
         self._in_zone_steps = np.zeros(self.n_agents, dtype=np.int64)
         self._success = np.zeros(self.n_agents, dtype=bool)
+        self._success_step = np.full(self.n_agents, np.nan)
         self._prev_potential = np.zeros(self.n_agents, dtype=np.float64)
         self._prev_difference = np.zeros(self.n_agents, dtype=np.float64)
         self._prev_separation = np.zeros(self.n_agents, dtype=np.float64)
@@ -808,6 +815,7 @@ class OceananigansEnv(gym.Env):
             if terminated_i:
                 self._success[i] = True
                 newly_succeeded[i] = True
+                self._success_step[i] = self.t_step
                 if self._first_success_step is None:
                     self._first_success_step = self.t_step
                 if not self.shared_success_bonus:
@@ -827,26 +835,32 @@ class OceananigansEnv(gym.Env):
 
         terminateds = self._success.copy()
         out_of_time = self.t_step >= self.max_steps
-        # SUCCESS_ANY is the only episode semantics: the episode ends on the FIRST
+        # SUCCESS_ANY is the TRAINING semantics: the episode ends on the FIRST
         # arrival, because the swarm's job is to make SOMEONE reach the single
-        # target zone. The all-must-arrive variant was removed — it has no
-        # operational analogue (there is one zone, not N) and its reward is
-        # pathological for N >= 3: an agent freezes on arrival and is masked out
-        # of the loss, so finishing early forfeits every teammate bonus still to
-        # come and the optimal play is to stall until last.
-        episode_over = out_of_time or bool(terminateds.any())
+        # target zone. The all-must-arrive variant has no training analogue —
+        # its reward is pathological: an agent freezes on arrival and is masked
+        # out of the loss, so finishing early forfeits every teammate bonus
+        # still to come and the optimal play is to stall until last.
+        # end_on_any_success=False re-enables it for EVALUATION only: the
+        # episode runs on until every agent has arrived (or time runs out), so
+        # the stragglers' arrival times — undefined under success_any — become
+        # measurable (zero-shot success_all generalization of a trained policy).
+        team_terminal = bool(terminateds.any() if self.end_on_any_success
+                             else terminateds.all())
+        episode_over = out_of_time or team_terminal
         truncateds = np.full(self.n_agents, episode_over) & (~self._success)
 
         # TIME-LIMIT vs TEAM-TERMINAL. A trainer must bootstrap γV(s') for an agent
         # cut off by a time limit (the episode would have continued) but NOT for one
         # whose episode genuinely ended. The non-succeeding agents are flagged
-        # `truncated`, yet a teammate's success is a TERMINAL event for the whole
-        # team — there is no future to bootstrap. Bootstrapping it while also paying
-        # the shared success bonus double-counts the bonus and makes hanging back
-        # strictly more profitable than finding the target. Expose which kind of
-        # ending this is so the trainers can tell them apart.
+        # `truncated`, yet the team-terminal event (under success_any, a teammate's
+        # success) ends the episode for real — there is no future to bootstrap.
+        # Bootstrapping it while also paying the shared success bonus double-counts
+        # the bonus and makes hanging back strictly more profitable than finding
+        # the target. Expose which kind of ending this is so the trainers can tell
+        # them apart.
         info = {"global_state": self._build_global_state(),
-                "timeout": bool(out_of_time and not terminateds.any())}
+                "timeout": bool(out_of_time and not team_terminal)}
         if episode_over:
             info.update(self._episode_stats())
         if self.n_agents == 1:
@@ -866,6 +880,16 @@ class OceananigansEnv(gym.Env):
         stats = {"time_to_first_success": (float(self._first_success_step)
                                            if self._first_success_step is not None
                                            else float("nan"))}
+        # Per-agent arrival times (NaN = never arrived). Under success_any only
+        # the winner's slot is finite; under success_all (end_on_any_success=
+        # False) the stragglers' times fill in, and time_to_all_success — the
+        # LAST arrival, NaN unless everyone made it — becomes the headline
+        # metric. Aggregate it over fully-successful episodes only, exactly like
+        # time_to_first_success.
+        stats["time_to_success"] = self._success_step.copy()
+        stats["n_succeeded"] = int(self._success.sum())
+        stats["time_to_all_success"] = (float(self._success_step.max())
+                                        if self._success.all() else float("nan"))
         if self.n_agents > 1:
             pos = np.array([a.pos for a in self.sim.agents], dtype=float)
             dist = np.linalg.norm(pos[:, None, :] - pos[None, :, :], axis=-1)
