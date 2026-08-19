@@ -11,27 +11,34 @@ in situations where agents are spread and thus find helpful having knowledge abo
 whether if they start close it does not help much. The centralized critic was not generally found helpful in this task,
 even though in some cases it helped achieving a better performance, especially with a lower number of agents and with a 
 smaller target area. 
-In this problem, since the target is defined as an area and usually it is quite large, the use of more than 2 agents was 
-not found to be helpful. Increasing to 4 agents, in fact, showed that independence leads to better performances overall, which is 
+In this problem, since the target is defined as an area and usually it is quite large, training a policy with more than 2 agents
+was difficult and not optimal. Increasing to 4 agents, in fact, showed that independence leads to better performances overall, which is 
 different from what one might expect. The effect of lucky spawning near the target zone, more probable in this case,
 has led to an optimal policy which favors the removal of communication, probably because using a larger state does not bring 
-any advance with respect to the independent case, which is comprehensible for a problem like this. It would be interesing to 
-try with a bigger environment so that the use of larger networks and states could bring more effect.
+any advance with respect to the independent case, which is comprehensible.
 Efficiency is measured as the time to reach success, and in this task independent agents reached the worst performance overall, 
-while MAPPO is the most efficient policy with 2 agents. Finally, the way agents are initialized has been found to matter a lot,
-and the verdict is to use a uniform initialization to encode a natural spread in the environment.
+while MAPPO is the most efficient policy with 2 agents. This is explained by the fact that agents trained with a centralized policy
+are able to divide the work more efficiently than independent agents, which only care about success and reaching target. Coordinated agents,
+instead, trade some success for more efficiency, and that is proved by the time they take to reach the target zone. 
+Finally, the way agents are initialized has been found to matter a lot,
+and the verdict is to use a uniform initialization to encode a natural spread in the environment. This could be informative for 
+real deployment consideration, since it is not said that the cost of releasing the AUVs spread is lower than the what the difference in 
+success rate brings, and that should be defined beforehand.
 
 This problem is inherently difficult, since the target area depends on how the environment is made up and which variables
 are considered. In fact, in this case only two parameters are considered for the target, but there could be more. Adding more 
 constraints naturally complicates the learning problem, and there could be no optimal policy to navigate the environment in that case,
 since the more the variables that need to be taken into consideration, the more difficult would be for the agent to navigate using gradients
-and the higher will be the dimension of the state space. Further research could be done starting from this, also considering 
-other forms of communication and cooperation, for example with swarm capabilities that in this case were unhelpful due to the 
+and the higher will be the dimension of the state space. However, this should be the very next starting point for further analyze the effect 
+of scaling the number of agents, since the dimension of the target area resulted to be the main problem that limited the 
+training of an optimal policy with more than 2 agents. Moreover, 
+other forms of communication and cooperation could be exploited and tested, for example with swarm capabilities that in this case were unhelpful due to the 
 small environment and number of agents considered. If a larger number of agents are used, which complicates even further the learning 
 problem, the consideration of techniques like PSO could help the agents avoid local optima generated from the more complex environment,
 since those techniques are more effective with large swarms. 
 
-To conclude, learning optimal policies in this task is definately possible, even though the complexity of the real environment 
-may be much higher than a simulated one like the one developed in this work. More advanced models and algorithms are developed 
-continuously, and they will help having more precise and accurate policies so that difficult and unsafe tasks like this will be 
-made safer and more efficient.
+To conclude, learning optimal policies in this task is definitely possible, even though the complexity of the real environment 
+may be much higher than a simulated one like the one developed in this work. In fact, obstacles may be present and unexpected hazards
+are possible and should be taken into account. This work proved that MARL is a promising approach to solve problems in the underwater domain,
+like coral reef restoration and monitoring, which are vital for the health of the marine ecosystem. Further optimizations and improvements are needed 
+to make the proposed approaches more robust and effective in real-world scenarios, but the results obtained in this work provide a solid foundation for future research in this area.

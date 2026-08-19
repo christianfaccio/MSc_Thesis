@@ -1048,7 +1048,7 @@ def fig_effects(cell_eff: pd.DataFrame, ns: list[int], out: Path):
                     hatch=hs, edgecolor=SURFACE, linewidth=0.6, zorder=3)
             ax.axvline(0, color=AXIS, linewidth=1.0, zorder=4)
             for yi, v, p in zip(y, vals, ps):
-                ax.text(v + (0.7 if v >= 0 else -0.7), yi, f"{v:+.1f} {stars(p)}", va="center",
+                ax.text(v + (0.7 if v >= 0 else -0.7), yi, f"{v:+.1f}", va="center",
                         ha="left" if v >= 0 else "right", fontsize=7.4, color=INK_2)
             ax.set_yticks(y, labels, fontsize=7.4)
             ax.set_title(f"{title}   —   {TARGET_LABEL[tg]}", fontsize=10.2, color=INK,

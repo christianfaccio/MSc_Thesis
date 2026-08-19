@@ -16,6 +16,8 @@ Therefore, the preservation and monitoring of marine environments is a strategic
 especially in the Arabian Gulf, where the combination of high salinity, warm temperatures, and human activities 
 poses a significant threat to marine ecosystems \cite{sheppard2010gulf}.
 
+The Gulf's marine communities are additionally exposed to decades of accelerating coastal urbanization, identified as the single largest anthropogenic stressor acting on the region, ahead of oil and gas extraction and desalination combined \cite{sale2011gulf}, with land reclamation and dredging generating persistent turbidity plumes and direct habitat loss along the coastlines of Bahrain \cite{zainal2012reclamation} and the wider Arabian Gulf \cite{burt2014urbanization}. Desalination brine discharge, while its impact on basin-scale salinity remains modest and concentrated near coastal outfalls rather than spread evenly across the basin \cite{paparella2022salinity}, combines with recurring thermal stress to drive bleaching events on the last remaining reefs of the region \cite{hadjhammou2025bleaching}. These compounding, spatially localized pressures are precisely why salinity and turbidity, the two variables this thesis tasks the swarm with locating, are useful proxies for anthropogenic disturbance rather than arbitrary target quantities.
+
 Coral reefs are one of the most biodiverse ecosystems on Earth, providing an existential habitat for a wide range of marine species,
 and offering shelter, food and breeding ground. Worldwide, billions of people depend more or less
 directly on coral reefs for a significant portion of their livelihoods, including fishing, tourism and coastal protection.
@@ -39,7 +41,9 @@ is becoming increasingly difficult due to the complex and dynamic nature of mari
 increasingly limited availability of suitable restoration sites. 
 Finally, the search for suitable restoration sites and the further monitoring of the marine environment health is 
 a time-consuming and dangerous task for human divers, who are exposed to different hazards and provide
-limited spatial coverage. 
+limited spatial coverage.
+
+Framing restoration as a site-selection problem, rather than a purely biological one, has gained traction in the recent literature. Suitable habitat for coral growth can be characterized by tolerance windows over a handful of measurable environmental variables, for instance salinity between $28.7$ and $40.4$ PSU and temperature between $21.7$ and $29.6$ °C \cite{guan2015suitable}, which reduces the search for a restoration site to the search for a region of the water column satisfying a target band on quantities that can, in principle, be sensed directly. Remote sensing techniques can narrow down candidate sites at a coarse spatial scale, but cannot substitute for in situ assessment, since fine-grained, near-bottom conditions are what ultimately determine suitability \cite{schill2021siteselection}. Coupling hydrodynamic modeling with ecological risk assessment has similarly been proposed to steer artificial reef deployment away from coastal pollution sources \cite{nasseridoust2024artificialreef}, following the same criterion adopted in this thesis, where target zones are defined to avoid regions of anomalous salinity associated with discharge.
 
 For these reasons, the use of autonomous underwater vehicles (AUVs) has been proposed as a solution
 to overcome the limitations of human divers and to increase safety and efficiency in the search task. 
@@ -54,7 +58,10 @@ for underwater robot-to-robot communication, which is able to provide a reliable
 at distances beyond 700 meters while consuming less than 10 W of power. It demonstrates that communication 
 in the kilometer range is possible, but the search area usually exceeds this range.
 Moreover, the robot usually can not rely on GPS signals, which vanish rapidly underwater, and the use of 
-cameras is limited by the low visibility. 
+cameras is limited by the low visibility.
+
+The case for deploying multiple robots rather than a single AUV rests on a coverage and observability argument: many cheap, decentralized units relying on local communication can sweep a search area far faster and with far more redundancy against individual failures than a single, more capable vehicle operating alone \cite{duarte2016swarm}, a principle that has motivated recent work coupling swarm intelligence with digital twins for marine ecological monitoring \cite{couceiro2026paradigm} and bio-inspired collectives that coordinate three-dimensional behaviors using only implicit, locally sensed cues \cite{berlinger2021blueswarm}. The underlying task, locating a region of the water column that matches an unknown target signature, also falls within the broader class of adaptive sampling and source-seeking problems, addressed for single vehicles tracking river plume fronts \cite{berild2024adaptive}, sampling static marine fields \cite{stankiewicz2021adaptive}, and tracing chemical plumes to their source \cite{farrell2005cpt}. Extending this task class to a swarm setting, where a target must be found cooperatively rather than by a lone vehicle, is precisely the gap this thesis addresses.
+
 Given the unknown and complex nature of the marine environment, AUVs need to be equipped with
 advanced sensors and algorithms to navigate and map the environment. To this end, Multi-agent 
 Reinforcement Learning (MARL) algorithms have been recently proposed and increasingly used to overcome
@@ -69,6 +76,8 @@ the algorithm in a more realistic environment is the main motivation for this th
 the main objective of this thesis is to evaluate the performance of a suitable MARL algorithm in a 
 more realistic environment, where the agents are required to navigate and search for suitable 
 coral restoration sites in a complex and unknown environment.
+
+Closer still to this thesis, the same research group has applied multi-agent reinforcement learning to underwater monitoring under environmental uncertainty, showing the benefits of learned collaboration over independent policies \cite{luvisutto2025marl}, while cooperative control for multi-AUV systems via MARL has recently been surveyed as a fast-growing subfield spanning centralized-training decentralized-execution methods, communication-augmented policies and hybrid metaheuristic approaches \cite{marlsurvey2025multiauv}.
 
 This thesis is organized as follows: Chapter 2 provides a comprehensive theoretical background on the 
 Reinforcement Learning algorithms, including the multi-agent extension and general problem formulation. Chapter 3 

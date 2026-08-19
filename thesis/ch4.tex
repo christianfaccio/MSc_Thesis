@@ -256,6 +256,8 @@ Moreover, at success the agent receives a bonus of $20.0$, which makes the final
 
 The trained policies were eight in total, given by the combination of the two algorithms (IPPO and MAPPO), with and without communication, and with two different numbers of agents (2 and 4). 
 Training of the policies with 2 agents was done for 10M timesteps and took 3-5 hours each, Figure~\ref{fig:training_2N} shows the episodic return, length and success rate during training.
+Training was performed on an M3 chip with 10 cores and 16GB of RAM.
+
 \begin{figure}[t]
     \centering 
     \includegraphics[width=\textwidth]{assets/fig7_training_curves_N2.pdf}
