@@ -1,1 +1,37 @@
 \chapter{Conclusions and Future Work}
+
+This work presented a comprehensive study on the application of Multi-Agent Reinforcement Learning (MARL)
+approaches to the problem of underwater search and navigation in an unknown, realistic and complex environment.
+The study focused on the application of multi-agent PPO variants, especially IPPO and MAPPO, with the addition of a 
+communication mechanism to enhance the agents' performance in a partially observable environment. The results demonstrated
+the effectiveness of the proposed approaches in making the agents find the target area in the shortest amount of time. 
+Different approaches lead to different results, even though independent agents are optimal choice if there is not prior 
+information regarding the environment. In fact, the use of communication has been proved to help in difficult scenarios and
+in situations where agents are spread and thus find helpful having knowledge about other points in the environment,
+whether if they start close it does not help much. The centralized critic was not generally found helpful in this task,
+even though in some cases it helped achieving a better performance, especially with a lower number of agents and with a 
+smaller target area. 
+In this problem, since the target is defined as an area and usually it is quite large, the use of more than 2 agents was 
+not found to be helpful. Increasing to 4 agents, in fact, showed that independence leads to better performances overall, which is 
+different from what one might expect. The effect of lucky spawning near the target zone, more probable in this case,
+has led to an optimal policy which favors the removal of communication, probably because using a larger state does not bring 
+any advance with respect to the independent case, which is comprehensible for a problem like this. It would be interesing to 
+try with a bigger environment so that the use of larger networks and states could bring more effect.
+Efficiency is measured as the time to reach success, and in this task independent agents reached the worst performance overall, 
+while MAPPO is the most efficient policy with 2 agents. Finally, the way agents are initialized has been found to matter a lot,
+and the verdict is to use a uniform initialization to encode a natural spread in the environment.
+
+This problem is inherently difficult, since the target area depends on how the environment is made up and which variables
+are considered. In fact, in this case only two parameters are considered for the target, but there could be more. Adding more 
+constraints naturally complicates the learning problem, and there could be no optimal policy to navigate the environment in that case,
+since the more the variables that need to be taken into consideration, the more difficult would be for the agent to navigate using gradients
+and the higher will be the dimension of the state space. Further research could be done starting from this, also considering 
+other forms of communication and cooperation, for example with swarm capabilities that in this case were unhelpful due to the 
+small environment and number of agents considered. If a larger number of agents are used, which complicates even further the learning 
+problem, the consideration of techniques like PSO could help the agents avoid local optima generated from the more complex environment,
+since those techniques are more effective with large swarms. 
+
+To conclude, learning optimal policies in this task is definately possible, even though the complexity of the real environment 
+may be much higher than a simulated one like the one developed in this work. More advanced models and algorithms are developed 
+continuously, and they will help having more precise and accurate policies so that difficult and unsafe tasks like this will be 
+made safer and more efficient.

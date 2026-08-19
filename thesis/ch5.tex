@@ -33,7 +33,7 @@ Also, it seems that CTDE is more effective when the number of agents is small, a
 \begin{figure}[t]
     \centering
     \includegraphics[width=\textwidth]{assets/fig1_mechanism_effects.pdf}
-    \caption{}
+    \caption{Results of using communication (left column) and CTDE (right column). The first row refers to scenarios with targets sampled randomly, while the second row refers to scenarios with targets sampled from the tail of the salinity distribution at sampled depth.}
     \label{fig:mech_effect}
 \end{figure}
 
@@ -50,7 +50,7 @@ area and the effect of communication is less pronounced since they can not know 
 \begin{figure}[t]
     \centering
     \includegraphics[width=0.8\textwidth]{assets/fig8_spawn_effect.pdf}
-    \caption{}
+    \caption{Effect of different initialization methods on success rate (first row) and steps to success (second row). The first column refers to 2 agent tests, while the right one to 4 agent tests. The shadowed lines are the marginalization of the bold ones on the two target methods, where the upper ones refer to random targets.}
     \label{fig:agent_init_effect}
 \end{figure}
 
@@ -70,7 +70,7 @@ the policies with communication or CTDE perform better than independent agents, 
 \begin{figure}[t]
     \centering 
     \includegraphics[width=0.8\textwidth]{assets/fig9_hard_targets.pdf}
-    \caption{}
+    \caption{Results of using randomly sampled targets (left column) and targets sampled from the tail of the salinity distribution at sampled depth (right column). The first row refers to 2 agents' cases, while the second one to 4 agents' cases. The plots show the fraction of solved episodes as a function of the step budget.}
     \label{fig:difficult_targets}
 \end{figure}
 
@@ -90,7 +90,7 @@ reason.
 \begin{figure}
     \centering 
     \includegraphics[width=0.8\textwidth]{assets/fig3_comms_range.pdf}
-    \caption{}
+    \caption{Effect of different communication ranges to the success rate on 2 agents (left plot) and 4 agents (right plot). The shadowed lines are the marginalization of the bold ones on the two target methods, where the upper ones refer to random targets.}
     \label{fig:communication_range}
 \end{figure}
 
@@ -108,7 +108,7 @@ descreases as the number of agents increases, as one expects. The only exception
 \begin{figure}[t]
     \centering 
     \includegraphics[width=0.8\textwidth]{assets/fig10_scaling_n.pdf}
-    \caption{}
+    \caption{Average success rate using 2 agents (left plot) and 4 agents (right plot). The grey line refers to the random agent.}
     \label{fig:scaling_n}
 \end{figure}
 
@@ -124,8 +124,8 @@ number of episodes solved.
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\textwidth]{assets/fig5_time_to_first_success.pdf}
-    \caption{}
+    \includegraphics[width=0.8\textwidth]{assets/fig5_time_to_first_success.pdf}
+    \caption{Median times to succeed for the first agent only (left column) and the relative normalized metric (right column), which is computed as $1-\mathbb{E}(\min (t,T))/T$, where $T$ refers to the \textit{max\_steps} parameter. The first row refers to 2 agents' cases, while the second row to 4 agents' ones.}
     \label{fig:time_to_first_success}
 \end{figure}
 
@@ -142,7 +142,7 @@ The figures show the probability of reaching target based on the rank of the age
 \begin{figure}[t]
     \centering
     \includegraphics[width=0.6\textwidth]{assets/fig6_arrival_by_rank_N2.pdf}
-    \caption{}
+    \caption{Probabilities to arrive at target by function of the number of steps for the first (left column) and second (right column) agent for the policies trained with 2 agents. The first row refers to cases where agents are initialized uniformly at land, the second one to cases where agents are initialized at the environment origin $(0,0)$.}
     \label{fig:arrival_by_rank_N2}
 \end{figure}
 
@@ -153,8 +153,8 @@ between the policies.
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\textwidth]{assets/fig6_arrival_by_rank_N4.pdf}
-    \caption{}
+    \includegraphics[width=0.8\textwidth]{assets/fig6_arrival_by_rank_N4.pdf}
+    \caption{Probabilities to arrive at target by function of the number of steps for the first (first column), second (second column), third (third column) and fourth (fourth column) agent for the policies trained with 4 agents. The first row refers to cases where agents are initialized uniformly at land, the second one to cases where agents are initialized at the environment origin $(0,0)$.}
     \label{fig:arrival_by_rank_N4}
 \end{figure}
 

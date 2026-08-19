@@ -64,7 +64,7 @@
 % \Laureando[Laureanda]{Name} -- optional argument overrides the label
 \newcommand*\UNITSlaureando{\CopyrightAuthor}
 \newcommand*\UNITSlaureandolabel{Laureando}
-\newcommand*\Laureando[2][Graduating student]{%
+\newcommand*\Laureando[2][Candidate]{%
 	\renewcommand*\UNITSlaureandolabel{#1}%
 	\renewcommand*\UNITSlaureando{#2}%
 }
@@ -86,7 +86,7 @@
 % optical height. Redefine \UNITSlogos in main.tex for a different arrangement
 % (e.g. a single centered logo, or a third logo).
 
-\newcommand*\UNITSlogoheight{16mm}
+\newcommand*\logoheight{50mm}
 
 % Horizontal gap between the two columns of the "student / supervisor" block.
 % The columns themselves shrink to fit their text, and the resulting pair is
@@ -98,9 +98,9 @@
 	\noindent
 	\begin{minipage}{\textwidth}%
 		\centering
-		\includegraphics[height=\UNITSlogoheight]{assets/logoTS.png}%
-		\hfill
-		\includegraphics[height=\UNITSlogoheight]{assets/logoUA.png}%
+		\includegraphics[height=\logoheight]{assets/logoTS.png}%
+		\hspace{40mm}
+		\raisebox{3mm}{\includegraphics[height=\logoheight]{assets/logoUA.pdf}}%
 	\end{minipage}%
 	\par
 }
@@ -123,7 +123,6 @@
 
 \makeatletter
 \RenewDocumentCommand\maketitle{s}{%
-	\clearpage
 	\thispagestyle{empty}
 	\pdfbookmark[0]{Frontespizio}{titlepage}
 	%
@@ -132,21 +131,24 @@
 	\setlength{\parindent}{0pt}%
 	\centering
 	%
+	\vspace*{-20mm}
 	\UNITSlogos
 	%
-	\vspace{14mm}
-	%
+	\vspace{5mm}
+	\noindent\rule{\linewidth}{0.4pt}
+	\vspace{5mm}
+	
 	{\fontsize{16}{19}\selectfont\bfseries \UNITSdipartimento \par}
-	\vspace{7mm}
+	\vspace{2mm}
 	{\fontsize{16}{19}\selectfont\bfseries \UNITScorso \par}
 	\vspace{7mm}
 	{\fontsize{16}{19}\selectfont\bfseries \UNITStipotesi \par}
 	%
-	\vspace{24mm}
+	\vspace{28mm}
 	%
 	{\fontsize{20}{24}\selectfont\bfseries \UNITStitle \par}
 	%
-	\vspace{28mm}
+	\vspace{36mm}
 	%
 	% Graduating student on the left, supervisor/co-supervisor on the right.
 	% Each column is a tabular, so it is exactly as wide as its own longest line
