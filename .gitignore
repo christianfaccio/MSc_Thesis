@@ -22,7 +22,6 @@ thesis/mitthesis/
 *.log
 *.err
 *.out
-*.pdf
 *.bcf
 *.lof
 *.lot
