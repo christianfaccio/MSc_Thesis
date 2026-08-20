@@ -1,8 +1,7 @@
 \chapter{Problem formulation}
 
 A previous thesis \cite{insaghi2025thesis} already developed and analyzed 
-a MARL algorithm suitable for this task. It used an environment made of
-gaussians, which defined the reward function. However, the real world is 
+a MARL algorithm suitable for this task. It used a gaussian envelope and a multifrequency cosine landscape to define the reward function. The real world, however, is 
 more complex and made of currents. This thesis, thus, brings these contributions:
 \begin{itemize}
     \item A new, more realistic environment, composed of currents, salinity and turbidity fields, created with Oceananigans;
@@ -120,11 +119,11 @@ The domain is a cube of $1000 \times 1000 \times 100$ meters, discretized
 on a $128 \times 128 \times 64$ grid of cells, with topology (Periodic, Periodic, Bounded). The method chosen for the 
 simulation is the nonhydrostatic one, which assumes that the vertical
 acceleration is not negligible. This method is more accurate than the 
-hydrostatic one, but necessitates more computational resources. 30 simulations
+hydrostatic one, but necessitates more computational resources. 40 simulations
 were carried out for training and 10 for testing, each one with a different random seed to ensure variability
 in the environment. Each simulation created a single NetCDF file, with a snapshot
-containing the fields every 12 minutes. The simulation was run for 18 hours,
-with the first 12 used as warmup time and so not recorded. 
+containing the fields every 12 minutes. The simulation was run for 8 hours,
+with the first 4 used as warmup time and so not recorded. 
 
 % Table with the parameters used for the simulation
 \begin{table}[t]
@@ -136,16 +135,16 @@ with the first 12 used as warmup time and so not recorded.
 Parameter &
 Value &
 Description \\ \midrule
-LX & 1000.0 & Domain (x) \\
-LY & 1000.0 & Domain (y) \\
-LZ & 100.0 & Domain (z) \\
-NX & 128 & Grid points (x) \\
-NY & 128 & Grid points (y) \\
-NZ & 64 & Grid points (z) \\
+LX & 1000.0 & Domain (x) [$m$]\\
+LY & 1000.0 & Domain (y) [$m$]\\
+LZ & 100.0 & Domain (z) [$m$]\\
+NX & 128 & Grid points (x) [$m$]\\
+NY & 128 & Grid points (y) [$m$]\\
+NZ & 64 & Grid points (z) [$m$]\\
 $T_{surface}$ & 22.0 / 33.0 & Surface temperature (winter/summer) [°C]\\
 $T_{bottom}$ & 20.0 / 22.0 & Bottom temperature (winter/summer) [°C]\\
 $S_{baseline}$ & 40.0 / 42.0 & Baseline salinity (winter/summer) [PSU]\\
-$V_{wind}$ & 5.0 / 8.0 & Wind speed (winter/summer) \\
+$V_{wind}$ & 5.0 / 8.0 & Wind speed (winter/summer) [$m/s$]\\
 $\rho_{air}$ & 1.225 & Air density [$kg/m^3$]\\
 $c_{drag}$ & $1.3e^{-3}$ & Drag coefficient \\
 $\rho_{water}$ & 1027.0 & Water density [$kg/m^3$]\\
@@ -157,7 +156,7 @@ $\beta_s$ & $0$ & Salinity contraction coefficient [$psu^{-1}$]\\
 $\sigma_h$ & 300.0 & Salinity horizontal std [m]\\
 $\sigma_v$ & 40.0 & Salinity vertical std [m]\\
 Salinity excess & 10.0 & Excess over baseline [PSU]\\
-Salinity decay time & 1.0 & Time to relax the field to a gaussian\\
+Salinity decay time & 1.0 & Time to relax the field to a gaussian [h]\\
 Warmup time & 12.0 & Time to reach a steady state [h]\\
 Simulation time & 6.0 & Total simulation time [h]\\
 Output frequency & 12.0 & Frequency of output [min]\\
@@ -279,7 +278,7 @@ In this work it is computed by advecting $N$ salinity sources, initialized rando
 At each timestep, the sources emit salinity particles, which are advected by the currents and corrected by a diffusion term that bounds the PSU 
 range to 10 PSU. That was a choice made either to have a navigable field with computable gradients and to resemble the realistic salinity range of the Gulf.
 
-\begin{figure}[t]
+\begin{figure}[h]
     \centering
     \includegraphics[width=0.45\textwidth]{assets/salinity_field.pdf}\hfill 
     \includegraphics[width=0.45\textwidth]{assets/salinity_field_target.pdf}

@@ -23,15 +23,15 @@ can be modeled as a Markov Decision Process (MDP), which consists of:
     \item A set of states $S$;
     \item A set of actions $A$;
     \item A reward function $R : S\times A\times S \to \mathbb{R}$;
-    \item A state transition probability function $P : S\times A\times S \to [0,1]$ such that in state $s$ taking action $a$ the probability of transitionint to state $s'$ is $p(s'|s,a)$;
+    \item A state transition probability function $P : S\times A\times S \to [0,1]$ such that in state $s$ taking action $a$ the probability of transitioning to state $s'$ is $p(s'|s,a)$;
     \item A policy $\pi : S \to A$ that maps states to actions, such that in state $s$ the agent takes action $a$ with probability $\pi(a|s)$;
     \item A discount factor $\gamma \in [0,1]$ that determines the importance of future rewards.
 \end{itemize}
 
 An MDP starts in an initial state $s_0$, sampled from the initial state distribution. At each time step $t$, the agent 
-observes the current state $s_t$, takes an action $a_t$ accotrind to its policy $\pi(a_t|s_t)$ and receives a reward 
+observes the current state $s_t$, takes an action $a_t$ according to its policy $\pi(a_t|s_t)$ and receives a reward 
 $r_t = R(s_t, a_t, s_{t+1})$, where $s_{t+1}$ is the next state sampled from the transition probability distribution $p(s_{t+1}|s_t, a_t)$.
-Once the terminal state is reached, or after the maximum number of time steps, the episode ends. Figure ~\ref{fig:1} shows the described framework.
+Once the terminal state is reached, or after the maximum number of time steps, the episode ends. Figure~\ref{fig:1} shows the described framework.
 
 \begin{figure}
     \centering
@@ -84,7 +84,7 @@ Its parameters are periodically updated by copying the current parameters of the
 Another problem is the correlation of consecutive experiences. The update of value function parameters with most recent experiences may lead 
 to the agent forgetting optimal policies learned in the past and in other experiences. This is due to the fact the changes in the policy will lead to 
 changes in the data distribution encountered by the agent, which then lead to changes in the optimal policy. The usual solution is to randomize the experience samples used to train the agent,
-that is why the replay buffer is used. In fact, a batch of experiences is sampled uniformly from at random from the replay buffer, which will be used to 
+that is why the replay buffer is used. In fact, a batch of experiences is sampled uniformly at random from the replay buffer, which will be used to 
 update the value function parameters. This way, experiences can be reused multiple times (which leads to more efficient sampling) and gradients are more stable and with lower variance.
 
 Policy gradient methods, instead, are a class of RL algorithms that learn a parameterized policy directly, without the need for a value function. The policy is usually represented as a neural network with parameters $\phi$, and it is updated using the policy gradient theorem. 
@@ -93,7 +93,7 @@ It provides a theoretically founded expression for the gradient of the performan
     \nabla_{\phi}J(\phi) \propto \sum_{s\in \mathcal{S}}Pr(s|\pi)\sum_{a\in\mathcal{A}}Q^{\pi}(s,a)\nabla_{\phi}\pi(a|s;\phi)
 \end{equation}
 
-where $J$ represents a functino measuring the quality of a policy $\pi$. It is similar to a loss function, but it is maximized and not minimized.
+where $J$ represents a function measuring the quality of a policy $\pi$. It is similar to a loss function, but it is maximized and not minimized.
 \begin{align}
     J(\phi) &= \mathbf{E}_{\pi}\left[\sum_{k}\gamma^k r_{t+k}\right] \\
             &= \sum_s Pr(s'|s,a)\sum_a\pi(a|s;\phi)\left[R_t+\gamma V_{\pi}(s_{t+1})\right]
@@ -144,7 +144,7 @@ And the critic loss is defined as:
     \mathcal{L}(\theta) = (y^t - V(s^t;\theta))^2
 \end{equation}
 
-Forthermore, entropy regularization can be added to the actor loss to discourage premature convergence to a suboptimal policy and incentivize exploration. 
+Furthermore, entropy regularization can be added to the actor loss to discourage premature convergence to a suboptimal policy and incentivize exploration. 
 It is a measure of the policy's uncertainty, and minimizing the negative entropy penalizes it for assigning a very high probability to any action.
 \begin{equation}
     -\mathcal{H}(\pi(\cdot|s;\phi)) = \sum_{a\in\mathcal{A}}\pi(a|s;\phi)\log\pi(a|s;\phi)
@@ -210,7 +210,7 @@ Let $A:=A^1\times\dots\times A^N$ denote the joint action space, then $\mathcal{
 At each time step $t$, each agent executes an action $a^i_t$ according to the system state $s_t$. The system transitions to a new state $s_{t+1}$ and gives each agent a reward $r^i_t$. Each agent wants to maximize its long-term reward, finding a policy $\pi^i$. As a consequence, the value-function $V^i : \mathcal{S}\to\mathbb{R}$ of agent $i$ becomes a function of the joint policy $\pi$ defined as $\pi(a|s) = \prod_{i\in\mathcal{N}}\pi^i(a^i|s)$.
 
 \begin{equation}
-    V^i_{\pi^i,\pi^{-i}} := \mathbb{E}\left[\sum_{t\geq 0}\gamma^t R^i(s_t,a_t,s_{t+1}) | a^i_t \sim \pi^i(\dot | s_t), s_0 = s\right]
+    V^i_{\pi^i,\pi^{-i}} := \mathbb{E}\left[\sum_{t\geq 0}\gamma^t R^i(s_t,a_t,s_{t+1}) | a^i_t \sim \pi^i(\cdot | s_t), s_0 = s\right]
 \end{equation}
 
 Since each agent's value function depends on the policies of all other agents, the optimal policy for each agent is defined as a Nash equilibrium, where no agent can improve its long-term reward by unilaterally changing its policy.
@@ -226,7 +226,7 @@ It always exists for finite-space infinite-horizon discounted MGs, but may not b
 \subsection{Cooperative setting}
 
 In some tasks, agent may need to cooperate to achieve a common goal, and in these cases they share a common reward function, i.e., $R^1 = R^2 = \dots = R^N = R$. 
-With this model in mind, the value functino and Q-function are identical to all agents, which thus enables the single-agent RL algorithms to be applied, if all agents are coordinated as one decision maker. 
+With this model in mind, the value function and Q-function are identical to all agents, which thus enables the single-agent RL algorithms to be applied, if all agents are coordinated as one decision maker. 
 Moreover, agents are allowed to have different reward functions, which may be kept private to each agent, while the goal for cooperation is to optimize the long-term reward corresponding to the average reward $\bar{R}(s,a,s') := N^{-1}\cdot\sum_{i\in\mathcal{N}}R^i(s,a,s')$ for any $(s,a,s')\in\mathcal{S}\times\mathcal{A}\times\mathcal{A}$. 
 
 \subsection{Challenges of MARL}

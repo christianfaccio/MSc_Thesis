@@ -34,7 +34,7 @@ The problem is formulated as a Decentralized Partially Observable Markov Decisio
 \mathcal{A},\mathcal{O},\mathcal{R},\mathcal{P},n,\gamma\rangle$, where $\mathcal{S}$ is the state space, $\mathcal{A}$ is the shared action space for each agent $i$, $\mathcal{O}$ is the 
 local observation space (each $o_i$ is the local observation for agent $i$ at global state $s$), $\mathcal{P}(s'|s,A)$ is the transition probability from $s$ to $s'$ given the joint action 
 $A$, $\mathcal{R}(s,A)$ is the shared reward function and $\gamma$ is the discount factor. 
-Agents use a policy $\pi_{\theta}(a_i|o_i)$ to produce an action from the local observation and jointly optimize the discounted accumulated reward $\mathcal{J}(\theta) = \mathbf{E}_{A^t,s^t}\left[\sum_t\gamma^t R(s^t,A^t)\right]$.
+Agents use a policy $\pi_{\theta}(a_i|o_i)$ to produce an action from the local observation and jointly optimize the discounted accumulated reward $\mathcal{J}(\theta) = \mathbb{E}_{A^t,s^t}\left[\sum_t\gamma^t R(s^t,A^t)\right]$.
 
 In IPPO, a variant of the advantage function is used, where each agent learns a local observation based critic $V_{\phi}(z^a_t)$ parameterised by $\phi$ using \textit{Generalized Advantage Estimation (GAE)}. For each agent
 $a$, the relative advantage function is defined as:
@@ -44,7 +44,7 @@ $a$, the relative advantage function is defined as:
 where $\delta^a_t = r^a_t + \gamma V_{\phi}(z^a_{t+1}) - V_{\phi}(z^a_t)$ is the temporal difference error, $\gamma$ is the discount factor and $\lambda$ is a hyperparameter that controls the bias-variance trade-off of the advantage estimates.
 The final policy loss for each agent is defined as:
 \begin{equation}
-    \mathcal{L}^a(\theta) = \mathbf{E}_{z^a_t,u^a_t}\left[\min\left(\frac{\pi_{\theta}(u^a_t|z^a_t)}{\pi_{\theta_{old}}(u^a_t|z^a_t)}A^a_t,\text{ clip }\left(\frac{\pi_{\theta}(u^a_t|z^a_t)}{\pi_{\theta_{old}}(u^a_t|z^a_t)},1-\epsilon,1+\epsilon\right)A^a_t\right)\right]
+    \mathcal{L}^a(\theta) = \mathbb{E}_{z^a_t,u^a_t}\left[\min\left(\frac{\pi_{\theta}(u^a_t|z^a_t)}{\pi_{\theta_{old}}(u^a_t|z^a_t)}A^a_t,\text{ clip }\left(\frac{\pi_{\theta}(u^a_t|z^a_t)}{\pi_{\theta_{old}}(u^a_t|z^a_t)},1-\epsilon,1+\epsilon\right)A^a_t\right)\right]
 \end{equation}
 
 The chosen policies are two simple MLPs with two hidden layers of 256 units for the actor and 128 for the critic. Moreover, multiple 
@@ -101,9 +101,9 @@ steps of agents that have already terminated their episode, so that frozen agent
 Parameter &
 Value \\ \midrule
 $\epsilon_{S}$ & 0.15 \\
-$\epsilon_{\Tau}$ & 0.05 \\
+$\epsilon_{\tau}$ & 0.05 \\
 $\sigma_{S}$ & 1.5 \\
-$\sigma_{\Tau}$ & 0.3 \\
+$\sigma_{\tau}$ & 0.3 \\
 n\_agents & 2 \\
 k & 12 \\
 v\_agent & 1.0 \\
@@ -203,19 +203,18 @@ and a \textit{global state}, which considers the global position of the agents a
     \item $\mathbf{u},\mathbf{v},\mathbf{w}$, the components of the currents at the agent's position;
     \item $\frac{\partial S}{\partial u},\frac{\partial S}{\partial v},\frac{\partial S}{\partial w}$, the components of the salinity gradient at the agent's position. These could theoretically be computed by the agent using some sensors, so they were included in the state;
     \item $S - S*$, the difference between the salinity computed at the agent's position and the target salinity;
-    \item $\Tau - \Tau*$, the difference between the turbidity computed at the agent's position and the target turbidity;
+    \item $\tau - \tau*$, the difference between the turbidity computed at the agent's position and the target turbidity;
     \item $z$, the depth of the agent, which is important to know since the turbidity is a function of it and it is measurable by the agent using a pressure sensor;
-    \item \textit{history} of the last $k$ $(\delta x,\delta y,\delta z, S - S*, \Tau - \Tau*)$ tuples, where $\delta x,\delta y,\delta z$ are the relative displacements of the agent in the last $k$ steps, that could be measured in real world from the agent by knowing its initial positions and the actions it does. This is important to give the agent a sense of direction and speed, since it doesn't know its global position.
+    \item \textit{history} of the last $k$ $(\Delta x,\Delta y,\Delta z, S - S*, \tau - \tau*)$ tuples, where $\Delta x,\Delta y,\Delta z$ are the relative displacements of the agent in the last $k$ steps, that could be measured in real world from the agent by knowing its initial positions and the actions it does. This is important to give the agent a sense of direction and speed, since it doesn't know its global position.
 \end{itemize}
 
-I have found out that this is the minimum information that the agent needs to learn an optimal policy for this task,
+This is the minimum information that the agent needs to learn an optimal policy for this task,
 and specifically the history is crucial, since it helps achieving a higher success rate. The reason for this is probably
 that the agent can make a sort of global map of where it is going and where it has already been, improving the search efficiency
-and effectiveness. Moreover, I added a \textit{communication} flag that simulates the exchange of information between agents
-in the whole domain, so that when it is active the agents can share their local displacement and target differences, i.e. in addition 
-to the local state, each agent receives $N-1$ tuples of $(\delta x,\delta y,\delta z, S - S*, \Tau - \Tau*)$ from the other agents. 
-This is important to improve the cooperation between agents and to avoid them searching in the same areas. As shown below, it helps when agents 
-start in the same position.
+and effectiveness. Moreover, a \textit{communication} flag that simulates the exchange of information between agents
+in the whole domain was added, so that when it is active the agents can share their local displacement and target differences, i.e. in addition 
+to the local state, each agent receives $N-1$ tuples of $(\Delta x,\Delta y,\Delta z, S - S*, \tau - \tau*)$ from the other agents. 
+This is important to improve the cooperation between agents and to avoid them searching in the same areas, i.e., division of labour.
 
 The global state, instead, adds on top of the local state the global horizontal position of the agent, i.e. $x,y$. This is used in the centralized critic of MAPPO,
 which is only used during training and so can be feed with global information the agent does not have during execution. The final state space is a vector of $11$ elements, against 
@@ -269,8 +268,8 @@ the agents learn to behave correctly and start reaching higher returns and succe
 is that since the target zone is sampled randomly at each episode, it may be so large that the agents just need to learn to go in the 
 target depth to reach the goal, creating a scenario where pure spawn luck can lead to success. This is reflected much more in the 
 training curves of the 4 agent policies, where the number of agents is higher and so the chance of one of them spawning close to 
-the target zone is much higher. In fact, Figure~\ref{fig:training_4N} shows flat curves, as if agents already start behaving optimally,
-but in reality the majority of the success is due to spawn luck. This, unfortunately, is an intrinsic limitation of the task, 
+the target zone is much higher. In fact, Figure~\ref{fig:training_4N} shows almost flat curves, as if agents already start behaving optimally,
+even if in reality the agents start randomly but converge very fast due to this mechanism. This, unfortunately, is an intrinsic limitation of the task, 
 since the target is an area and not a single point, and trying to avoid this by sampling a smaller region would introduce bias 
 in the training and create a false optimal policy. Training of the policies with 4 agents was done for 20M timesteps, with minibatch size of 48 and took 6-8 hours each. 
 \begin{figure}[t]
@@ -281,10 +280,8 @@ in the training and create a false optimal policy. Training of the policies with
 \end{figure}
 
 Figure~\ref{fig:trajectory_2N} shows the trajectories developed during an episode by the IPPO policy without communication and using 2 agents. 
-From a horizontal point of view, they are as one might expect, showing willingness to reach the target area and fighting the currents in doing so.
-However, from a vertical point of view, the agents are doing a sort of oscillatory movement, going up and down in the water column. This is 
-probably due to the fact that different layers of depth present different salinity distributions, and so the agents may be induced to follow the 
-gradient of salinity in a vertical direction, instead of staying at the target depth. 
+They are initialized with \textit{max\_dist}, and it is possible to see that one is actually trying to reach the target area the way one might expect,
+with a clean and healthy trajectory, while the other just went to the target depth and then stopped there, as if there is no incentive to move from there.
 
 \begin{figure}[t]
     \centering 
@@ -295,8 +292,7 @@ gradient of salinity in a vertical direction, instead of staying at the target d
 
 Figure~\ref{fig:trajectory_4N}, instead, shows the trajectories developed during an episode by the IPPO policy without communication and using 4 agents.
 From this figure, it is clear that the agents are trying to reach the target area, probably by following the filaments in the salinity field,
-but that they don't know where the target area is. As before, they are oscillating in the vertical direction, but this time they seem to stay 
-more near the target depth and at the surface. 
+but that they don't know where the target area is. 
 
 \begin{figure}[t]
     \centering 

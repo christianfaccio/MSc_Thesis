@@ -56,6 +56,52 @@
 
 %%%%%%%%  Packages used in the sample chapters (not otherwise required) %%%
 
+%% Math symbols (needed for \mathbb, etc. in captions/body text)
+\usepackage{amsmath}
+%% LuaLaTeX/XeLaTeX predefine several of amssymb's symbols in the kernel (e.g.
+%% \eth, \digamma, \backepsilon -- Unicode letters with direct codepoints), so
+%% amssymb's own \DeclareMathSymbol for them errors with "already defined"
+%% unless we clear the kernel's definitions first. Blanket-clear every symbol
+%% amssymb declares; harmless under pdfLaTeX/for symbols the kernel never touched.
+\ExplSyntaxOn
+\clist_map_inline:nn
+  {
+    boxdot,boxplus,boxtimes,square,blacksquare,centerdot,lozenge,blacklozenge,
+    circlearrowright,circlearrowleft,rightleftharpoons,leftrightharpoons,boxminus,
+    Vdash,Vvdash,vDash,twoheadrightarrow,twoheadleftarrow,leftleftarrows,
+    rightrightarrows,upuparrows,downdownarrows,upharpoonright,downharpoonright,
+    upharpoonleft,downharpoonleft,rightarrowtail,leftarrowtail,leftrightarrows,
+    rightleftarrows,Lsh,Rsh,rightsquigarrow,leftrightsquigarrow,looparrowleft,
+    looparrowright,circeq,succsim,gtrsim,gtrapprox,multimap,therefore,because,
+    doteqdot,triangleq,precsim,lesssim,lessapprox,eqslantless,eqslantgtr,
+    curlyeqprec,curlyeqsucc,preccurlyeq,leqq,leqslant,lessgtr,backprime,
+    risingdotseq,fallingdotseq,succcurlyeq,geqq,geqslant,gtrless,sqsubset,
+    sqsupset,vartriangleright,vartriangleleft,trianglerighteq,trianglelefteq,
+    bigstar,between,blacktriangledown,blacktriangleright,blacktriangleleft,
+    vartriangle,blacktriangle,triangledown,eqcirc,lesseqgtr,gtreqless,
+    lesseqqgtr,gtreqqless,Rrightarrow,Lleftarrow,veebar,barwedge,doublebarwedge,
+    angle,measuredangle,sphericalangle,varpropto,smallsmile,smallfrown,Subset,
+    Supset,Cup,Cap,curlywedge,curlyvee,leftthreetimes,rightthreetimes,
+    subseteqq,supseteqq,bumpeq,Bumpeq,lll,ggg,circledS,pitchfork,dotplus,
+    backsim,backsimeq,complement,intercal,circledcirc,circledast,circleddash,
+    lvertneqq,gvertneqq,nleq,ngeq,nless,ngtr,nprec,nsucc,lneqq,gneqq,
+    nleqslant,ngeqslant,lneq,gneq,npreceq,nsucceq,precnsim,succnsim,lnsim,
+    gnsim,nleqq,ngeqq,precneqq,succneqq,precnapprox,succnapprox,lnapprox,
+    gnapprox,nsim,ncong,diagup,diagdown,varsubsetneq,varsupsetneq,nsubseteqq,
+    nsupseteqq,subsetneqq,supsetneqq,varsubsetneqq,varsupsetneqq,subsetneq,
+    supsetneq,nsubseteq,nsupseteq,nparallel,nmid,nshortmid,nshortparallel,
+    nvdash,nVdash,nvDash,nVDash,ntrianglerighteq,ntrianglelefteq,
+    ntriangleleft,ntriangleright,nleftarrow,nrightarrow,nLeftarrow,
+    nRightarrow,nLeftrightarrow,nleftrightarrow,divideontimes,varnothing,
+    nexists,Finv,Game,mho,eth,eqsim,beth,gimel,daleth,lessdot,gtrdot,ltimes,
+    rtimes,shortmid,shortparallel,smallsetminus,thicksim,thickapprox,
+    approxeq,succapprox,precapprox,curvearrowleft,curvearrowright,digamma,
+    varkappa,Bbbk,hslash,hbar,backepsilon,
+  }
+  { \cs_set_eq:cN { #1 } \relax }
+\ExplSyntaxOff
+\usepackage{amssymb}
+
 %% Package for code listing in Appendix A.
 \usepackage{listings}%   documentation is here https://ctan.org/pkg/listings
 
